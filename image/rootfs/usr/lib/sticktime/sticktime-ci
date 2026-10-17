@@ -1,0 +1,11 @@
+#!/bin/sh
+# Test only (sticktime-ci.service, which runs only with sticktime.ci=1 on the kernel command line):
+# wait until the boot has finished, then print one line for image/test/boot_test.py on the console
+# (/dev/console: Raspberry Pi OS's console log level 3 would hide a kernel log line).
+state=$(timeout 900 systemctl is-system-running --wait 2>/dev/null)
+failed=$(systemctl --failed --plain --no-legend 2>/dev/null | awk '{print $1}' | paste -sd, -)
+took=$(systemd-analyze time 2>/dev/null | head -n 1 | sed 's/^Startup finished in //')
+up=$(cut -d' ' -f1 /proc/uptime)
+line="STICKTIME-CI: ready host=$(hostname) state=${state:-unknown} failed=${failed:-none} uptime=${up}s boot=[${took}]"
+echo "<5>sticktime-ci: $line" > /dev/kmsg
+echo "sticktime-ci: $line" > /dev/console

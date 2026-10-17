@@ -1,0 +1,215 @@
+#!/usr/bin/python3 -I
+"""sticktime-bt: pair, trust and connect ELRS BLE joysticks and Bluetooth gamepads by themselves.
+
+    sticktime-bt run         the daemon (sticktime-bt.service); exits at once when bluetooth = off
+    sticktime-bt list        the devices bluez knows, as JSON (for debugging and the web UI)
+  options: --root DIR (tests)
+
+Which devices: the ELRS TX module's BLE joystick ("ELRS Joystick" / "ExpressLRS Joystick"), and
+gamepads (bluez icon input-gaming, or a gamepad/joystick device class, or a well-known controller
+name). Keyboards and other devices are never paired automatically (they need a PIN).
+Scanning makes the Pi's combo chip share 2.4 GHz air time with WiFi (latency spikes on the WiFi
+joystick), so it only scans while no matching device is connected and the WiFi joystick is not
+streaming, in short bursts, less often after the first minutes. No adapter (QEMU, BT disabled in
+config.txt): it waits quietly and checks again every 30 s.
+"""
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import stlib as st  # noqa: E402
+
+ELRS_RE = re.compile(r"^(ELRS|ExpressLRS)\s+Joystick", re.I)
+PAD_NAME_RE = re.compile(r"(gamepad|game ?pad|controller|joystick|xbox|dualshock|dualsense|8bitdo|joy-?con|"
+                         r"stadia|switch pro|nimbus|gamesir|ipega|shield)", re.I)
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x01|\x02|\r")
+SCAN_S = 8
+
+
+def clean(s):
+    return ANSI_RE.sub("", s)
+
+
+def btctl(*args, timeout=15, agent=False):
+    argv = ["bluetoothctl"] + (["--agent", "NoInputNoOutput"] if agent else []) + list(args)
+    r = st.run(argv, timeout=timeout, quiet=True)
+    return st.Result(r.returncode, clean(r.stdout), clean(r.stderr))
+
+
+def parse_devices(text):
+    """'Device AA:BB:CC:DD:EE:FF Name' lines -> [(mac, name)]"""
+    out = []
+    for ln in text.splitlines():
+        m = re.search(r"Device ([0-9A-F]{2}(?::[0-9A-F]{2}){5})(?: (.*))?$", ln.strip(), re.I)
+        if m:
+            out.append((m.group(1).upper(), (m.group(2) or "").strip()))
+    return out
+
+
+def parse_info(text):
+    info = {"uuids": []}
+    for ln in text.splitlines():
+        m = re.match(r"^\s*([A-Za-z][A-Za-z0-9 ]*):\s*(.*)$", ln)
+        if not m:
+            continue
+        k, v = m.group(1).strip().lower(), m.group(2).strip()
+        if k == "uuid":
+            info["uuids"].append(v)
+        elif k not in info:
+            info[k] = v
+    for k in ("paired", "bonded", "trusted", "connected", "blocked"):
+        info[k] = info.get(k, "no").lower() == "yes"
+    return info
+
+
+def is_gamepad_class(cls):
+    try:
+        c = int(cls, 16)
+    except (TypeError, ValueError):
+        return False
+    major = (c >> 8) & 0x1F
+    minor = (c >> 2) & 0x3F
+    return major == 0x05 and (minor & 0x0F) in (0x01, 0x02)   # peripheral: joystick, gamepad
+
+
+def wanted(name, info=None):
+    """'elrs', 'gamepad' or None"""
+    if name and ELRS_RE.search(name):
+        return "elrs"
+    info = info or {}
+    if info.get("icon") == "input-gaming" or is_gamepad_class(info.get("class")):
+        return "gamepad"
+    if name and PAD_NAME_RE.search(name) and info.get("icon", "input-gaming") in ("input-gaming", "", None):
+        return "gamepad"
+    return None
+
+
+def wifi_joystick_live():
+    """the host's status: don't scan while the WiFi joystick streams (2.4 GHz coexistence)"""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1/api/status", timeout=1) as r:
+            j = json.loads(r.read(1 << 20).decode("utf-8"))
+        inp = j.get("input") or {}
+        return any(s.get("kind") == "wifi" and s.get("live") for s in inp.get("sources") or [])
+    except Exception:                                    # noqa: BLE001  (the host may be down: just scan)
+        return False
+
+
+def adapters():
+    try:
+        return sorted(n for n in os.listdir(st.p("/sys/class/bluetooth")) if re.match(r"^hci\d+$", n))
+    except OSError:
+        return []
+
+
+class Daemon:
+    def __init__(self):
+        self.last_try = {}          # mac -> time of the last pair/connect attempt
+        self.failures = {}
+        self.start = time.time()
+        self.last_scan = 0.0
+
+    def handle(self, mac, name, now):
+        info = parse_info(btctl("info", mac, timeout=10).stdout)
+        kind = wanted(name or info.get("name", ""), info)
+        if not kind or info.get("blocked"):
+            return False
+        if info["connected"]:
+            self.failures.pop(mac, None)
+            return True
+        wait = min(300, 20 * (2 ** min(self.failures.get(mac, 0), 4)))
+        if now - self.last_try.get(mac, 0) < wait:
+            return False
+        self.last_try[mac] = now
+        label = f"{name or mac} ({kind})"
+        if not info["paired"]:
+            st.log(f"pairing {label}")
+            r = btctl("pair", mac, timeout=40, agent=True)
+            if not r.ok and "AlreadyExists" not in (r.stdout + r.stderr):
+                self.failures[mac] = self.failures.get(mac, 0) + 1
+                st.log(f"pairing {label} failed")
+                return False
+        if not info["trusted"]:
+            btctl("trust", mac)
+        r = btctl("connect", mac, timeout=30)
+        if r.ok or "Connection successful" in r.stdout:
+            st.log(f"connected {label}")
+            self.failures.pop(mac, None)
+            return True
+        self.failures[mac] = self.failures.get(mac, 0) + 1
+        return False
+
+    def tick(self):
+        now = time.time()
+        devs = parse_devices(btctl("devices", timeout=10).stdout)
+        paired = {mac for mac, _ in parse_devices(btctl("devices", "Paired", timeout=10).stdout)}
+        connected = False
+        for mac, name in devs:
+            # look closer (bluetoothctl info) only at names that say joystick/gamepad and at paired
+            # devices: there can be dozens of phones and beacons around
+            if mac not in paired and not (name and (ELRS_RE.search(name) or PAD_NAME_RE.search(name))):
+                continue
+            connected |= self.handle(mac, name, now)
+        # scan bursts: every 20 s for the first 10 minutes, then every 60 s; never while connected
+        period = 20 if now - self.start < 600 else 60
+        if not connected and now - self.last_scan >= period and not wifi_joystick_live():
+            self.last_scan = now
+            btctl("--timeout", str(SCAN_S), "scan", "on", timeout=SCAN_S + 10)
+        return connected
+
+    def run(self):
+        s = st.load_settings(repair=False)
+        if not s.bool("bluetooth"):
+            st.log("bluetooth = off: nothing to do")
+            return 0
+        said = False
+        while not adapters():
+            if not said:
+                st.log("no Bluetooth adapter: waiting (checking every 30 s)")
+                said = True
+            time.sleep(30)
+        btctl("power", "on")
+        btctl("pairable", "on")
+        btctl("discoverable", "off")
+        st.log("looking for ELRS joysticks and gamepads")
+        while True:
+            try:
+                connected = self.tick()
+            except Exception as e:                       # noqa: BLE001  (keep going: bluetoothd restarts etc.)
+                st.log(f"{type(e).__name__}: {e}")
+                connected = False
+            if not adapters():
+                st.log("the Bluetooth adapter went away: waiting")
+                while not adapters():
+                    time.sleep(30)
+                btctl("power", "on")
+            time.sleep(15 if connected else 5)
+
+
+def main(argv):
+    args = list(argv)
+    while args and args[0].startswith("--"):
+        a = args.pop(0)
+        if a == "--root" and args:
+            st.set_root(args.pop(0))
+    cmd = args[0] if args else "run"
+    if cmd == "run":
+        return Daemon().run()
+    if cmd == "list":
+        res = []
+        for mac, name in parse_devices(btctl("devices").stdout):
+            info = parse_info(btctl("info", mac).stdout)
+            res.append({"mac": mac, "name": name, "kind": wanted(name, info), "paired": info["paired"],
+                        "connected": info["connected"]})
+        print(json.dumps({"adapters": adapters(), "devices": res}))
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

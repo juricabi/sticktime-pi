@@ -1,0 +1,14 @@
+# Test only: with sticktime.ci=1 on the kernel command line (image/test/boot_test.py under QEMU)
+# it prints "STICKTIME-CI: ready ..." on the console when the boot has finished. Never runs on a Pi.
+[Unit]
+Description=StickTime Pi: CI boot marker
+ConditionKernelCommandLine=sticktime.ci=1
+After=sticktime-setup.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/sticktime/sticktime-ci
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1122 @@
+# Test vectors for the sticktime.txt format, shared by host/tests/test_settings.c (settings.c) and
+# image/tests/test_settings_py.py (settings.py): both must give exactly these results.
+#
+# Lines are "<directive>: <payload>" (the space after the colon is optional); '#' lines and blank lines
+# are ignored. Payloads use escapes: \\ \n \r \t \0 \s (a space; write leading/trailing spaces this
+# way) and \xHH (a byte). Anything else is literal, including UTF-8. A KEY is the first word of the
+# payload (escapes allowed), then " = VALUE" (" =" alone is an empty value).
+#
+#   case: NAME              starts a case: a fresh parse of the "in" text
+#   in: TEXT                the file content (in lines join without separators)
+#   inrep: N TEXT           TEXT repeated N times, appended to the content
+#   warn: TEXT              one expected warning line. A run of warn lines is the complete list at that
+#                           point. Right after the parse, no warn run means "no warnings".
+#   nowarn:                 no warnings at this point
+#   raw: KEY = VALUE        settings_raw(KEY) == VALUE;  "raw: KEY" alone: not set (NULL / None)
+#   rawlen: KEY = N         the raw value is N bytes long
+#   get: KEY = VALUE        settings_get(KEY) == VALUE (the effective value)
+#   int: KEY DEF MIN MAX = N        settings_get_int
+#   num: KEY DEF MIN MAX = X        settings_get_num (within 1e-9)
+#   bool: KEY DEF = 0|1             settings_get_bool
+#   each: KEY = VALUE       a run of each lines is the complete settings_each() list, in order
+#   noeach:                 settings_each() gives nothing
+#   set: KEY = VALUE        settings_set returns true;  set!: ... returns false
+#   del: KEY                settings_set(KEY, NULL)
+#   out: TEXT / outrep: N TEXT     a run of these is the exact serialization at that point
+#   valid: KEY = VALUE      settings_validate gives no message;  invalid: ... gives one
+#
+# After every case the runners also check: serializing, parsing that again and serializing once more
+# gives the same text, the same settings_each() list and the same warnings (but "NUL bytes removed");
+# and a case without set/del serializes back to exactly its input (NUL bytes dropped).
+
+case: empty
+raw: video
+get: video = av
+get: unknown_key =
+noeach:
+set: video = hdmi
+out: video = hdmi\n
+
+case: basic
+in: # c\n
+in: video = hdmi\n
+in: tv = pal\n
+get: video = hdmi
+get: tv = pal
+raw: aspect
+get: aspect = 4:3
+each: video = hdmi
+each: tv = pal
+set: tv = ntsc
+out: # c\nvideo = hdmi\ntv = ntsc\n
+
+# ---- line ends, BOM, NUL bytes
+
+case: bom_crlf
+in: \xEF\xBB\xBFvideo = hdmi\r\ntv = pal\r\n
+get: video = hdmi
+get: tv = pal
+set: video = av
+set: aspect = 16:9
+out: \xEF\xBB\xBFvideo = av\r\ntv = pal\r\naspect = 16:9\r\n
+
+case: cr_only
+in: video = hdmi\rtv = pal\r# end
+get: video = hdmi
+get: tv = pal
+set: margin = 5
+out: video = hdmi\rtv = pal\r# end\rmargin = 5\r
+
+case: mixed_line_ends
+in: a = 1\r\nb = 2\nc = 3\rd = 4
+raw: a = 1
+raw: b = 2
+raw: c = 3
+raw: d = 4
+set: e = 5
+set: b = 9
+out: a = 1\r\nb = 9\nc = 3\rd = 4\r\ne = 5\r\n
+each: a = 1
+each: b = 9
+each: c = 3
+each: d = 4
+each: e = 5
+
+case: no_trailing_newline
+in: video = hdmi
+set: tv = pal
+out: video = hdmi\ntv = pal\n
+
+case: cr_cr_lf
+in: video = hdmi\r\r\ntv = pal
+raw: video = hdmi
+raw: tv = pal
+set: aspect = 16:9
+out: video = hdmi\r\r\ntv = pal\raspect = 16:9\r
+
+case: crlf_trailing_space
+in: video = hdmi\s\r\ntv =\s\r\n
+raw: video = hdmi
+raw: tv =
+get: tv = ntsc
+set: tv = pal
+out: video = hdmi\s\r\ntv = pal\r\n
+
+case: bom_only
+in: \xEF\xBB\xBF
+noeach:
+set: video = hdmi
+out: \xEF\xBB\xBFvideo = hdmi\n
+
+case: double_bom
+in: \xEF\xBB\xBF\xEF\xBB\xBFvideo = hdmi\n
+warn: line 1: bad key
+get: video = av
+noeach:
+
+case: nul_bytes
+in: video = hd\0mi\n\0\0\0
+warn: NUL bytes removed
+raw: video = hdmi
+out: video = hdmi\n
+
+case: nul_only
+in: \0\0
+warn: NUL bytes removed
+noeach:
+out:
+
+case: nul_and_line_warnings
+in: \0junk\n
+warn: NUL bytes removed
+warn: line 1: no '='
+
+case: append_after_unterminated_comment
+in: # last comment
+set: video = hdmi
+out: # last comment\nvideo = hdmi\n
+
+case: del_last_line
+in: a = 1\nb = 2
+del: b
+out: a = 1\n
+
+# ---- spacing, comments, quoting
+
+case: tabs
+in: \t\svideo\t=\thdmi\t\s\n
+in: \s\stv=pal\n
+raw: video = hdmi
+raw: tv = pal
+set: video = av
+set: tv = ntsc
+out: \t\svideo\t=\tav\n\s\stv=ntsc\n
+
+case: spacing_kept
+in: video\s\s\s\s=\s\s\s\shdmi\s\s\s\s# c\n
+set: video = av
+out: video\s\s\s\s=\s\s\s\sav\s\s\s\s# c\n
+
+case: comment_variants
+in: \s\s\s# indented comment\n#no space\n\t#tab\n#\n# video = hdmi\n
+noeach:
+raw: video
+set: video = hdmi
+out: \s\s\s# indented comment\n#no space\n\t#tab\n#\n# video = hdmi\nvideo = hdmi\n
+
+case: inline_comments
+in: video = hdmi # the screen\n
+in: tv = pal\t# tab comment\n
+in: aspect = 16:9#not a comment\n
+in: margin = 5 #\n
+warn: line 3: aspect must be one of 4:3, 16:9 (using the default)
+raw: video = hdmi
+raw: tv = pal
+raw: aspect = 16:9#not a comment
+get: aspect = 4:3
+raw: margin = 5
+set: video = av
+set: tv = ntsc
+set: aspect = 4:3
+set: margin = 10
+out: video = av # the screen\ntv = ntsc\t# tab comment\naspect = 4:3\nmargin = 10 #\n
+nowarn:
+
+case: hash_in_values
+in: wifi_password = abcd#efgh\n
+in: wifi_ssid = My#Net # comment\n
+in: hotspot_ssid = #\n
+raw: wifi_password = abcd#efgh
+raw: wifi_ssid = My#Net
+raw: hotspot_ssid =
+get: hotspot_ssid = StickTime
+set: wifi_password = pass #word
+set: wifi_ssid = #Home
+out: wifi_password = "pass #word"\nwifi_ssid = "#Home" # comment\nhotspot_ssid = #\n
+
+case: quoted_values
+in: wifi_ssid = "\s\sspaced\s\s"\n
+in: wifi_password = "pa\\"ss\\\\word"\n
+in: hotspot_ssid = "a#b" # c\n
+in: password = "x\\ny"\n
+in: github_token = ""\n
+in: invert = "ail"\n
+raw: wifi_ssid = \s\sspaced\s\s
+raw: wifi_password = pa"ss\\word
+raw: hotspot_ssid = a#b
+raw: password = x\\ny
+raw: github_token =
+raw: invert = ail
+set: wifi_ssid = plain
+set: hotspot_ssid = x y
+set: password = back\\slash
+set: github_token = \stok
+out: wifi_ssid = plain\nwifi_password = "pa\\"ss\\\\word"\nhotspot_ssid = x y # c\n
+out: password = back\\slash\ngithub_token = "\stok"\ninvert = "ail"\n
+
+case: quoted_escape_edges
+in: a = "abc\\\\"\n
+in: b = "\\\\\\""\n
+in: c = "\\x"\n
+in: d = "end\\\\\n
+in: e = "\\"\n
+in: f = "a\\"b"\n
+warn: line 4: unterminated quote
+warn: line 5: unterminated quote
+raw: a = abc\\
+raw: b = \\"
+raw: c = \\x
+raw: d = "end\\\\
+raw: e = "\\"
+raw: f = a"b
+set: a = x"y\\
+set: d = "end"
+out: a = x"y\\\nb = "\\\\\\""\nc = "\\x"\nd = "\\"end\\""\ne = "\\"\nf = "a\\"b"\n
+warn: line 5: unterminated quote
+
+case: unterminated_quote
+in: wifi_ssid = "Home Net\n
+in: hotspot_ssid = "abc # comment\n
+warn: line 1: unterminated quote
+warn: line 2: unterminated quote
+raw: wifi_ssid = "Home Net
+raw: hotspot_ssid = "abc
+set: wifi_ssid = Home
+out: wifi_ssid = Home\nhotspot_ssid = "abc # comment\n
+warn: line 2: unterminated quote
+
+case: lone_quote
+in: password = "\n
+warn: line 1: unterminated quote
+raw: password = "
+
+case: text_after_quote
+in: wifi_ssid = "abc" def\n
+in: hotspot_ssid = "x"y # c\n
+in: password = "a" "b"\n
+warn: line 1: text after the closing quote
+warn: line 2: text after the closing quote
+warn: line 3: text after the closing quote
+raw: wifi_ssid = "abc" def
+raw: hotspot_ssid = "x"y
+raw: password = "a" "b"
+set: password = "a" "b"
+out: wifi_ssid = "abc" def\nhotspot_ssid = "x"y # c\npassword = "a" "b"\n
+
+case: quote_then_hash_no_space
+in: wifi_ssid = "abc"# c\n
+raw: wifi_ssid = abc
+set: wifi_ssid =
+out: wifi_ssid = # c\n
+
+case: quoted_trailing_space
+in: wifi_ssid = "a b"\s\s\s\n
+raw: wifi_ssid = a b
+set: wifi_ssid = c
+out: wifi_ssid = c\n
+
+case: quoted_spaces_only
+in: wifi_ssid = "\s\s\s"\n
+raw: wifi_ssid = \s\s\s
+get: wifi_ssid = \s\s\s
+set: wifi_ssid = \s\s\s
+out: wifi_ssid = "\s\s\s"\n
+
+case: empty_values
+in: wifi_ssid =\n
+in: wifi_password =\s\n
+in: hostname =\n
+in: video =\s\s\s# x\n
+raw: wifi_ssid =
+raw: wifi_password =
+raw: hostname =
+get: hostname = sticktime
+raw: video =
+get: video = av
+set: wifi_ssid = Home
+set: wifi_password = secret12
+set: video = hdmi
+set: hostname =
+out: wifi_ssid = Home\nwifi_password = secret12\nhostname =\nvideo = hdmi\s\s\s# x\n
+
+case: set_empty_value
+in: invert =\n
+set: invert = ail, thr
+out: invert = ail, thr\n
+set: invert =
+out: invert =\n
+set: invert = \sthr
+out: invert = "\sthr"\n
+set: invert =
+out: invert =\n
+
+case: clear_keeps_comment
+in: video = hdmi\s\s# screen\n
+set: video =
+out: video =\s\s# screen\n
+get: video = av
+
+case: equals_in_value
+in: wifi_password = a=b=c=d1\npassword = ==\n
+raw: wifi_password = a=b=c=d1
+raw: password = ==
+set: password = x = y
+out: wifi_password = a=b=c=d1\npassword = x = y\n
+
+# ---- keys
+
+case: duplicates
+in: video = hdmi\ntv = pal\nvideo = av\nVIDEO = hdmi\n
+raw: video = hdmi
+each: video = hdmi
+each: tv = pal
+set: video = av
+out: video = hdmi\ntv = pal\nvideo = av\nVIDEO = av\n
+del: video
+out: tv = pal\n
+raw: video
+get: video = av
+
+case: duplicate_invalid_overridden
+in: tv = bogus\ntv = pal\nvolume = 70\nvolume = 900\n
+warn: line 4: volume must be a whole number from 0 to 100 (using the default)
+get: tv = pal
+get: volume = 70
+
+case: each_order
+in: b = 1\na = 2\nb = 3\nc = 4\na = 5\n
+each: b = 3
+each: a = 5
+each: c = 4
+
+case: uppercase_keys
+in: Video = HDMI\nTV = PAL\nWiFi_SSID = MyNet\n
+raw: video = HDMI
+get: video = hdmi
+raw: VIDEO = HDMI
+get: Video = hdmi
+get: tv = pal
+raw: wifi_ssid = MyNet
+each: video = HDMI
+each: tv = PAL
+each: wifi_ssid = MyNet
+set: tv = NTSC
+set: Video = hdmi
+out: Video = hdmi\nTV = ntsc\nWiFi_SSID = MyNet\n
+
+case: bad_keys
+in: my key = 1\n
+in: = nokey\n
+in: key with spaces=2\n
+in: ключ = 3\n
+in: .dot = 4\n
+in: -dash = 5\n
+in: ok.key-1 = 6\n
+in: _x = 7\n
+in: 9lives = 8\n
+inrep: 65 a
+in: \s=\s9\n
+in: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 10\n
+in: ke#y = 11\n
+in: \xEF\xBB\xBFbom = 12\n
+in: \s\s=\sx\n
+warn: line 1: bad key
+warn: line 2: bad key
+warn: line 3: bad key
+warn: line 4: bad key
+warn: line 5: bad key
+warn: line 6: bad key
+warn: line 10: bad key
+warn: line 12: bad key
+warn: line 13: bad key
+warn: line 14: bad key
+each: ok.key-1 = 6
+each: _x = 7
+each: 9lives = 8
+each: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 10
+set!: my\skey = x
+set!: .dot = x
+set!: -dash = x
+set!: ke#y = x
+set!: a=b = x
+set!: ключ = x
+set: \sSpaced\t = v
+raw: spaced = v
+set!: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = x
+set: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 11
+raw: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 11
+
+case: no_equals
+in: just text\n[section]\nvideo hdmi\n\s\s\n\t\n# comment\n
+warn: line 1: no '='
+warn: line 2: no '='
+warn: line 3: no '='
+raw: video
+noeach:
+set: video = hdmi
+out: just text\n[section]\nvideo hdmi\n\s\s\n\t\n# comment\nvideo = hdmi\n
+warn: line 1: no '='
+warn: line 2: no '='
+warn: line 3: no '='
+
+case: unknown_keys
+in: audio_mono = on\nfuture.key-2 = some value # c\n
+get: audio_mono = on
+raw: future.key-2 = some value
+get: missing_key =
+raw: missing_key
+bool: my_flag 0 = 0
+bool: my_flag 1 = 1
+int: my_flag 3 0 9 = 3
+num: my_flag 2.5 0 9 = 2.5
+bool: audio_mono 0 = 1
+bool: future.key-2 1 = 1
+bool: future.key-2 0 = 0
+
+case: set_semantics
+in: wifi_ssid = "Home"\s\s\s# c\n
+set: wifi_ssid = Home
+out: wifi_ssid = "Home"\s\s\s# c\n
+set!: wifi_ssid = a\nb
+set!: wifi_ssid = a\rb
+set!: wifi_ssid = \n
+out: wifi_ssid = "Home"\s\s\s# c\n
+del: nothere
+set: VIDEO = hdmi
+out: wifi_ssid = "Home"\s\s\s# c\nvideo = hdmi\n
+
+case: del_keeps_comments
+in: # video\nvideo = hdmi # inline\n# after\n
+del: video
+out: # video\n# after\n
+raw: video
+
+# ---- bytes
+
+case: non_utf8
+in: wifi_ssid = Caf\xE9\n
+in: # \xFF comment\n
+in: hotspot_ssid = Caf\xC3\xA9\n
+warn: line 1: not UTF-8
+warn: line 2: not UTF-8
+raw: wifi_ssid = Caf\xE9
+raw: hotspot_ssid = Caf\xC3\xA9
+set: wifi_ssid = Caf\xC3\xA9
+out: wifi_ssid = Caf\xC3\xA9\n# \xFF comment\nhotspot_ssid = Caf\xC3\xA9\n
+warn: line 2: not UTF-8
+
+case: utf8_edges
+in: # ok 2-byte \xC2\x80 \xDF\xBF\n
+in: # ok 3-byte \xE0\xA0\x80 \xEF\xBF\xBF\n
+in: # ok 4-byte \xF0\x90\x80\x80 \xF4\x8F\xBF\xBF\n
+in: # overlong \xC0\xAF\n
+in: # overlong 3 \xE0\x80\xAF\n
+in: # surrogate \xED\xA0\x80\n
+in: # past U+10FFFF \xF4\x90\x80\x80\n
+in: # truncated \xE2\x82\n
+in: # lone continuation \x80\n
+in: # F5 \xF5\x80\x80\x80\n
+in: # C1 \xC1\xBF\n
+in: # ED ok \xED\x9F\xBF\n
+in: # overlong 4 \xF0\x8F\xBF\xBF\n
+in: key = truncated at the end \xF0\x9F\x98
+warn: line 4: not UTF-8
+warn: line 5: not UTF-8
+warn: line 6: not UTF-8
+warn: line 7: not UTF-8
+warn: line 8: not UTF-8
+warn: line 9: not UTF-8
+warn: line 10: not UTF-8
+warn: line 11: not UTF-8
+warn: line 13: not UTF-8
+warn: line 14: not UTF-8
+raw: key = truncated at the end \xF0\x9F\x98
+
+case: long_values
+in: wifi_ssid =\s
+inrep: 5000 x
+in: \n
+in: password =\s
+inrep: 100000 p
+in: \n
+warn: line 1: wifi_ssid must be at most 32 bytes (using the default)
+rawlen: wifi_ssid = 5000
+get: wifi_ssid =
+rawlen: password = 100000
+set: wifi_ssid = short
+out: wifi_ssid = short\npassword =\s
+outrep: 100000 p
+out: \n
+
+case: password_quoting
+set: password = my pass word
+set: wifi_password = \s\slead123
+set: hotspot_password = trail123\s\s
+set: github_token = p"ss"word
+set: wifi_ssid = "quoted"
+set: x1 = back\\slash\\
+set: x2 = a #b c d e
+set: x3 = a#b c d e f
+set: x4 = p\xC3\xA4ssw\xC3\xB6rd\xE2\x82\xAC
+set: x5 = \s\\"x
+set: x6 = #hash12345
+set: x7 = a\tb c
+set: x8 = x\t#yz
+set: x9 = "
+set: x10 = \\
+set: x11 = =
+set: x12 = ##
+set: x13 = a\s
+set: x14 = \s"#\\\sx\s
+out: password = my pass word\n
+out: wifi_password = "\s\slead123"\n
+out: hotspot_password = "trail123\s\s"\n
+out: github_token = p"ss"word\n
+out: wifi_ssid = "\\"quoted\\""\n
+out: x1 = back\\slash\\\n
+out: x2 = "a #b c d e"\n
+out: x3 = a#b c d e f\n
+out: x4 = p\xC3\xA4ssw\xC3\xB6rd\xE2\x82\xAC\n
+out: x5 = "\s\\\\\\"x"\n
+out: x6 = "#hash12345"\n
+out: x7 = a\tb c\n
+out: x8 = "x\t#yz"\n
+out: x9 = "\\""\n
+out: x10 = \\\n
+out: x11 = =\n
+out: x12 = "##"\n
+out: x13 = "a\s"\n
+out: x14 = "\s\\"#\\\\\sx\s"\n
+raw: x5 = \s\\"x
+raw: wifi_password = \s\slead123
+raw: x14 = \s"#\\\sx\s
+nowarn:
+
+case: ssid_spaces
+in: wifi_ssid =\s\s\sMy Net\s\s\s\n
+raw: wifi_ssid = My Net
+set: wifi_ssid = \s\sMy Net\s\s
+out: wifi_ssid =\s\s\s"\s\sMy Net\s\s"\n
+set: hotspot_ssid = \sCaf\xC3\xA9\s
+out: wifi_ssid =\s\s\s"\s\sMy Net\s\s"\nhotspot_ssid = "\sCaf\xC3\xA9\s"\n
+raw: hotspot_ssid = \sCaf\xC3\xA9\s
+
+# ---- effective values: validation, defaults, normalization
+
+case: known_invalid
+in: video = vga\n
+in: tv = PAL\n
+in: margin = 50\n
+in: margin2 = x\n
+in: stick_menus = maybe\n
+in: volume = -5\n
+in: volume = 101\n
+in: hostname = -bad-\n
+in: wifi_country = USA\n
+in: channel_order = AETX\n
+in: invert = ail, foo\n
+in: wifi_module_ip = 10.0.0.256\n
+in: hdmi_mode = 1280x720p\n
+in: latency = 0.5\n
+in: script = /SCRIPTS/../x.lua\n
+in: input = ble\n
+in: wifi_interval_us = 999\n
+in: wifi_password = short\n
+warn: line 1: video must be one of av, hdmi (using the default)
+warn: line 3: margin must be a whole number from 0 to 20 (using the default)
+warn: line 5: stick_menus must be on or off (using the default)
+warn: line 7: volume must be a whole number from 0 to 100 (using the default)
+warn: line 8: hostname must be 1-63 letters, digits or hyphens, not starting or ending with a hyphen (using the default)
+warn: line 9: wifi_country must be a two-letter country code (using the default)
+warn: line 10: channel_order must be the letters A, E, T and R in any order (using the default)
+warn: line 11: invert must be a list of ail, ele, thr, rud (using the default)
+warn: line 12: wifi_module_ip must be an IPv4 address (like 192.168.1.50) or empty (using the default)
+warn: line 13: hdmi_mode must be auto, WxH or WxH@Hz (like 1280x720@60) (using the default)
+warn: line 14: latency must be auto, game or a number from 0 to 0.2 (using the default)
+warn: line 15: script must be an SD path ending in .lua (like /SCRIPTS/TOOLS/StickTime.lua) (using the default)
+warn: line 16: input must be one of auto, wifi, usb, bluetooth, gamepad, joystick, keyboard (using the default)
+warn: line 17: wifi_interval_us must be a whole number from 1000 to 100000 (using the default)
+warn: line 18: wifi_password must be empty, 8-63 characters or 64 hex digits (using the default)
+get: video = av
+raw: video = vga
+get: tv = pal
+raw: tv = PAL
+get: margin = 0
+get: margin2 = x
+get: stick_menus = on
+get: volume = 70
+get: hostname = sticktime
+get: wifi_country = US
+get: channel_order = AETR
+get: invert =
+get: wifi_module_ip =
+get: hdmi_mode = auto
+get: latency = 0
+get: script = /SCRIPTS/TOOLS/StickTime.lua
+get: input = auto
+get: wifi_interval_us = 4000
+get: wifi_password =
+int: margin 3 0 20 = 0
+set: margin = 12
+get: margin = 12
+
+case: normalization
+in: stats = YES\nvolume = 050\nwifi_country = de\nchannel_order = taer\n
+in: hdmi_mode = 1280X720@60\nlatency = AUTO\nsound = 0\npause_channel = +5\n
+get: stats = on
+raw: stats = YES
+get: volume = 50
+raw: volume = 050
+get: wifi_country = DE
+get: channel_order = TAER
+get: hdmi_mode = 1280x720@60
+get: latency = auto
+get: sound = off
+get: pause_channel = 5
+set: video = HDMI
+set: stick_menus = YES
+set: ssh = 0
+set: margin = +07
+set: wifi_country = hr
+set: channel_order = rtea
+set: hdmi_mode = 1920X1080@59.94
+set: latency = GAME
+set: hostname = MyPi
+set: music_source = SONGS
+set: invert = AIL, Thr
+set: aspect = 4:3
+raw: video = hdmi
+raw: stick_menus = on
+raw: ssh = off
+raw: margin = 7
+raw: wifi_country = HR
+raw: channel_order = RTEA
+raw: hdmi_mode = 1920x1080@59.94
+raw: latency = game
+raw: hostname = MyPi
+raw: music_source = songs
+raw: invert = AIL, Thr
+set: tv = VGA
+raw: tv = VGA
+get: tv = ntsc
+warn: line 17: tv must be one of ntsc, pal, pal60, ntsc-j, pal-m, pal-n, ntsc-443, secam (using the default)
+out: stats = YES\nvolume = 050\nwifi_country = HR\nchannel_order = RTEA\n
+out: hdmi_mode = 1920x1080@59.94\nlatency = game\nsound = 0\npause_channel = +5\n
+out: video = hdmi\nstick_menus = on\nssh = off\nmargin = 7\nhostname = MyPi\nmusic_source = songs\n
+out: invert = AIL, Thr\naspect = 4:3\ntv = VGA\n
+
+case: hotspot_password_empty_auto
+in: hotspot_password =\n
+warn: line 1: hotspot_password is empty but hotspot is not off (using the default)
+get: hotspot_password = sticktime
+raw: hotspot_password =
+
+case: hotspot_password_empty_off
+in: hotspot = off\nhotspot_password =\n
+get: hotspot_password =
+
+case: hotspot_password_empty_OFF_upper
+in: hotspot = OFF\nhotspot_password =\n
+get: hotspot_password =
+get: hotspot = off
+
+case: hotspot_password_short
+in: hotspot_password = short\n
+warn: line 1: hotspot_password must be 8-63 characters (using the default)
+get: hotspot_password = sticktime
+
+case: hotspot_password_empty_on_quoted
+in: hotspot = on\nhotspot_password = ""\n
+warn: line 2: hotspot_password is empty but hotspot is not off (using the default)
+get: hotspot_password = sticktime
+set: hotspot = off
+nowarn:
+get: hotspot_password =
+set: hotspot = auto
+warn: line 2: hotspot_password is empty but hotspot is not off (using the default)
+del: hotspot_password
+nowarn:
+get: hotspot_password = sticktime
+
+case: hotspot_password_empty_bad_hotspot
+in: hotspot = bogus\nhotspot_password =\n
+warn: line 1: hotspot must be one of auto, on, off (using the default)
+warn: line 2: hotspot_password is empty but hotspot is not off (using the default)
+get: hotspot = auto
+get: hotspot_password = sticktime
+
+case: get_typed
+in: margin = 15\nvolume = abc\npause_channel = 16\nx_int = 2147483648\ny_int = -2147483647\n
+in: z = 1e2\nw = .5\nb1 = Yes\nb2 = OFF\nb3 = 2\nn = nan\ni = inf\nneg = -3\nmin_int = -2147483648\n
+warn: line 2: volume must be a whole number from 0 to 100 (using the default)
+int: margin 0 0 20 = 15
+int: margin 0 0 10 = 10
+int: margin 0 16 20 = 16
+int: volume 33 0 100 = 70
+int: pause_channel 5 0 16 = 16
+int: x_int 5 0 9 = 5
+int: y_int 0 -2147483647 0 = -2147483647
+int: min_int 4 -9 9 = 4
+int: nokey 42 0 100 = 42
+int: z 1 0 1000 = 1
+int: neg 0 -10 10 = -3
+int: neg 0 0 10 = 0
+num: z 0 0 1000 = 100
+num: w 0 0 1 = 0.5
+num: margin 0 0 100 = 15
+num: margin 0 0 10 = 10
+num: n 7 0 10 = 7
+num: i 7 0 10 = 7
+num: nokey 1.5 0 10 = 1.5
+num: latency 9 0 1 = 0
+num: neg 0 -1 1 = -1
+bool: b1 0 = 1
+bool: b2 1 = 0
+bool: b3 1 = 1
+bool: b3 0 = 0
+bool: stick_menus 0 = 1
+bool: ssh 1 = 0
+bool: nokey 1 = 1
+bool: nokey 0 = 0
+
+# ---- settings_validate
+case: validate
+valid: video = av
+valid: video = HDMI
+invalid: video =
+invalid: video = vga
+invalid: video = \sav
+invalid: video = av\s
+valid: tv = ntsc-j
+valid: tv = secam
+valid: tv = NTSC-443
+invalid: tv = ntscj
+valid: aspect = 16:9
+invalid: aspect = 16/9
+valid: av_mode = progressive
+valid: fonts = hd
+valid: show_ip = off
+valid: hotspot = auto
+valid: input = keyboard
+invalid: input = ble
+valid: sd_write = all
+invalid: sd_write = none
+valid: music_source = songs
+valid: audio_out = jack
+invalid: audio_out = usb
+valid: margin = 0
+valid: margin = 20
+valid: margin = +5
+valid: margin = 007
+valid: margin = -0
+invalid: margin = 21
+invalid: margin = -1
+invalid: margin = 5.0
+invalid: margin = \s5
+invalid: margin =
+invalid: margin = 0x5
+invalid: margin = 1e1
+invalid: margin = +
+invalid: margin = 99999999999
+invalid: margin = --1
+valid: pause_channel = 0
+valid: pause_channel = 16
+invalid: pause_channel = 17
+valid: wifi_interval_us = 1000
+valid: wifi_interval_us = 100000
+invalid: wifi_interval_us = 999
+invalid: wifi_interval_us = 100001
+valid: stick_mode = 1
+valid: stick_mode = 4
+invalid: stick_mode = 0
+invalid: stick_mode = 5
+valid: volume = 100
+invalid: volume = 101
+valid: music_volume = 0
+valid: stick_menus = on
+valid: stick_menus = off
+valid: stick_menus = yes
+valid: stick_menus = no
+valid: stick_menus = true
+valid: stick_menus = false
+valid: stick_menus = 1
+valid: stick_menus = 0
+valid: ssh = ON
+valid: ssh = Yes
+valid: ssh = TRUE
+invalid: ssh = enabled
+invalid: ssh = 2
+invalid: ssh =
+invalid: ssh = \son
+invalid: ssh = y
+invalid: ssh = n
+invalid: ssh = 01
+valid: channel_order = AETR
+valid: channel_order = TAER
+valid: channel_order = aetr
+valid: channel_order = RETA
+invalid: channel_order = AETRR
+invalid: channel_order = AET
+invalid: channel_order = AETX
+invalid: channel_order = AAER
+invalid: channel_order = AETR\s
+invalid: channel_order =
+invalid: channel_order = A,E,T,R
+valid: invert =
+valid: invert = ail
+valid: invert = ail, thr
+valid: invert = a,t
+valid: invert = roll/pitch/throttle/yaw
+valid: invert = AILERON
+valid: invert = ailerons
+valid: invert = ele;rud
+valid: invert = at
+valid: invert = ET
+valid: invert = tear
+valid: invert = none
+valid: invert = ail\s\sthr
+valid: invert = elevator rudder yaw
+valid: invert = , ,
+valid: invert = ail1thr
+invalid: invert = foo
+invalid: invert = ail, foo
+invalid: invert = aetra
+invalid: invert = ailx
+invalid: invert = ch1
+invalid: invert = averyveryverylongword
+invalid: invert = aa x
+valid: hostname = sticktime
+valid: hostname = a
+valid: hostname = A1
+valid: hostname = my-pi
+valid: hostname = 1pi
+valid: hostname = 123
+valid: hostname = hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+invalid: hostname = hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+invalid: hostname =
+invalid: hostname = -pi
+invalid: hostname = pi-
+invalid: hostname = my_pi
+invalid: hostname = my pi
+invalid: hostname = pi.local
+invalid: hostname = \xC3\xBC
+valid: wifi_country = US
+valid: wifi_country = hr
+valid: wifi_country = Gb
+invalid: wifi_country =
+invalid: wifi_country = U
+invalid: wifi_country = USA
+invalid: wifi_country = U1
+invalid: wifi_country = \s\s
+valid: hotspot_password =
+valid: hotspot_password = 12345678
+valid: hotspot_password = pass word
+valid: hotspot_password = ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+invalid: hotspot_password = 1234567
+invalid: hotspot_password = pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+valid: wifi_password =
+valid: wifi_password = 12345678
+valid: wifi_password = ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+valid: wifi_password = 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+valid: wifi_password = 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+invalid: wifi_password = 1234567
+invalid: wifi_password = 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg
+invalid: wifi_password = 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0
+invalid: wifi_password = pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+valid: wifi_password = p\xC3\xA4ssw\xC3\xB6
+invalid: wifi_password = p\xC3\xA4ss\xC3\xB6
+valid: wifi_password = \s\s\s\s\s\s\s\s
+valid: wifi_password = a"b#c\\d e
+valid: wifi_module_ip =
+valid: wifi_module_ip = 10.0.0.1
+valid: wifi_module_ip = 192.168.1.50
+valid: wifi_module_ip = 0.0.0.0
+valid: wifi_module_ip = 255.255.255.255
+invalid: wifi_module_ip = 256.0.0.1
+invalid: wifi_module_ip = 10.0.0
+invalid: wifi_module_ip = 10.0.0.1.5
+invalid: wifi_module_ip = 010.0.0.1
+invalid: wifi_module_ip = 10.0.0.1\s
+invalid: wifi_module_ip = a.b.c.d
+invalid: wifi_module_ip = 1..2.3
+invalid: wifi_module_ip = 1.2.3.4/24
+invalid: wifi_module_ip = ::1
+invalid: wifi_module_ip = 1234.1.1.1
+invalid: wifi_module_ip = 10.0.0.
+invalid: wifi_module_ip = +1.2.3.4
+valid: hdmi_mode = auto
+valid: hdmi_mode = AUTO
+valid: hdmi_mode = 1280x720
+valid: hdmi_mode = 1920X1080
+valid: hdmi_mode = 1280x720@60
+valid: hdmi_mode = 720x480@59.94
+valid: hdmi_mode = 1x1
+valid: hdmi_mode = 9999x9999@999.999
+invalid: hdmi_mode =
+invalid: hdmi_mode = 1280x
+invalid: hdmi_mode = x720
+invalid: hdmi_mode = 1280*720
+invalid: hdmi_mode = 1280x720@
+invalid: hdmi_mode = 1280x720@0
+invalid: hdmi_mode = 1280x720@0.0
+invalid: hdmi_mode = 0640x480
+invalid: hdmi_mode = 10000x720
+invalid: hdmi_mode = 1280x720@1000
+invalid: hdmi_mode = 1280x720@60.1234
+invalid: hdmi_mode = 1280\sx\s720
+invalid: hdmi_mode = 1280x720@60Hz
+invalid: hdmi_mode = 1280x720@.5
+invalid: hdmi_mode = 1280x720@60.
+invalid: hdmi_mode = autox
+valid: latency = 0
+valid: latency = 0.2
+valid: latency = 0.02
+valid: latency = .05
+valid: latency = auto
+valid: latency = AUTO
+valid: latency = game
+valid: latency = 2e-2
+valid: latency = +0.1
+valid: latency = 0.
+valid: latency = 0.200
+valid: latency = -0
+valid: latency = 2E-1
+invalid: latency = 0.21
+invalid: latency = -0.01
+invalid: latency =
+invalid: latency = nan
+invalid: latency = inf
+invalid: latency = 0,02
+invalid: latency = 1e
+invalid: latency = e1
+invalid: latency = .
+invalid: latency = 0x1
+invalid: latency = \s0
+invalid: latency = 1_0
+invalid: latency = 0.1.2
+valid: script = /SCRIPTS/TOOLS/StickTime.lua
+valid: script = /x.lua
+valid: script = /A.LUA
+valid: script = /SCRIPTS/TOOLS/My Tool.lua
+invalid: script =
+invalid: script = SCRIPTS/TOOLS/x.lua
+invalid: script = /x.luac
+invalid: script = /../x.lua
+invalid: script = /a..b.lua
+invalid: script = /SCRIPTS\\x.lua
+invalid: script = /.lua
+invalid: script = /x\x01.lua
+invalid: script = /x\x7F.lua
+valid: wifi_ssid =
+valid: wifi_ssid = ssssssssssssssssssssssssssssssss
+valid: wifi_ssid = \slead
+invalid: wifi_ssid = sssssssssssssssssssssssssssssssss
+valid: hotspot_ssid = a
+valid: hotspot_ssid = ssssssssssssssssssssssssssssssss
+invalid: hotspot_ssid =
+invalid: hotspot_ssid = sssssssssssssssssssssssssssssssss
+valid: password = \sx #y "z\\
+valid: github_token = github_pat_ABC123
+valid: some_unknown = anything at all
+valid: SOME_UNKNOWN = x
+valid: Video = HDMI
+invalid: Video = vga
+invalid: some_unknown = a\nb
+invalid: video = av\r
+invalid: password = a\nb
+
+# every default passes its own validation
+case: defaults_valid
+get: video = av
+valid: video = av
+get: tv = ntsc
+valid: tv = ntsc
+get: aspect = 4:3
+valid: aspect = 4:3
+get: av_mode = interlaced
+valid: av_mode = interlaced
+get: hdmi_mode = auto
+valid: hdmi_mode = auto
+get: margin = 0
+valid: margin = 0
+get: fonts = auto
+valid: fonts = auto
+get: show_ip = auto
+valid: show_ip = auto
+get: wifi_ssid =
+valid: wifi_ssid =
+get: wifi_password =
+valid: wifi_password =
+get: wifi_country = US
+valid: wifi_country = US
+get: hotspot = auto
+valid: hotspot = auto
+get: hotspot_ssid = StickTime
+valid: hotspot_ssid = StickTime
+get: hotspot_password = sticktime
+valid: hotspot_password = sticktime
+get: input = auto
+valid: input = auto
+get: channel_order = AETR
+valid: channel_order = AETR
+get: invert =
+valid: invert =
+get: pause_channel = 5
+valid: pause_channel = 5
+get: stick_menus = on
+valid: stick_menus = on
+get: wifi_module_ip =
+valid: wifi_module_ip =
+get: wifi_interval_us = 4000
+valid: wifi_interval_us = 4000
+get: bluetooth = on
+valid: bluetooth = on
+get: latency = 0
+valid: latency = 0
+get: stick_mode = 2
+valid: stick_mode = 2
+get: script = /SCRIPTS/TOOLS/StickTime.lua
+valid: script = /SCRIPTS/TOOLS/StickTime.lua
+get: stats = off
+valid: stats = off
+get: sd_write = game
+valid: sd_write = game
+get: sound = on
+valid: sound = on
+get: volume = 70
+valid: volume = 70
+get: music = off
+valid: music = off
+get: music_volume = 60
+valid: music_volume = 60
+get: music_source = generated
+valid: music_source = generated
+get: audio_out = auto
+valid: audio_out = auto
+get: audio_mono = off
+valid: audio_mono = off
+get: vtx = off
+valid: vtx = off
+get: vtx_port = gpio4
+valid: vtx_port = gpio4
+get: vtx_band =
+valid: vtx_band =
+get: vtx_channel = 1
+valid: vtx_channel = 1
+get: vtx_freq = 0
+valid: vtx_freq = 0
+get: vtx_power = 0
+valid: vtx_power = 0
+get: vtx_pit = off
+valid: vtx_pit = off
+get: vtx_send_only = off
+valid: vtx_send_only = off
+get: hostname = sticktime
+valid: hostname = sticktime
+get: ssh = off
+valid: ssh = off
+get: password =
+valid: password =
+get: auto_update = off
+valid: auto_update = off
+get: github_token =
+valid: github_token =
+
+# VTX control: the band is one letter or digit of the VTX table, stored upper-case
+case: vtx_keys
+in: vtx = Auto\nvtx_band = r\nvtx_channel = 08\nvtx_pit = YES\nvtx_freq = 5800\n
+get: vtx = auto
+get: vtx_band = R
+raw: vtx_band = r
+get: vtx_channel = 8
+get: vtx_pit = on
+get: vtx_freq = 5800
+get: vtx_power = 0
+valid: vtx = smartaudio
+valid: vtx = TRAMP
+invalid: vtx = msp
+valid: vtx_port = uart5
+valid: vtx_port = GPIO17
+invalid: vtx_port = uart2
+invalid: vtx_port = gpio5
+invalid: vtx_port = gpio2
+valid: vtx_band =
+valid: vtx_band = A
+valid: vtx_band = l
+valid: vtx_band = 3
+invalid: vtx_band = AB
+invalid: vtx_band = -
+invalid: vtx_band = \s
+invalid: vtx_band = \xC3\x84
+valid: vtx_channel = 8
+invalid: vtx_channel = 9
+invalid: vtx_channel = 0
+valid: vtx_freq = 6200
+invalid: vtx_freq = 6201
+invalid: vtx_freq = -1
+valid: vtx_power = 8
+invalid: vtx_power = 9
+valid: vtx_send_only = yes
+invalid: vtx_pit = maybe
+set: vtx_band = b
+get: vtx_band = B

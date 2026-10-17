@@ -1,0 +1,322 @@
+#!/usr/bin/python3 -I
+"""sticktime-wifi: WiFi helper for the host's web UI (runs outside the frame loop).
+
+    sticktime-wifi scan                 scan; prints {"networks":[...],"at":ms,...} (also cached in
+                                        /run/sticktime/wifi-scan.json); exit 0 ok, 2 no WiFi device, 1 error
+    sticktime-wifi apply [--hidden]     rewrite the client profile from sticktime.txt and connect to it
+                                        in the background (the hotspot comes back if that fails);
+                                        --hidden: the network does not broadcast its name (saved as
+                                        wifi_hidden = on). Ends a module-AP session.
+    sticktime-wifi module-ap elrs|tbs [PASSWORD]
+                                        join the ELRS ("ExpressLRS TX" / expresslrs, module 10.0.0.1) or
+                                        TBS ("tbs_crossfire_..." / 192.168.4.1) module's own access point
+                                        and set wifi_module_ip
+    sticktime-wifi connect PROFILE      (internal) bring a profile up, fall back to the hotspot
+  options: --root DIR (tests)
+
+Every command prints one JSON object on stdout. nmcli's terse output is parsed with its escapes
+(':' and '\\' inside SSIDs).
+"""
+import json
+import os
+import re
+import signal
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import stlib as st  # noqa: E402
+
+CACHE = st.STATE + "/wifi-scan.json"
+HOTSPOT_PID = st.STATE + "/hotspot.pid"
+MODULES = {
+    # kind: (ssid matcher, default password, module ip)
+    "elrs": (re.compile(r"^ExpressLRS TX\b"), "expresslrs", "10.0.0.1"),
+    "tbs": (re.compile(r"^tbs_(crossfire|tracer)_", re.I), None, "192.168.4.1"),
+}
+
+
+def out(obj, rc=0):
+    print(json.dumps(obj, ensure_ascii=False))
+    return rc
+
+
+def security_of(s):
+    s = (s or "").upper()
+    if not s or s == "--":
+        return "open"
+    if "WPA3" in s or "SAE" in s:
+        return "WPA3" if "WPA2" not in s else "WPA2/WPA3"
+    if "WPA2" in s or "802.1X" in s and "WPA" in s:
+        return "WPA2" + ("-Enterprise" if "802.1X" in s else "")
+    if "WPA" in s:
+        return "WPA"
+    if "WEP" in s:
+        return "WEP"
+    return s.split()[0]
+
+
+def band_of(freq):
+    m = re.match(r"\s*(\d+)", freq or "")
+    if not m:
+        return ""
+    f = int(m.group(1))
+    if 2400 <= f < 2500:
+        return "2.4"
+    if 4900 <= f < 5900:
+        return "5"
+    if 5925 <= f < 7200:
+        return "6"
+    return ""
+
+
+def parse_scan(text, known_ssid):
+    """nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY,CHAN,FREQ output -> networks (one per SSID, strongest)"""
+    best = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        f = st.nm_split(line)
+        if len(f) < 6:
+            continue
+        inuse, ssid, sig, sec, chan, freq = f[:6]
+        if not ssid:
+            continue                                     # hidden networks have no name to show
+        try:
+            signal_ = int(sig)
+        except ValueError:
+            signal_ = 0
+        try:
+            ch = int(chan)
+        except ValueError:
+            ch = 0
+        n = {"ssid": ssid, "signal": max(0, min(100, signal_)), "security": security_of(sec),
+             "band": band_of(freq), "chan": ch, "known": ssid == known_ssid, "active": inuse.strip() == "*"}
+        old = best.get(ssid)
+        if old is None or n["signal"] > old["signal"] or (n["active"] and not old["active"]):
+            if old is not None:
+                n["active"] = n["active"] or old["active"]
+                if old["band"] != n["band"] and old["band"]:
+                    n["bands"] = sorted({old["band"], n["band"]} | set(old.get("bands", [])))
+            best[ssid] = n
+        elif old["band"] != n["band"] and n["band"]:
+            old["bands"] = sorted({old["band"], n["band"]} | set(old.get("bands", [])))
+    return sorted(best.values(), key=lambda n: (-n["active"], -n["signal"], n["ssid"].lower()))
+
+
+def scan(rescan=True):
+    s = st.load_settings(repair=False)
+    known = s.get("wifi_ssid")
+    devs = st.wifi_devices()
+    res = {"networks": [], "at": st.now_ms()}
+    if not devs:
+        if not st.nm_running():
+            res["error"] = "NetworkManager is not running"
+            return res, 1
+        res["error"] = "no WiFi device"
+        cache_write(res)
+        return res, 2
+    dev, state, conn = devs[0]
+    res["device"] = dev
+    ap_mode = conn == st.HOTSPOT_ID
+    fields = ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,CHAN,FREQ", "device", "wifi", "list", "ifname", dev]
+    r = None
+    if rescan and not ap_mode:
+        r = st.run(fields + ["--rescan", "yes"], timeout=25, quiet=True)
+    if r is None or not r.ok:
+        # busy scanning, or in AP mode (brcmfmac can't scan while it is an access point): what NM knows
+        r = st.run(fields + ["--rescan", "no"], timeout=10, quiet=True)
+    if not r.ok:
+        old = st.read_json(CACHE)
+        if old and old.get("networks"):
+            old["cached"] = True
+            old["error"] = "scan failed: showing the last results"
+            return old, 0
+        res["error"] = (r.stderr or r.stdout).strip()[:200] or "scan failed"
+        return res, 1
+    res["networks"] = parse_scan(r.stdout, known)
+    if ap_mode:
+        old = st.read_json(CACHE) or {}
+        if not res["networks"] and old.get("networks"):
+            old["cached"] = True
+            old["note"] = "the hotspot is on: these are the networks seen before it started"
+            return old, 0
+        res["note"] = "the hotspot is on: the list may be old"
+    cache_write(res)
+    return res, 0
+
+
+def cache_write(res):
+    try:
+        st.write_json(CACHE, res)
+    except OSError as e:
+        st.log(f"cannot write {CACHE}: {e}")
+
+
+def poke_hotspot_daemon():
+    """SIGUSR1 = 'try the client network now'. False when the daemon isn't running."""
+    try:
+        pid = int((st.read_text(HOTSPOT_PID, "") or "").strip())
+        os.kill(pid, signal.SIGUSR1)
+        return True
+    except (ValueError, OSError, AttributeError):
+        return False
+
+
+def seen_in_scan(ssid):
+    """True when the last scan saw this network by name (so it is not a hidden one)"""
+    old = st.read_json(CACHE) or {}
+    return any(isinstance(n, dict) and n.get("ssid") == ssid for n in old.get("networks") or [])
+
+
+def remember_hidden(s, ssid, hidden_flag):
+    """wifi_hidden in sticktime.txt (an extra key the host keeps): the web UI's 'hidden network'
+    box says --hidden; without it, a network the last scan saw by name is not hidden"""
+    cur = s.bool("wifi_hidden") if s.get("wifi_hidden") else False
+    want = cur
+    if hidden_flag:
+        want = True
+    elif cur and ssid and seen_in_scan(ssid):
+        want = False
+    if want != cur:
+        try:
+            st.update_settings({"wifi_hidden": "on" if want else "off"})
+        except (OSError, ValueError) as e:
+            st.log(f"cannot save wifi_hidden: {e}")
+    return want
+
+
+def apply(hidden_flag=False):
+    s = st.load_settings(repair=False)
+    ssid, psk = s.get("wifi_ssid"), s.get("wifi_password")
+    hidden = remember_hidden(s, ssid, hidden_flag)
+    if ssid:
+        err = st.ssid_problem(ssid) or (st.psk_problem(psk) if psk else None)
+        if err:
+            return out({"ok": False, "error": "BadRequest", "message": err}, 1)
+        st.write_keyfile(st.WIFI_ID, st.keyfile_client(ssid, psk, hidden))
+    else:
+        st.remove(st.keyfile_path(st.WIFI_ID))
+    # joining a normal network ends a module-AP session: its profile goes, and the module IP preset
+    # (10.0.0.1 / 192.168.4.1) would point at nothing on a home network
+    module_profile = st.remove(st.keyfile_path(st.MODULE_ID))
+    if s.get("wifi_module_ip").strip() in {ip for _p, _pw, ip in MODULES.values()}:
+        try:
+            st.update_settings({"wifi_module_ip": ""})
+        except (OSError, ValueError) as e:
+            st.log(f"cannot clear wifi_module_ip: {e}")
+    cc = s.get("wifi_country").strip().upper()
+    if re.match(r"^[A-Z]{2}$", cc) and st.have("iw"):
+        st.run(["iw", "reg", "set", cc], quiet=True)
+    # the country also goes into cmdline.txt for the next boot (no reboot for that)
+    setup = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sticktime-setup")
+    if not st.nm_running():
+        return out({"ok": True, "message": "saved; NetworkManager is not running, it will connect at the next boot"})
+    st.run(["nmcli", "radio", "wifi", "on"], quiet=True)
+    if module_profile:
+        st.run(["nmcli", "connection", "delete", "id", st.MODULE_ID], quiet=True)
+    if ssid:
+        st.run(["nmcli", "connection", "load", st.p(st.keyfile_path(st.WIFI_ID))], quiet=True)
+    else:
+        st.run(["nmcli", "connection", "delete", "id", st.WIFI_ID], quiet=True)
+        st.run(["nmcli", "connection", "reload"], quiet=True)
+        return out({"ok": True, "message": "WiFi network removed"})
+    if os.path.exists(setup) and st.ROOT in ("", "/"):
+        st.spawn_background([sys.executable, "-I", setup, "apply"])
+    st.hold(60)
+    if not poke_hotspot_daemon():
+        st.spawn_background([sys.executable, "-I", os.path.realpath(__file__)]
+                            + (["--root", st.ROOT] if st.ROOT not in ("", "/") else []) + ["connect", st.WIFI_ID])
+    return out({"ok": True, "message": f"connecting to {ssid}; the hotspot comes back if that fails"})
+
+
+def connect(profile):
+    """bring a profile up (the hotspot down first: brcmfmac does one mode at a time)"""
+    st.hold(60)
+    devs = st.wifi_devices()
+    if devs and devs[0][2] == st.HOTSPOT_ID and profile != st.HOTSPOT_ID:
+        st.run(["nmcli", "connection", "down", "id", st.HOTSPOT_ID], quiet=True)
+    r = st.run(["nmcli", "-w", "30", "connection", "up", "id", profile], timeout=40)
+    if r.ok:
+        st.log(f"connected: {profile}")
+        st.hold(0)
+        return out({"ok": True})
+    s = st.load_settings(repair=False)
+    if s.enum("hotspot", ("auto", "on", "off")) != "off":
+        st.log(f"{profile} failed: hotspot back on")
+        st.run(["nmcli", "-w", "20", "connection", "up", "id", st.HOTSPOT_ID], timeout=30)
+    st.hold(0)
+    return out({"ok": False, "error": "Internal", "message": f"could not connect ({profile})"}, 1)
+
+
+def module_ap(kind, password=None):
+    if kind not in MODULES:
+        return out({"ok": False, "error": "BadRequest", "message": "module-ap needs elrs or tbs"}, 2)
+    pat, default_pw, ip = MODULES[kind]
+    res, rc = scan(rescan=True)
+    if rc == 2:
+        return out({"ok": False, "error": "NotFound", "message": "no WiFi device"}, 1)
+    cands = [n for n in res.get("networks", []) if pat.search(n["ssid"])]
+    if not cands:
+        hint = ("turn on the module's WiFi (ELRS Lua script: WiFi Connectivity > Enable WiFi)" if kind == "elrs"
+                else "turn on the TBS module's WiFi (Agent Lite: WiFi module > AP mode)")
+        return out({"ok": False, "error": "NotFound", "message": f"the module's WiFi was not found: {hint}"}, 1)
+    n = max(cands, key=lambda x: x["signal"])
+    if n["security"] == "open":
+        psk = ""
+    else:
+        psk = password or default_pw
+        if not psk:
+            return out({"ok": False, "error": "BadRequest",
+                        "message": f"{n['ssid']} has a password: join it on the WiFi page with its password"}, 1)
+        err = st.psk_problem(psk)
+        if err:
+            return out({"ok": False, "error": "BadRequest", "message": err}, 1)
+    st.write_keyfile(st.MODULE_ID, st.keyfile_module(n["ssid"], psk))
+    # the host saved it already (POST /api/wifi/module-ap): write only when it differs (a run from a shell)
+    if st.load_settings(repair=False).get("wifi_module_ip").strip() != ip:
+        try:
+            st.update_settings({"wifi_module_ip": ip})
+        except (OSError, ValueError) as e:
+            st.log(f"cannot set wifi_module_ip: {e}")
+    if st.nm_running():
+        st.run(["nmcli", "connection", "load", st.p(st.keyfile_path(st.MODULE_ID))], quiet=True)
+        st.hold(90)
+        st.spawn_background([sys.executable, "-I", os.path.realpath(__file__)]
+                            + (["--root", st.ROOT] if st.ROOT not in ("", "/") else []) + ["connect", st.MODULE_ID])
+    return out({"ok": True, "ssid": n["ssid"], "module_ip": ip,
+                "message": f"joining {n['ssid']}; the module is at {ip} (no internet while connected to it)"})
+
+
+def main(argv):
+    args = list(argv)
+    while args and args[0].startswith("--"):
+        a = args.pop(0)
+        if a == "--root" and args:
+            st.set_root(args.pop(0))
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+    if not args:
+        print(__doc__, file=sys.stderr)
+        return 2
+    cmd = args.pop(0)
+    try:
+        if cmd == "scan":
+            res, rc = scan(rescan="--no-rescan" not in args)
+            return out(res, rc)
+        if cmd == "apply":
+            return apply(hidden_flag="--hidden" in args)
+        if cmd == "connect" and args:
+            return connect(args[0])
+        if cmd == "module-ap" and args:
+            return module_ap(args[0].lower(), args[1] if len(args) > 1 else None)
+    except Exception as e:                                # noqa: BLE001  (the web UI wants JSON either way)
+        st.log(f"{cmd}: {type(e).__name__}: {e}")
+        return out({"ok": False, "error": "Internal", "message": f"{type(e).__name__}: {e}"}, 1)
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

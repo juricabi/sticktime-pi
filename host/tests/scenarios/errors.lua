@@ -1,0 +1,36 @@
+-- Error screen and recovery: the script closing itself, a syntax error, a runtime error, a missing script.
+dofile(SCEN_DIR .. "/lib.lua")
+frames(30)
+local good = sd_read("/SCRIPTS/TOOLS/StickTime.lua")
+check(good and #good > 1000, "game present")
+-- the script closes (EXIT in the main menu): the host starts it again
+key("exit") frames(3)
+expect_state(MENU, "restarted after closing")
+no_error("close")
+-- syntax error
+sd_write("/SCRIPTS/TOOLS/StickTime.lua", "local x = = 1\n")
+reload()
+frames(5)
+check(err() and err():find("Syntax"), "syntax error shown: " .. tostring(err()))
+shot("error_syntax")
+-- fix it and press ENTER
+sd_write("/SCRIPTS/TOOLS/StickTime.lua", good)
+key("enter") frames(5)
+no_error("after fixing")
+expect_state(MENU, "menu after fixing")
+-- a tool that fails in run()
+sd_write("/SCRIPTS/TOOLS/Bad.lua", "local n = 0\nreturn { run = function() n = n + 1; if n > 3 then error('boom') end; lcd.clear(); return 0 end }\n")
+setting("script", "/SCRIPTS/TOOLS/Bad.lua")
+frames(10)
+check(err() and err():find("boom"), "runtime error shown: " .. tostring(err()))
+-- a missing script
+setting("script", "/SCRIPTS/TOOLS/Missing.lua")
+frames(5)
+check(err() ~= nil, "missing script reported")
+shot("error_missing")
+-- changing the script setting reloads at once (no ENTER needed: it would start a race)
+setting("script", "/SCRIPTS/TOOLS/StickTime.lua")
+frames(5)
+no_error("back to the game")
+expect_state(MENU, "back to the game")
+return true

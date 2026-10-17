@@ -1,0 +1,147 @@
+# Every push and pull request: the host for x86_64 (unit tests + headless game scenarios), the
+# static aarch64 binary for the Pi (zig cc, musl; its unit tests under qemu-user), the Python
+# tests (image helpers, updater, settings twin, editor patcher) on the oldest and newest Python
+# the Pi images use, and the web UI in headless Chromium. Artifacts: the aarch64 binary.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  host:
+    name: host (x86_64, tests + scenarios)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: sticktime-pi }
+      # the game the scenarios run (public); the host tests and run_scenarios.py look for ../sticktime
+      - uses: actions/checkout@v4
+        with: { repository: juricabi/sticktime, path: sticktime }
+      - name: Build and run the unit tests (gcc)
+        working-directory: sticktime-pi
+        run: CC=cc host/build.sh native test
+      - name: Headless game scenarios
+        working-directory: sticktime-pi
+        run: python3 host/tests/run_scenarios.py --quick --out build/scenario-shots
+      - name: VTX control end to end (the program and a fake VTX on a pty: the termios path)
+        working-directory: sticktime-pi
+        run: python3 host/tests/vtx_live_test.py --pty
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scenario-shots
+          path: sticktime-pi/build/scenario-shots
+          if-no-files-found: ignore
+          retention-days: 7
+
+  aarch64:
+    name: Pi binary (aarch64, static, zig)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: sticktime-pi, fetch-depth: 0 }
+      - uses: actions/checkout@v4
+        with: { repository: juricabi/sticktime, path: sticktime }
+      - name: Install zig and qemu-user
+        run: |
+          curl -fsSL --retry 5 "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends qemu-user-static file
+      - name: Build
+        working-directory: sticktime-pi
+        run: |
+          V=$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//' || true)
+          export VERSION=${V:-0.0.0-dev}
+          CC="zig cc" host/build.sh aarch64 all
+          file build/aarch64-edgetx/sticktime-pi
+          file build/aarch64-edgetx/sticktime-pi | grep -q 'ARM aarch64.*statically linked'
+      - name: Unit tests under qemu-aarch64
+        working-directory: sticktime-pi
+        run: |
+          fail=0
+          for t in build/aarch64-edgetx/test_*; do
+            n=$(basename "$t")
+            if qemu-aarch64-static "$t"; then echo "PASS $n"; else echo "FAIL $n"; fail=1; fi
+          done
+          exit $fail
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sticktime-pi-aarch64
+          path: sticktime-pi/build/aarch64-edgetx/sticktime-pi
+          if-no-files-found: error
+
+  python:
+    name: python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: sticktime-pi }
+      - uses: actions/checkout@v4
+        with: { repository: juricabi/sticktime, path: sticktime }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}" }
+      - name: Tests (stdlib only)
+        working-directory: sticktime-pi
+        run: |
+          fail=0
+          for t in image/test/test_setup.py image/tests/test_settings_py.py image/tests/test_update.py \
+                   web/tests/test_patch_editor.py; do
+            [ -f "$t" ] || { echo "SKIP $t (not there)"; continue; }
+            echo "::group::$t"
+            if python "$t"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
+            echo "::endgroup::"
+          done
+          exit $fail
+      - name: The image build script parses
+        working-directory: sticktime-pi
+        run: bash -n image/build.sh
+
+  web:
+    name: web UI (headless Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: sticktime-pi }
+      - uses: actions/checkout@v4
+        with: { repository: juricabi/sticktime, path: sticktime }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Playwright
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+      - name: Build the real web server test program
+        working-directory: sticktime-pi
+        run: CC=cc host/build.sh native tests
+      - name: Tests
+        working-directory: sticktime-pi
+        run: |
+          fail=0
+          for t in web/tests/test_ui.py web/tests/test_editor.py web/tests/test_real_server.py; do
+            [ -f "$t" ] || continue
+            echo "::group::$t"
+            if python "$t"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
+            echo "::endgroup::"
+          done
+          exit $fail

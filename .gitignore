@@ -1,0 +1,13 @@
+/build/
+/host/build/
+*.o
+*.a
+*.img
+*.img.xz
+/out/
+.DS_Store
+__pycache__/
+node_modules/
+*.pyc
+# your own notes, never published
+/.local/

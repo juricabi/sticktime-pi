@@ -1,0 +1,3 @@
+# StickTime Pi: the same name as Raspberry Pi OS's rule in /usr/lib/udev/rules.d, so this one
+# replaces it. Full CPU speed all the time: no frequency ramps under the frame loop.
+KERNEL=="cpu*", SUBSYSTEM=="cpu", ATTR{cpufreq/scaling_governor}="performance"

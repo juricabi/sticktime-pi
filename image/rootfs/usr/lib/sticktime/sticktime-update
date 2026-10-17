@@ -1,0 +1,34 @@
+#!/usr/bin/python3
+"""sticktime-update: updates of StickTime (the game) and StickTime Pi from GitHub releases.
+
+    sticktime-update check [game|app|all] [--json] [--no-cache]    (stages the newest game for the
+                                                                    editor's Install; exit 10: update available)
+    sticktime-update apply game|app|all [--version X.Y.Z] [--force] [--auto]
+    sticktime-update rollback game|app
+    sticktime-update status                     (update.json, refreshed; never waits for a running update)
+    sticktime-update boot [--no-network]        (the boot service: finish or undo an interrupted update,
+                                                 then, with auto_update = on, update)
+    sticktime-update repair                     (boot without the network part)
+    sticktime-update --self-test                (prints "ok <version>")
+    --game / --app may stand for the word.
+
+Exit codes: 0 ok, 10 update available (check), 1 internal, 2 usage, 3 offline/network,
+4 rate limited, 5 verification failed, 6 disk full/read-only, 7 busy, 8 refused, 9 auth.
+
+Paths: --base / STICKTIME_BASE (/boot/firmware/sticktime), --settings / STICKTIME_SETTINGS
+(/boot/firmware/sticktime.txt), --state / STICKTIME_STATE (/run/sticktime).
+GitHub: STICKTIME_GITHUB_API (https://api.github.com), STICKTIME_GITHUB_RAW
+(https://raw.githubusercontent.com), STICKTIME_PAGES (https://juricabi.github.io/sticktime).
+Host: STICKTIME_RESTART_CMD ("" skips the restart), STICKTIME_RELOAD_URL, STICKTIME_STATUS_URL.
+STICKTIME_PATCH_EDITOR: patch_editor.py when it isn't beside this script.
+"""
+import os
+import sys
+
+# python3 -I leaves this folder off sys.path; the package (and settings.py) live beside the script
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from stupdate.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

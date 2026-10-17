@@ -1,0 +1,18 @@
+# hotspot = auto: the "StickTime" access point (10.42.0.1) when the WiFi network from
+# sticktime.txt is not around; hotspot = on: always; off: exits at once.
+[Unit]
+Description=StickTime Pi: WiFi hotspot when no known network is around
+After=NetworkManager.service sticktime-setup.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/sticktime/sticktime-hotspot run
+Restart=on-failure
+RestartSec=10
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

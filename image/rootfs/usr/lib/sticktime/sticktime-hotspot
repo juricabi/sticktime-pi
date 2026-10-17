@@ -1,0 +1,254 @@
+#!/usr/bin/python3 -I
+"""sticktime-hotspot: the "StickTime" access point when there is no known WiFi network.
+
+    sticktime-hotspot run       the daemon (sticktime-hotspot.service)
+    sticktime-hotspot status    print the daemon's state (/run/sticktime/hotspot.json)
+  options: --root DIR (tests)
+
+Policy (hotspot = auto):
+  - After boot, wait up to 45 s for NetworkManager to join the WiFi network from sticktime.txt
+    (wifi_ssid). No wifi_ssid: start the hotspot at once.
+  - Not connected after that (or the network is lost for 45 s): start the hotspot (NM shared mode,
+    2.4 GHz channel 6, 10.42.0.1/24, DHCP for phones).
+  - While the hotspot runs, look for the known network again only when nobody uses the hotspot: the
+    Pi's WiFi chip can't scan or join while it is an access point, so trying means switching the AP
+    off for up to 30 s. That is done only when no station has been connected for a whole interval
+    (2 min, doubling up to 15 min). A phone, PC or ELRS module on the hotspot is never cut off.
+  - sticktime-wifi apply (web UI "join") sends SIGUSR1: try the client network now.
+  - /run/sticktime/wifi-hold (written by sticktime-wifi) pauses the policy during manual changes.
+hotspot = on: the hotspot always, never the client network. hotspot = off: this daemon exits.
+"""
+import json
+import os
+import signal
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import stlib as st  # noqa: E402
+
+BOOT_WAIT = 45          # s: NM's first scan + association + DHCP take 10-30 s on a Pi 4
+LOST_WAIT = 45          # s: a router reboot, a short dropout
+RETRY_MIN = 120         # s: first client retry while the hotspot is idle
+RETRY_MAX = 900
+AP_RETRY_MAX = 300      # s: the AP itself failed to start (blocked radio, driver trouble)
+TICK = 5
+STATUS = st.STATE + "/hotspot.json"
+PIDFILE = st.STATE + "/hotspot.pid"
+
+
+def new_state(now):
+    return {"phase": "boot", "since": now, "lost_since": None, "next_try": now + RETRY_MIN,
+            "backoff": RETRY_MIN, "try_now": False, "idle_since": None}
+
+
+def decide(mode, now, s, obs):
+    """the policy as a pure function. obs: {"connection": active connection on the WiFi device ("" none),
+    "stations": clients on our AP (None = unknown), "has_client": a client profile exists, "held": bool}.
+    Returns the action: None | "ap_up" | "try_client"; updates s in place."""
+    conn = obs.get("connection") or ""
+    on_ap = conn == st.HOTSPOT_ID
+    if obs.get("held"):
+        return None
+    if s.get("try_now"):
+        # the user just saved a network: (re)join it now, whatever we are connected to
+        s["try_now"] = False
+        if obs.get("has_client") and mode != "on":
+            return "try_client"
+    if mode == "on":
+        s["phase"] = "ap" if on_ap else s["phase"]
+        return None if on_ap else "ap_up"
+    if conn and not on_ap:
+        # joined something (our network, a module's AP, Imager's profile): that's fine
+        s.update(phase="client", lost_since=None, backoff=RETRY_MIN, try_now=False)
+        return None
+    if on_ap:
+        if s["phase"] != "ap":
+            s.update(phase="ap", since=now, next_try=now + s["backoff"], idle_since=None)
+        if not obs.get("has_client"):
+            return None
+        stations = obs.get("stations")
+        if stations is None or stations > 0:
+            # someone uses the hotspot (or we can't tell): never cut them off; restart the idle clock
+            s["idle_since"] = None
+            s["next_try"] = max(s["next_try"], now + s["backoff"])
+            return None
+        if s["idle_since"] is None:
+            s["idle_since"] = now
+        if now >= s["next_try"] and now - s["idle_since"] >= min(s["backoff"], RETRY_MIN):
+            return "try_client"
+        return None
+    # not connected at all
+    if not obs.get("has_client"):
+        return "ap_up"
+    if s["phase"] == "boot":
+        return "ap_up" if now - s["since"] >= BOOT_WAIT else None
+    if s["phase"] == "client":
+        if s["lost_since"] is None:
+            s["lost_since"] = now
+        return "ap_up" if now - s["lost_since"] >= LOST_WAIT else None
+    return "ap_up"                                    # the AP went down by itself, or a try failed
+
+
+def after_try(s, now, ok):
+    if ok:
+        s.update(phase="client", lost_since=None, backoff=RETRY_MIN, idle_since=None)
+    else:
+        s["backoff"] = min(RETRY_MAX, s["backoff"] * 2)
+        s["next_try"] = now + s["backoff"]
+        s["phase"] = "trying"
+
+
+def stations(dev):
+    r = st.run(["iw", "dev", dev, "station", "dump"], timeout=5, quiet=True)
+    if not r.ok:
+        return None
+    return sum(1 for ln in r.stdout.splitlines() if ln.startswith("Station "))
+
+
+def observe(dev):
+    devs = {d: (state, conn) for d, state, conn in st.wifi_devices()}
+    state, conn = devs.get(dev, ("", ""))
+    # "connecting (getting IP configuration)" counts as connected: don't start the AP mid-association
+    if conn == "--" or not state.startswith(("connected", "connecting")):
+        conn = ""
+    has_client = os.path.exists(st.p(st.keyfile_path(st.WIFI_ID)))
+    obs = {"connection": conn, "state": state, "has_client": has_client,
+           "held": time.time() < st.held_until(), "stations": None}
+    if conn == st.HOTSPOT_ID:
+        obs["stations"] = stations(dev)
+    return obs
+
+
+class Daemon:
+    def __init__(self):
+        self.stop = False
+        self.kick = False
+        self.ap_failures = 0
+
+    def on_usr1(self, *_):
+        self.kick = True
+
+    def on_term(self, *_):
+        self.stop = True
+
+    def sleep(self, secs):
+        end = time.time() + secs
+        while not self.stop and not self.kick and time.time() < end:
+            time.sleep(0.5)
+
+    def write_status(self, mode, s, obs):
+        try:
+            st.write_json(STATUS, {"mode": mode, "phase": s["phase"], "connection": obs.get("connection", ""),
+                                   "stations": obs.get("stations"), "next_try_ms": int(s["next_try"] * 1000),
+                                   "at": st.now_ms()})
+        except OSError:
+            pass
+
+    def ap_up(self, dev):
+        # remember the networks around us first: the scan won't work once we are an access point
+        scanner = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sticktime-wifi")
+        if os.path.exists(scanner):
+            st.run([sys.executable, "-I", scanner] + (["--root", st.ROOT] if st.ROOT not in ("", "/") else [])
+                   + ["scan"], timeout=40, quiet=True)
+        if not self.ap_failures:
+            st.log("starting the hotspot")
+            st.kmsg("starting the hotspot (no known WiFi network)")
+        r = st.run(["nmcli", "-w", "20", "connection", "up", "id", st.HOTSPOT_ID, "ifname", dev], timeout=30, quiet=True)
+        if r.ok:
+            if self.ap_failures:
+                st.log("the hotspot is up")
+            self.ap_failures = 0
+            return True
+        self.ap_failures += 1
+        if self.ap_failures in (1, 3) or self.ap_failures % 20 == 0:
+            err = (r.stderr or r.stdout).strip().splitlines()
+            st.log(f"the hotspot did not start (try {self.ap_failures}): {err[-1][:200] if err else 'exit %d' % r.returncode}")
+        return False
+
+    def try_client(self, dev):
+        st.log("hotspot idle: trying the WiFi network from sticktime.txt")
+        st.run(["nmcli", "connection", "down", "id", st.HOTSPOT_ID], timeout=15, quiet=True)
+        ok = st.run(["nmcli", "-w", "25", "connection", "up", "id", st.WIFI_ID, "ifname", dev], timeout=35).ok
+        if not ok:
+            st.log("the WiFi network is still not there: hotspot back on")
+        return ok
+
+    def run(self):
+        s_ = st.load_settings(repair=False)
+        mode = s_.enum("hotspot", ("auto", "on", "off"))
+        if mode == "off":
+            st.log("hotspot = off: nothing to do")
+            return 0
+        signal.signal(signal.SIGTERM, self.on_term)
+        signal.signal(signal.SIGINT, self.on_term)
+        if hasattr(signal, "SIGUSR1"):
+            signal.signal(signal.SIGUSR1, self.on_usr1)
+        try:
+            st.atomic_write(PIDFILE, f"{os.getpid()}\n")
+        except OSError:
+            pass
+        said = set()
+        # NetworkManager first, then a WiFi device (none under QEMU or on a Pi without WiFi: stay quiet)
+        while not self.stop:
+            if st.nm_running():
+                devs = st.wifi_devices()
+                if devs:
+                    break
+                if "nodev" not in said:
+                    st.log("no WiFi device yet: waiting (checking every 15 s)")
+                    said.add("nodev")
+            elif "nonm" not in said:
+                st.log("waiting for NetworkManager")
+                said.add("nonm")
+            self.sleep(15 if "nodev" in said else 2)
+        if self.stop:
+            return 0
+        dev = devs[0][0]
+        s = new_state(time.time())
+        while not self.stop:
+            now = time.time()
+            obs = observe(dev)
+            if self.kick:
+                self.kick = False
+                s["try_now"] = True
+                obs["held"] = False
+            act = decide(mode, now, s, obs)
+            if act == "ap_up":
+                if not self.ap_up(dev):
+                    s["phase"] = "ap-failed"
+                    # e.g. the radio is blocked or the driver is stuck: back off, don't spin
+                    self.write_status(mode, s, obs)
+                    self.sleep(min(AP_RETRY_MAX, 30 * 2 ** min(self.ap_failures - 1, 4)))
+            elif act == "try_client":
+                ok = self.try_client(dev)
+                after_try(s, time.time(), ok)
+                if not ok and mode == "auto":
+                    self.ap_up(dev)
+            self.write_status(mode, s, obs)
+            self.sleep(TICK)
+        try:
+            os.unlink(st.p(PIDFILE))
+        except OSError:
+            pass
+        return 0
+
+
+def main(argv):
+    args = list(argv)
+    while args and args[0].startswith("--"):
+        a = args.pop(0)
+        if a == "--root" and args:
+            st.set_root(args.pop(0))
+    cmd = args[0] if args else "run"
+    if cmd == "run":
+        return Daemon().run()
+    if cmd == "status":
+        print(json.dumps(st.read_json(STATUS, {"phase": "not running"})))
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

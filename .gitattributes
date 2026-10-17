@@ -1,0 +1,5 @@
+# Unix line ends everywhere: the shell scripts and image files run on Linux, and CRLF breaks them
+* text=auto eol=lf
+*.png binary
+*.ttf binary
+*.woff2 binary

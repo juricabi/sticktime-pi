@@ -1,0 +1,214 @@
+# drawText with the stub font (7.3 px a code point, nothing drawn): alignment (RIGHT x - w, CENTER
+# x - w / 2, VCENTER y - h / 2, Math.round) shows in the INVERS box (x - 1, y, w + 2, lh). Every
+# size index (flags >> 8 & 15; 8..15 are 16 px), UTF-8 counted by code point.
+adv 7.3
+clear 0x10000
+drawText 30 2 "abc" 0x00110001
+drawText 88 2 "abc" 0x00120009
+drawText 146 2 "abc" 0x00130005
+drawText 204 2 "abc" 0x0014000D
+drawText 262 2 "abc" 0x00150003
+drawText 320 2 "abc" 0x00160007
+drawText 378 2 "abc" 0x0017000B
+drawText 436 2 "abc" 0x0018000F
+drawText 30 24 "StickTime" 0x00120001
+drawText 88 24 "StickTime" 0x00130009
+drawText 146 24 "StickTime" 0x00140005
+drawText 204 24 "StickTime" 0x0015000D
+drawText 262 24 "StickTime" 0x00160003
+drawText 320 24 "StickTime" 0x00170007
+drawText 378 24 "StickTime" 0x0018000B
+drawText 436 24 "StickTime" 0x0019000F
+drawText 30 50 "" 0x00130001
+drawText 88 50 "" 0x00140009
+drawText 146 50 "" 0x00150005
+drawText 204 50 "" 0x0016000D
+drawText 262 50 "" 0x00170003
+drawText 320 50 "" 0x00180007
+drawText 378 50 "" 0x0019000B
+drawText 436 50 "" 0x001A000F
+drawText 30 72 "\xc2\xb0/s" 0x00140001
+drawText 88 72 "\xc2\xb0/s" 0x00150009
+drawText 146 72 "\xc2\xb0/s" 0x00160005
+drawText 204 72 "\xc2\xb0/s" 0x0017000D
+drawText 262 72 "\xc2\xb0/s" 0x00180003
+drawText 320 72 "\xc2\xb0/s" 0x00190007
+drawText 378 72 "\xc2\xb0/s" 0x001A000B
+drawText 436 72 "\xc2\xb0/s" 0x001B000F
+drawText 30 98 "Hoop Forest" 0x00150001
+drawText 88 98 "Hoop Forest" 0x00160009
+drawText 146 98 "Hoop Forest" 0x00170005
+drawText 204 98 "Hoop Forest" 0x0018000D
+drawText 262 98 "Hoop Forest" 0x00190003
+drawText 320 98 "Hoop Forest" 0x001A0007
+drawText 378 98 "Hoop Forest" 0x001B000B
+drawText 436 98 "Hoop Forest" 0x001C000F
+drawText 30 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x00160001
+drawText 88 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x00170009
+drawText 146 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x00180005
+drawText 204 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x0019000D
+drawText 262 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x001A0003
+drawText 320 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x001B0007
+drawText 378 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x001C000B
+drawText 436 120 "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x001D000F
+drawText 30 146 "\xf0\x9f\x98\x80!" 0x00170001
+drawText 88 146 "\xf0\x9f\x98\x80!" 0x00180009
+drawText 146 146 "\xf0\x9f\x98\x80!" 0x00190005
+drawText 204 146 "\xf0\x9f\x98\x80!" 0x001A000D
+drawText 262 146 "\xf0\x9f\x98\x80!" 0x001B0003
+drawText 320 146 "\xf0\x9f\x98\x80!" 0x001C0007
+drawText 378 146 "\xf0\x9f\x98\x80!" 0x001D000B
+drawText 436 146 "\xf0\x9f\x98\x80!" 0x0011000F
+drawText 30 168 "x\ty\nz" 0x00180001
+drawText 88 168 "x\ty\nz" 0x00190009
+drawText 146 168 "x\ty\nz" 0x001A0005
+drawText 204 168 "x\ty\nz" 0x001B000D
+drawText 262 168 "x\ty\nz" 0x001C0003
+drawText 320 168 "x\ty\nz" 0x001D0007
+drawText 378 168 "x\ty\nz" 0x0011000B
+drawText 436 168 "x\ty\nz" 0x0012000F
+snap
+clear 0x10000
+drawText 20 0 "Wx" 0x00110001
+drawText 300 0 "Wx" 0xF800800B
+drawText 20 16 "Wx" 0x00120101
+drawText 300 16 "Wx" 0xF800810B
+drawText 20 32 "Wx" 0x00130201
+drawText 300 32 "Wx" 0xF800820B
+drawText 20 48 "Wx" 0x00140301
+drawText 300 48 "Wx" 0xF800830B
+drawText 20 64 "Wx" 0x00150401
+drawText 300 64 "Wx" 0xF800840B
+drawText 20 80 "Wx" 0x00160501
+drawText 300 80 "Wx" 0xF800850B
+drawText 20 96 "Wx" 0x00170601
+drawText 300 96 "Wx" 0xF800860B
+drawText 20 112 "Wx" 0x00180701
+drawText 300 112 "Wx" 0xF800870B
+drawText 20 128 "Wx" 0x00190801
+drawText 300 128 "Wx" 0xF800880B
+drawText 20 144 "Wx" 0x001A0901
+drawText 300 144 "Wx" 0xF800890B
+drawText 20 160 "Wx" 0x001B0A01
+drawText 300 160 "Wx" 0xF8008A0B
+drawText 20 176 "Wx" 0x001C0B01
+drawText 300 176 "Wx" 0xF8008B0B
+drawText 20 192 "Wx" 0x001D0C01
+drawText 300 192 "Wx" 0xF8008C0B
+drawText 20 208 "Wx" 0x00110D01
+drawText 300 208 "Wx" 0xF8008D0B
+drawText 20 224 "Wx" 0x00120E01
+drawText 300 224 "Wx" 0xF8008E0B
+drawText 20 240 "Wx" 0x00130F01
+drawText 300 240 "Wx" 0xF8008F0B
+snap
+clear 0x10000
+# SHADOWED (draws nothing with the stub), INVERS with RGB and named colors, defaults, edges
+drawText 10 10 "abc" 0x80
+drawText 10 30 "abc" 0x81
+drawText 10 50 "abc" 0xFFFF8381
+drawText 10 70 "abc"
+drawText 10 90 "abc" 0x07E08001
+drawText 10 110 "" 0x01
+drawText 30 110 "" 0x05
+drawText 50 110 "" 0x09
+drawText 0 130 "abcdef" 0x09
+drawText -3 150 "abcdef" 0x05
+drawText 480 170 "abcdef" 0x09
+drawText 479 190 "abcdef" 0x01
+drawText 640 210 "abcdef" 0x09
+drawText 300 -5 "abcdef" 0x03
+drawText 300 280 "abcdef" 0x03
+drawText 300 485 "abcdef" 0x03
+drawText 100 262 "abc" 0x01
+drawText -2147483648 10 "abc" 0x0F
+drawText 2147483647 10 "abc" 0x0F
+drawText 200 -2147483648 "abc" 0x03
+drawText 200 2147483647 "abc" 0x03
+drawText 200 240 "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW" 0x0D
+drawText 0 255 "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii" 0x01
+drawText 100 200 "quote \" backslash \\ done" 0x01
+# sizeText at every size
+sizeText "" 0x0
+sizeText "a" 0x0
+sizeText "abc" 0x0
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x0
+sizeText "\xf0\x9f\x98\x80!" 0x0
+sizeText "" 0x100
+sizeText "a" 0x100
+sizeText "abc" 0x100
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x100
+sizeText "\xf0\x9f\x98\x80!" 0x100
+sizeText "" 0x200
+sizeText "a" 0x200
+sizeText "abc" 0x200
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x200
+sizeText "\xf0\x9f\x98\x80!" 0x200
+sizeText "" 0x300
+sizeText "a" 0x300
+sizeText "abc" 0x300
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x300
+sizeText "\xf0\x9f\x98\x80!" 0x300
+sizeText "" 0x400
+sizeText "a" 0x400
+sizeText "abc" 0x400
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x400
+sizeText "\xf0\x9f\x98\x80!" 0x400
+sizeText "" 0x500
+sizeText "a" 0x500
+sizeText "abc" 0x500
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x500
+sizeText "\xf0\x9f\x98\x80!" 0x500
+sizeText "" 0x600
+sizeText "a" 0x600
+sizeText "abc" 0x600
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x600
+sizeText "\xf0\x9f\x98\x80!" 0x600
+sizeText "" 0x700
+sizeText "a" 0x700
+sizeText "abc" 0x700
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x700
+sizeText "\xf0\x9f\x98\x80!" 0x700
+sizeText "" 0x800
+sizeText "a" 0x800
+sizeText "abc" 0x800
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x800
+sizeText "\xf0\x9f\x98\x80!" 0x800
+sizeText "" 0x900
+sizeText "a" 0x900
+sizeText "abc" 0x900
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0x900
+sizeText "\xf0\x9f\x98\x80!" 0x900
+sizeText "" 0xA00
+sizeText "a" 0xA00
+sizeText "abc" 0xA00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xA00
+sizeText "\xf0\x9f\x98\x80!" 0xA00
+sizeText "" 0xB00
+sizeText "a" 0xB00
+sizeText "abc" 0xB00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xB00
+sizeText "\xf0\x9f\x98\x80!" 0xB00
+sizeText "" 0xC00
+sizeText "a" 0xC00
+sizeText "abc" 0xC00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xC00
+sizeText "\xf0\x9f\x98\x80!" 0xC00
+sizeText "" 0xD00
+sizeText "a" 0xD00
+sizeText "abc" 0xD00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xD00
+sizeText "\xf0\x9f\x98\x80!" 0xD00
+sizeText "" 0xE00
+sizeText "a" 0xE00
+sizeText "abc" 0xE00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xE00
+sizeText "\xf0\x9f\x98\x80!" 0xE00
+sizeText "" 0xF00
+sizeText "a" 0xF00
+sizeText "abc" 0xF00
+sizeText "\xc4\x8c\xc4\x87\xc5\xbe\xc5\xa1\xc4\x91 Track \xc3\x9cn\xc3\xafcode" 0xF00
+sizeText "\xf0\x9f\x98\x80!" 0xF00
+sizeText "abc"
+sizeText "abc" 0xFFFF8580
+sizeText "abc" -1

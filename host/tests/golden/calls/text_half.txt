@@ -1,0 +1,50 @@
+# drawText where CENTER / VCENTER land on halves: Math.round takes them up, also when negative
+# (C round() would take them away from zero). 2.5 px a code point: 1 -> w 3, 2 -> 5, 3 -> 8.
+adv 2.5
+clear 0x10000
+drawText 2 0 "a" 0x00110005
+drawText 4 3 "a" 0x00120005
+drawText 6 6 "a" 0x00130005
+drawText 12 9 "a" 0x00140005
+drawText 340 12 "a" 0x00150005
+drawText 401 15 "a" 0x00160005
+drawText 2 22 "ab" 0x00110005
+drawText 4 25 "ab" 0x00120005
+drawText 6 28 "ab" 0x00130005
+drawText 12 31 "ab" 0x00140005
+drawText 340 34 "ab" 0x00150005
+drawText 401 37 "ab" 0x00160005
+drawText 2 44 "abc" 0x00110005
+drawText 4 47 "abc" 0x00120005
+drawText 6 50 "abc" 0x00130005
+drawText 12 53 "abc" 0x00140005
+drawText 340 56 "abc" 0x00150005
+drawText 401 59 "abc" 0x00160005
+drawText 2 66 "abcd" 0x00110005
+drawText 4 69 "abcd" 0x00120005
+drawText 6 72 "abcd" 0x00130005
+drawText 12 75 "abcd" 0x00140005
+drawText 340 78 "abcd" 0x00150005
+drawText 401 81 "abcd" 0x00160005
+drawText 2 88 "abcdefg" 0x00110005
+drawText 4 91 "abcdefg" 0x00120005
+drawText 6 94 "abcdefg" 0x00130005
+drawText 12 97 "abcdefg" 0x00140005
+drawText 340 100 "abcdefg" 0x00150005
+drawText 401 103 "abcdefg" 0x00160005
+# negative halves near the left edge: x - w / 2 = -5.5 -> -5 (the box from -6 shows up to x 9)
+drawText 2 120 "abcdef" 0xF8008005
+drawText 1 140 "abcdef" 0x07E08005
+drawText 0 160 "abcdefgh" 0x001F8005
+# VCENTER of an odd line height near the top: XXL (64 px, lh 75 on std) 10 - 37.5 = -27.5 -> -27
+drawText 100 10 "ab" 0xF8008603
+drawText 140 0 "ab" 0x07E08603
+drawText 180 37 "ab" 0x001F8603
+drawText 220 38 "ab" 0xFFE08603
+drawText 260 -1 "abc" 0xF81F8203
+drawText 300 3 "abc" 0x07FF8203
+drawText 340 2 "a" 0xFFFF8303
+drawText 380 4 "a" 0xFFFF8503
+drawText 420 5 "a" 0xFFFF8703
+drawText 0 0 "abc" 0xFFFF800F
+drawText 1 200 "abc" 0xFFFF800F

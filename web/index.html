@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e121c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0e121c" media="(prefers-color-scheme: light)">
+<title>StickTime Pi</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CclipPath id='t'%3E%3Crect width='64' height='64' rx='14'/%3E%3C/clipPath%3E%3ClinearGradient id='s' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%234a8fdd'/%3E%3Cstop offset='1' stop-color='%238cc2f2'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg clip-path='url(%23t)'%3E%3Crect width='64' height='64' fill='url(%23s)'/%3E%3Cpath d='M-8 44L72 26' stroke='%23fff' stroke-opacity='.75' stroke-width='5'/%3E%3Cpath d='M-8 46L72 28V72H-8Z' fill='%233f8a34'/%3E%3Cpath d='M17 50V19H47V50' fill='none' stroke='%23ffa726' stroke-width='6' stroke-linejoin='round' transform='rotate(-12.7 32 35)'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script>
+  // the theme before the first paint (no flash): the game's dark look unless this browser keeps light or auto
+  try { const t = localStorage.getItem('stp.theme'); if (t === 'light' || t === 'auto') document.documentElement.dataset.theme = t; } catch (e) { /* storage blocked */ }
+</script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-status" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-sticks" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="12" r="2" fill="currentColor"/><circle cx="16" cy="12" r="2" fill="currentColor"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="12.5" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.6 16a5 5 0 0 1 6.8 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="19.3" r="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-tracks" viewBox="0 0 24 24"><circle cx="5" cy="19.5" r="2" fill="currentColor"/><path d="M7.5 19.5h7a3.5 3.5 0 0 0 0-7h-6a3.5 3.5 0 0 1 0-7h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="2.5 2.6"/><path d="M16 9.5V1.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16 2.2h5.5l-1.6 2 1.6 2H16" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
+  <symbol id="i-game" viewBox="0 0 24 24"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+  <symbol id="i-updates" viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10.5l4.5 4.5 4.5-4.5M4.5 19.5h15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-system" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="9.5" y="9.5" width="5" height="5" rx="1" fill="currentColor"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 3.5v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M6.5 6.5l1 13.5h9l1-13.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 5l9 7-9 7zM16 5h3v14h-3z" fill="currentColor"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5v-11M7.5 9l4.5-4.5L16.5 9M4.5 19.5h15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M19.5 4.5L11 13M17 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1H10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5h-19z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8M7 6.3a7.5 7.5 0 1 0 10 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4" cy="6" r="1.4" fill="currentColor"/><circle cx="4" cy="12" r="1.4" fill="currentColor"/><circle cx="4" cy="18" r="1.4" fill="currentColor"/></symbol>
+  <symbol id="i-sd" viewBox="0 0 24 24"><path d="M9 2.5h8.5A1.5 1.5 0 0 1 19 4v16a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V6.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 8.5v8M8.8 13.5l3.2 3.2 3.2-3.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 7l2-4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8.5" cy="13.5" r="2.2" fill="currentColor"/><circle cx="15.5" cy="13.5" r="2.2" fill="currentColor"/></symbol>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <a class="brand" href="#status" aria-label="StickTime Pi: status">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><!-- StickTime's icon (sticktime/docs/icon.svg) -->
+      <defs><clipPath id="st-tile"><rect width="64" height="64" rx="14"/></clipPath><linearGradient id="st-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a8fdd"/><stop offset="1" stop-color="#8cc2f2"/></linearGradient></defs>
+      <g clip-path="url(#st-tile)"><rect width="64" height="64" fill="url(#st-sky)"/><path d="M-8 44L72 26" stroke="#fff" stroke-opacity=".75" stroke-width="5"/><path d="M-8 46L72 28V72H-8Z" fill="#3f8a34"/><path d="M17 50V19H47V50" fill="none" stroke="#ffa726" stroke-width="6" stroke-linejoin="round" transform="rotate(-12.7 32 35)"/></g>
+    </svg>
+    <span class="brand-text"><span class="brand-name"><b>StickTime</b> <small class="brand-sub">Pi</small></span><small id="hostLine">connecting…</small></span>
+  </a>
+  <span class="conn" id="conn" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="connText">Connecting</span></span>
+  <button class="icon-btn" id="themeBtn" type="button" aria-label="Theme: dark" title="Theme: dark"><svg class="i"><use href="#i-theme"/></svg></button>
+</header>
+
+<div class="shell">
+  <nav class="tabs" id="tabs" aria-label="Pages">
+    <a href="#status" data-page="status"><svg class="i"><use href="#i-status"/></svg><span>Status</span></a>
+    <a href="#sticks" data-page="sticks"><svg class="i"><use href="#i-sticks"/></svg><span>Sticks</span></a>
+    <a href="#video" data-page="video"><svg class="i"><use href="#i-video"/></svg><span>Video</span></a>
+    <a href="#wifi" data-page="wifi"><svg class="i"><use href="#i-wifi"/></svg><span>WiFi</span></a>
+    <a href="#sound" data-page="sound"><svg class="i"><use href="#i-sound"/></svg><span>Sound</span></a>
+    <a href="#tracks" data-page="tracks"><svg class="i"><use href="#i-tracks"/></svg><span>Tracks</span></a>
+    <a href="#game" data-page="game"><svg class="i"><use href="#i-game"/></svg><span>Game</span></a>
+    <a href="#updates" data-page="updates"><svg class="i"><use href="#i-updates"/></svg><span>Updates</span><span class="badge" id="updBadge" hidden>new</span></a>
+    <a href="#system" data-page="system"><svg class="i"><use href="#i-system"/></svg><span>System</span></a>
+  </nav>
+
+  <main id="main" tabindex="-1">
+    <div class="banner" id="offline" role="alert" hidden><svg class="i"><use href="#i-warn"/></svg><div><b>The Pi doesn't answer.</b> Is it on, and is this device on the same WiFi (or on the Pi's hotspot)? Retrying…</div></div>
+    <div class="banner info" id="rebootBanner" hidden><svg class="i"><use href="#i-power"/></svg><div id="rebootText">Some changes apply when the Pi restarts.</div><button class="btn primary sm" type="button" id="rebootNow">Reboot now</button><button class="btn sm ghost" type="button" id="rebootLater" aria-label="Hide this message">Later</button></div>
+
+    <!-- ============================================================ Status -->
+    <section class="page" id="p-status" data-page="status" aria-labelledby="h-status" hidden>
+      <header class="page-head"><h1 id="h-status" tabindex="-1">Status</h1><p class="lead">What the Pi is doing right now.</p></header>
+      <div class="alert bad" id="gameError" hidden>
+        <svg class="i"><use href="#i-warn"/></svg>
+        <div><b>The game stopped with an error</b><pre id="gameErrorText"></pre><button class="btn sm" type="button" data-action="reload-game">Reload the game</button></div>
+      </div>
+      <div class="tiles">
+        <div class="tile"><span class="tile-k">Frame rate</span><span class="tile-v"><b data-f="fps">–</b><small>fps</small></span><span class="tile-s" data-f="frameLine"></span></div>
+        <div class="tile"><span class="tile-k">Latency</span><span class="tile-v"><b data-f="latency">–</b><small>ms</small></span><span class="tile-s">stick to screen</span></div>
+        <div class="tile"><span class="tile-k">Game</span><span class="tile-v"><b class="word" data-f="state">–</b></span><span class="tile-s" data-f="gameLine"></span></div>
+        <div class="tile"><span class="tile-k">Sticks</span><span class="tile-v"><b data-f="inputKind">–</b><small data-f="inputRate"></small></span><span class="tile-s" data-f="inputName"></span></div>
+      </div>
+      <div class="grid2">
+        <section class="card" aria-labelledby="h-screen">
+          <div class="card-head"><h2 id="h-screen">Screen</h2><button class="btn sm" type="button" id="shotBtn"><svg class="i"><use href="#i-refresh"/></svg>Refresh</button></div>
+          <a class="shot" id="shotLink" href="/api/screenshot.png" target="_blank" rel="noopener">
+            <img id="shotImg" alt="The picture the Pi sends to the goggles or screen" width="640" height="480" hidden>
+            <span class="shot-empty" id="shotEmpty">Refresh shows what the goggles see.</span>
+          </a>
+          <p class="note" data-f="videoDesc"></p>
+        </section>
+        <section class="card" aria-labelledby="h-perf">
+          <h2 id="h-perf">Frame times</h2>
+          <dl class="kv">
+            <dt>Between frames</dt><dd data-f="frameMs">–</dd>
+            <dt>Game (Lua + drawing)</dt><dd data-f="runMs">–</dd>
+            <dt>Copy to the screen</dt><dd data-f="presentMs">–</dd>
+            <dt>Frames shown</dt><dd data-f="frames">–</dd>
+            <dt>Late frames</dt><dd data-f="missed">–</dd>
+            <dt>Lua memory</dt><dd data-f="luaKb">–</dd>
+          </dl>
+        </section>
+        <section class="card" aria-labelledby="h-inputs">
+          <h2 id="h-inputs">Inputs</h2>
+          <dl class="kv">
+            <dt>WiFi joystick</dt><dd data-f="wjModule">–</dd>
+            <dt>State</dt><dd data-f="wjState">–</dd>
+            <dt>Packets</dt><dd data-f="wjRate">–</dd>
+            <dt>Pauses</dt><dd data-f="wjGaps">–</dd>
+          </dl>
+          <ul class="src-list" id="srcList"></ul>
+        </section>
+        <section class="card" aria-labelledby="h-net">
+          <h2 id="h-net">Network</h2>
+          <dl class="kv">
+            <dt>Address</dt><dd data-f="netAddr">–</dd>
+            <dt>WiFi</dt><dd data-f="netWifi">–</dd>
+            <dt>Name</dt><dd data-f="netName">–</dd>
+          </dl>
+        </section>
+        <section class="card" aria-labelledby="h-sys">
+          <h2 id="h-sys">Pi</h2>
+          <dl class="kv">
+            <dt>CPU temperature</dt><dd data-f="cpuTemp">–</dd>
+            <dt>Power</dt><dd data-f="throttled">–</dd>
+            <dt>Running for</dt><dd data-f="uptime">–</dd>
+            <dt>Sound</dt><dd data-f="audio">–</dd>
+            <dt>VTX control</dt><dd data-f="vtx">–</dd>
+          </dl>
+        </section>
+        <section class="card" aria-labelledby="h-ver">
+          <h2 id="h-ver">Versions</h2>
+          <dl class="kv">
+            <dt>StickTime (game)</dt><dd data-f="gameVersion">–</dd>
+            <dt>StickTime Pi</dt><dd data-f="appVersion">–</dd>
+          </dl>
+          <p class="note"><a href="#updates">Updates</a> checks GitHub for new versions.</p>
+        </section>
+        <aside class="card support" aria-labelledby="h-support">
+          <div class="support-text">
+            <h2 id="h-support">Enjoying StickTime Pi?</h2>
+            <p class="note">It's free and open source, made in my spare time. If you like it, you can buy me a coffee. Thanks!</p>
+          </div>
+          <a class="btn kofi-go" href="https://ko-fi.com/juricabi" target="_blank" rel="noopener"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h14v6a5 5 0 0 1-5 5H8a5 5 0 0 1-5-5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M17 10h1.5a2.5 2.5 0 0 1 0 5H17" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 15.6l-2.5-2.4a1.5 1.5 0 0 1 2.5-1.7 1.5 1.5 0 0 1 2.5 1.7z" fill="currentColor"/><path d="M8 2.5v2.5M12 2.5v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Support on Ko-fi</a>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ============================================================ Sticks -->
+    <section class="page" id="p-sticks" data-page="sticks" aria-labelledby="h-sticks" hidden>
+      <header class="page-head"><h1 id="h-sticks" tabindex="-1">Sticks</h1><p class="lead">Your radio's sticks as the Pi sees them. Move them: the bars follow.</p></header>
+      <section class="card" aria-labelledby="h-mixed">
+        <div class="card-head"><h2 id="h-mixed">What the game gets</h2><span class="pill" id="liveSrc">–</span></div>
+        <div class="mixed">
+          <div class="gimbals" aria-hidden="true">
+            <div class="gimbal" id="gimL"><span class="gdot"></span><span class="glabel"></span></div>
+            <div class="gimbal" id="gimR"><span class="gdot"></span><span class="glabel"></span></div>
+          </div>
+          <div class="bars" id="mixBars"></div>
+        </div>
+      </section>
+      <div id="srcCards"></div>
+      <section class="card" aria-labelledby="h-stickset">
+        <h2 id="h-stickset">Settings</h2>
+        <form class="settings" data-form="sticks" data-keys="input,channel_order,invert,pause_channel,stick_menus,stick_mode,wifi_module_ip,wifi_interval_us,bluetooth" novalidate></form>
+      </section>
+      <section class="card" aria-labelledby="h-modap">
+        <h2 id="h-modap">Join the module's WiFi</h2>
+        <p>Your ELRS or TBS module can make its own WiFi network. The Pi can join it and take the sticks from there, with no home network in between.</p>
+        <div class="btn-row">
+          <button class="btn" type="button" data-modap="elrs"><svg class="i"><use href="#i-radio"/></svg>ELRS module</button>
+          <button class="btn" type="button" data-modap="tbs"><svg class="i"><use href="#i-radio"/></svg>TBS module</button>
+        </div>
+        <p class="note">Start the module's WiFi first (ELRS: the Lua script's WiFi Connectivity → Enable WiFi; it makes <q>ExpressLRS TX</q>, password <q>expresslrs</q>). The Pi then leaves this network: to see this page again, join the module's network with this phone too, or look at the address on the goggles' main menu.</p>
+      </section>
+    </section>
+
+    <!-- ============================================================ Video -->
+    <section class="page" id="p-video" data-page="video" aria-labelledby="h-video" hidden>
+      <header class="page-head"><h1 id="h-video" tabindex="-1">Video</h1><p class="lead">The picture: composite (AV) to a 5.8 GHz video transmitter, or HDMI.</p></header>
+      <section class="card" aria-labelledby="h-vnow">
+        <h2 id="h-vnow">Now</h2>
+        <p class="big-line" data-f="videoDesc">–</p>
+      </section>
+      <section class="card" aria-labelledby="h-vset">
+        <h2 id="h-vset">Settings</h2>
+        <form class="settings" data-form="video" data-keys="video,tv,aspect,av_mode,hdmi_mode,margin,fonts,show_ip" novalidate></form>
+        <ul class="explain">
+          <li><span class="flag reboot">after reboot</span> AV ↔ HDMI and the TV standard: the Pi 4 sets up its video output when it starts. Save, then Reboot now (about 30 s; it may restart once more by itself to switch the output).</li>
+          <li><span class="flag restart">restarts the game</span> Shape, progressive, HDMI mode, border and text size: the game restarts in a second or two.</li>
+          <li><span class="flag live">at once</span> The rest applies while you fly.</li>
+        </ul>
+        <p class="note">Wiring for AV: the 3.5 mm jack's sleeve (the last ring) is video, the ring before it ground. A TV's yellow input works too. If nothing shows after a change, plug in HDMI, or edit <code>sticktime.txt</code> on the SD card from a PC.</p>
+      </section>
+      <section class="card" id="vtxCard" aria-labelledby="h-vtx">
+        <div class="card-head"><h2 id="h-vtx">VTX control</h2><span class="pill" id="vtxPill">–</span></div>
+        <p class="note">Set the video transmitter's channel, power and pit mode from here instead of its button, over its SmartAudio or Tramp pad: one wire from pin 7 through a 1 kΩ resistor (the user guide shows how). Measure the pad first: the Pi's pins take 3.3 V only.</p>
+        <div class="alert info" id="vtxMsg" role="status" aria-live="polite"><svg class="i"><use href="#i-video"/></svg><div><span id="vtxMsgText">–</span> <button class="btn sm" type="button" id="vtxReboot" hidden>Reboot now</button></div></div>
+        <div id="vtxLive" hidden>
+          <dl class="kv">
+            <dt>VTX</dt><dd id="vtxDev">–</dd>
+            <dt>On</dt><dd id="vtxNow">–</dd>
+            <dt>Power</dt><dd id="vtxPowNow">–</dd>
+            <dt id="vtxTempK" hidden>Temperature</dt><dd id="vtxTemp" hidden>–</dd>
+            <dt id="vtxStatsK" hidden>Line timing</dt><dd id="vtxStats" hidden>–</dd>
+          </dl>
+          <div class="settings vtx-pick">
+            <div class="field"><div class="field-top"><span class="field-title"><label for="vtxBand">Band</label></span></div><select id="vtxBand" aria-describedby="vtxBandHelp"></select><p class="help" id="vtxBandHelp">From the VTX table. A green dot marks where the VTX is now.</p></div>
+            <div class="field" role="radiogroup" aria-labelledby="vtxChanLbl"><div class="field-top"><span class="field-title"><span class="lbl" id="vtxChanLbl">Channel</span></span></div><div class="chan-grid" id="vtxChan"></div></div>
+            <div class="field" role="radiogroup" aria-labelledby="vtxPowLbl" aria-describedby="vtxPowHelp"><div class="field-top"><span class="field-title"><span class="lbl" id="vtxPowLbl">Power</span></span></div><div class="chan-grid pow" id="vtxPower"></div><p class="help" id="vtxPowHelp">25 mW is plenty next to the goggles. Which frequencies and how much power you may use depends on your country.</p></div>
+            <div class="field"><div class="field-top"><span class="field-title"><label for="vtxPit">Pit mode</label></span><input type="checkbox" role="switch" id="vtxPit" aria-describedby="vtxPitHelp"></div><p class="help" id="vtxPitHelp">Almost no power: for the bench, or a race event.</p></div>
+            <div class="field"><div class="field-top"><span class="field-title"><label for="vtxFreq">Frequency</label></span></div><div class="range"><input type="text" id="vtxFreq" inputmode="numeric" maxlength="4" placeholder="by band and channel" autocomplete="off" aria-describedby="vtxFreqHelp"><button class="btn sm" type="button" id="vtxFreqSet">Set</button><button class="btn sm ghost" type="button" id="vtxFreqClear">Clear</button></div><p class="help" id="vtxFreqHelp">A frequency in MHz instead of band and channel; picking a channel clears it.</p><p class="err" id="vtxFreqErr" aria-live="polite"></p></div>
+          </div>
+          <div class="vtx-table">
+            <p class="note" id="vtxTableLine">–</p>
+            <div class="btn-row">
+              <label class="btn sm" id="vtxLoad"><input type="file" id="vtxFile" accept=".json,application/json" hidden><svg class="i"><use href="#i-upload"/></svg>Load VTX table…</label>
+              <button class="btn sm" type="button" id="vtxDownload">Download</button>
+              <button class="btn sm ghost" type="button" id="vtxDefault">Use default</button>
+            </div>
+            <p class="note">VTX makers publish their tables for Betaflight (a .json file): load yours to get its bands and power levels.</p>
+          </div>
+        </div>
+        <form class="settings" data-form="vtx" data-keys="vtx,vtx_port,vtx_send_only" novalidate></form>
+      </section>
+    </section>
+
+    <!-- ============================================================ WiFi -->
+    <section class="page" id="p-wifi" data-page="wifi" aria-labelledby="h-wifi" hidden>
+      <header class="page-head"><h1 id="h-wifi" tabindex="-1">WiFi</h1><p class="lead">The Pi's network, and its own hotspot for when there is none.</p></header>
+      <section class="card" aria-labelledby="h-wnow">
+        <h2 id="h-wnow">Connection</h2>
+        <dl class="kv">
+          <dt>Mode</dt><dd data-f="netMode">–</dd>
+          <dt>Network</dt><dd data-f="netSsid">–</dd>
+          <dt>Address</dt><dd data-f="netAddr">–</dd>
+        </dl>
+      </section>
+      <section class="card" aria-labelledby="h-scan">
+        <div class="card-head"><h2 id="h-scan">Networks</h2><button class="btn sm" type="button" id="scanBtn"><svg class="i"><use href="#i-refresh"/></svg>Scan</button></div>
+        <p class="note" id="scanNote" role="status" aria-live="polite">Scan lists the networks the Pi can see (the WiFi joystick pauses for a moment while it scans). 2.4 GHz is best: 5 GHz WiFi can disturb 5.8 GHz video, and the ELRS module is 2.4 GHz only.</p>
+        <ul class="nets" id="netList"></ul>
+        <button class="btn ghost" type="button" id="otherNet">Other network (hidden)…</button>
+        <div class="alert info" id="joinState" hidden role="status" aria-live="polite"></div>
+      </section>
+      <section class="card" aria-labelledby="h-hot">
+        <h2 id="h-hot">Hotspot</h2>
+        <p>When the Pi finds no known network, it makes its own: join it from your phone and open <code>http://192.168.4.1</code> or <code id="hotName">http://sticktime.local</code>.</p>
+        <form class="settings" data-form="wifi" data-keys="hotspot,hotspot_ssid,hotspot_password,wifi_country" novalidate></form>
+      </section>
+    </section>
+
+    <!-- ============================================================ Sound -->
+    <section class="page" id="p-sound" data-page="sound" aria-labelledby="h-sound" hidden>
+      <header class="page-head"><h1 id="h-sound" tabindex="-1">Sound</h1><p class="lead">Motor sound, beeps and music, on the 3.5 mm jack (to the VTX's audio pad) or HDMI.</p></header>
+      <section class="card" aria-labelledby="h-snow">
+        <div class="card-head"><h2 id="h-snow">Now playing</h2><button class="btn sm" type="button" id="nextSong"><svg class="i"><use href="#i-next"/></svg>Next song</button></div>
+        <p class="big-line" data-f="music">–</p>
+        <p class="note" data-f="audioDev"></p>
+      </section>
+      <section class="card" aria-labelledby="h-sset">
+        <h2 id="h-sset">Settings <small>saved as you change them</small></h2>
+        <form class="settings" data-form="sound" data-autosave data-keys="sound,volume,music,music_volume,music_source,audio_out,audio_mono" novalidate></form>
+      </section>
+      <section class="card" aria-labelledby="h-songs">
+        <div class="card-head"><h2 id="h-songs">Your songs</h2><span class="pill" id="songFree"></span></div>
+        <p class="note">MP3, OGG and WAV files, played in order when Music is set to <q>songs</q>. They are in the <code>sticktime/music</code> folder of the SD card, so you can copy them from a PC too.</p>
+        <label class="drop" id="songDrop">
+          <input type="file" id="songInput" accept=".mp3,.ogg,.wav,audio/mpeg,audio/ogg,audio/wav" multiple>
+          <svg class="i"><use href="#i-upload"/></svg><span><b>Add songs</b> or drop them here</span>
+        </label>
+        <ul class="uploads" id="uploads"></ul>
+        <ul class="songs" id="songList"></ul>
+      </section>
+    </section>
+
+    <!-- ============================================================ Tracks -->
+    <section class="page" id="p-tracks" data-page="tracks" aria-labelledby="h-tracks" hidden>
+      <header class="page-head"><h1 id="h-tracks" tabindex="-1">Tracks</h1><p class="lead">Make your own tracks, pick some from the gallery, and fly them on the Pi: StickTime's own editor, with the Pi as its <q>radio</q>.</p></header>
+      <div class="launch">
+        <a class="launch-btn primary" href="/editor/#tracks"><svg class="i"><use href="#i-tracks"/></svg><b>Track editor</b><span>Draw a track, then Send to radio: it goes to the Pi</span></a>
+        <a class="launch-btn" href="/editor/#mine"><svg class="i"><use href="#i-list"/></svg><b>My tracks</b><span>The Pi's slots c1 to c8 next to your browser's</span></a>
+        <a class="launch-btn" href="/editor/#open"><svg class="i"><use href="#i-grid"/></svg><b>Gallery</b><span>Tracks others made, ready to fly</span></a>
+        <a class="launch-btn" href="/editor/#install"><svg class="i"><use href="#i-sd"/></svg><b>Install StickTime</b><span>The game's files onto the Pi, as onto a radio</span></a>
+        <a class="launch-btn" href="/editor/#emulator"><svg class="i"><use href="#i-play"/></svg><b>Emulator</b><span>The whole browser emulator, on this device</span></a>
+      </div>
+      <section class="card" aria-labelledby="h-slots">
+        <div class="card-head"><h2 id="h-slots">On the Pi</h2><button class="btn sm" type="button" id="slotsBtn"><svg class="i"><use href="#i-refresh"/></svg>Read again</button></div>
+        <p class="note">Tracks 9 to 16 in the game's track menu. The game picks up a change when it is back in its menus.</p>
+        <ol class="slots" id="slotList"></ol>
+      </section>
+    </section>
+
+    <!-- ============================================================ Game -->
+    <section class="page" id="p-game" data-page="game" aria-labelledby="h-game" hidden>
+      <header class="page-head"><h1 id="h-game" tabindex="-1">Game</h1><p class="lead">A remote for the game's menus, the script to run, and the game's settings.</p></header>
+      <div class="grid2">
+        <section class="card" aria-labelledby="h-remote">
+          <div class="card-head"><h2 id="h-remote">Remote</h2><span class="pill" data-f="state">–</span></div>
+          <div class="remote-screen">
+            <img id="remoteImg" alt="The game's screen" width="640" height="480" hidden>
+            <span class="shot-empty" id="remoteEmpty">The screen shows here after a key.</span>
+          </div>
+          <label class="switch-line"><input type="checkbox" id="liveView" role="switch"><span>Live view</span></label>
+          <div class="keypad" role="group" aria-label="Radio keys">
+            <button class="key k-exit" type="button" data-key="exit" aria-keyshortcuts="Escape">Exit</button>
+            <button class="key k-up" type="button" data-key="up" aria-label="Up" aria-keyshortcuts="ArrowUp">▲</button>
+            <button class="key k-menu" type="button" data-key="menu" aria-keyshortcuts="M">Menu</button>
+            <button class="key k-left" type="button" data-key="prev" aria-label="Previous (left)" aria-keyshortcuts="ArrowLeft">◀</button>
+            <button class="key k-enter" type="button" data-key="enter" aria-keyshortcuts="Enter">Enter</button>
+            <button class="key k-right" type="button" data-key="next" aria-label="Next (right)" aria-keyshortcuts="ArrowRight">▶</button>
+            <button class="key k-dec" type="button" data-key="dec" aria-label="Decrease" aria-keyshortcuts="-">−</button>
+            <button class="key k-down" type="button" data-key="down" aria-label="Down" aria-keyshortcuts="ArrowDown">▼</button>
+            <button class="key k-inc" type="button" data-key="inc" aria-label="Increase" aria-keyshortcuts="+">+</button>
+            <button class="key k-pgp" type="button" data-key="prevpage" aria-keyshortcuts="PageUp">Page ◀</button>
+            <button class="key k-pgn" type="button" data-key="nextpage" aria-keyshortcuts="PageDown">Page ▶</button>
+          </div>
+          <p class="note">On a computer the keyboard works here too: arrows, Enter, Esc, + and −.</p>
+        </section>
+        <section class="card" aria-labelledby="h-tools">
+          <div class="card-head"><h2 id="h-tools">Script</h2><button class="btn sm" type="button" data-action="reload-game"><svg class="i"><use href="#i-refresh"/></svg>Reload</button></div>
+          <p class="note">The tool scripts in <code>/SCRIPTS/TOOLS</code> of the game's SD folder, like the emulator's <q>Open .lua</q>.</p>
+          <div class="tools" id="toolList" role="radiogroup" aria-labelledby="h-tools"></div>
+        </section>
+      </div>
+      <section class="card" aria-labelledby="h-gset">
+        <h2 id="h-gset">Settings</h2>
+        <form class="settings" data-form="game" data-keys="latency,stats,sd_write" novalidate></form>
+      </section>
+    </section>
+
+    <!-- ============================================================ Updates -->
+    <section class="page" id="p-updates" data-page="updates" aria-labelledby="h-updates" hidden>
+      <header class="page-head"><h1 id="h-updates" tabindex="-1">Updates</h1><p class="lead">New versions of the game and of StickTime Pi, from GitHub. Your tracks, ghosts, saves and settings stay.</p></header>
+      <section class="card" aria-labelledby="h-ustate">
+        <div class="card-head"><h2 id="h-ustate">Updater</h2><button class="btn sm primary" type="button" id="updCheck"><svg class="i"><use href="#i-refresh"/></svg>Check now</button></div>
+        <p class="big-line" id="updMsg" role="status" aria-live="polite">–</p>
+        <progress id="updBar" max="1" value="0" hidden aria-label="Update progress"></progress>
+        <p class="note" id="updChecked"></p>
+        <div class="alert bad" id="updErr" hidden></div>
+      </section>
+      <div class="grid2">
+        <section class="card upd" aria-labelledby="h-ugame" id="updGame">
+          <h2 id="h-ugame">StickTime <small>the game</small></h2>
+          <dl class="kv"><dt>Installed</dt><dd data-u="installed">–</dd><dt>Latest</dt><dd data-u="latest">–</dd><dt>Staged</dt><dd data-u="staged">–</dd></dl>
+          <div class="notes" data-u="notes" hidden></div>
+          <div class="btn-row">
+            <button class="btn primary" type="button" data-apply="game">Install</button>
+            <button class="btn" type="button" data-rollback="game">Roll back</button>
+            <a class="btn ghost" href="/editor/#install"><svg class="i"><use href="#i-sd"/></svg>In the editor</a>
+          </div>
+        </section>
+        <section class="card upd" aria-labelledby="h-uapp" id="updApp">
+          <h2 id="h-uapp">StickTime Pi <small>this app</small></h2>
+          <dl class="kv"><dt>Installed</dt><dd data-u="installed">–</dd><dt>Latest</dt><dd data-u="latest">–</dd></dl>
+          <div class="notes" data-u="notes" hidden></div>
+          <div class="btn-row">
+            <button class="btn primary" type="button" data-apply="app">Install</button>
+            <button class="btn" type="button" data-rollback="app">Roll back</button>
+          </div>
+          <p class="note">Installing restarts the game; the page comes back by itself.</p>
+        </section>
+      </div>
+      <section class="card" aria-labelledby="h-uset">
+        <h2 id="h-uset">Settings</h2>
+        <form class="settings" data-form="updates" data-keys="auto_update,github_token" novalidate></form>
+      </section>
+    </section>
+
+    <!-- ============================================================ System -->
+    <section class="page" id="p-system" data-page="system" aria-labelledby="h-system" hidden>
+      <header class="page-head"><h1 id="h-system" tabindex="-1">System</h1><p class="lead">The Pi itself: its name, logins, power, the log and the settings file.</p></header>
+      <div class="grid2">
+        <section class="card" aria-labelledby="h-sinfo">
+          <h2 id="h-sinfo">This Pi</h2>
+          <dl class="kv" id="sysInfo">
+            <dt>Model</dt><dd data-s="model">–</dd>
+            <dt>System</dt><dd data-s="os">–</dd>
+            <dt>Kernel</dt><dd data-s="kernel">–</dd>
+            <dt>SD card</dt><dd data-s="disk">–</dd>
+          </dl>
+        </section>
+        <section class="card" aria-labelledby="h-power">
+          <h2 id="h-power">Power</h2>
+          <div class="btn-col">
+            <button class="btn" type="button" id="restartBtn"><svg class="i"><use href="#i-refresh"/></svg>Restart the game</button>
+            <button class="btn" type="button" id="rebootBtn"><svg class="i"><use href="#i-power"/></svg>Reboot</button>
+            <button class="btn danger" type="button" id="shutdownBtn"><svg class="i"><use href="#i-power"/></svg>Shut down</button>
+          </div>
+          <p class="note">Shut down before you unplug the Pi while it writes (an update, a song upload). Otherwise unplugging is safe.</p>
+        </section>
+      </div>
+      <section class="card" aria-labelledby="h-sset2">
+        <h2 id="h-sset2">Settings</h2>
+        <form class="settings" data-form="system" data-keys="hostname,ssh,password" novalidate></form>
+      </section>
+      <section class="card" id="moreCard" aria-labelledby="h-more" hidden>
+        <h2 id="h-more">More settings</h2>
+        <form class="settings" data-form="more" data-keys="*" novalidate></form>
+      </section>
+      <section class="card" aria-labelledby="h-log">
+        <div class="card-head"><h2 id="h-log">Log</h2>
+          <div class="btn-row tight">
+            <label class="switch-line sm"><input type="checkbox" id="logAuto" role="switch"><span>Follow</span></label>
+            <button class="btn sm" type="button" id="logBtn"><svg class="i"><use href="#i-refresh"/></svg>Refresh</button>
+            <button class="btn sm" type="button" id="logSave">Download</button>
+          </div>
+        </div>
+        <pre class="log" id="logText" tabindex="0" aria-label="Log">–</pre>
+      </section>
+      <section class="card" aria-labelledby="h-file">
+        <div class="card-head"><h2 id="h-file">Settings file</h2>
+          <div class="btn-row tight">
+            <button class="btn sm" type="button" id="fileSave">Download</button>
+          </div>
+        </div>
+        <p class="note">All settings as <code>sticktime.txt</code> has them (without the passwords). Edit lines here and Apply, or edit the file itself on the SD card from a PC.</p>
+        <div class="alert warn" id="fileWarn" hidden></div>
+        <label class="sr-only" for="fileText">Settings as text</label>
+        <textarea class="file" id="fileText" spellcheck="false" autocapitalize="off" autocomplete="off" rows="14"></textarea>
+        <div class="btn-row"><button class="btn primary" type="button" id="fileApply">Apply</button><button class="btn ghost" type="button" id="fileReset">Undo edits</button></div>
+        <div class="alert bad" id="fileErr" hidden role="alert"></div>
+      </section>
+      <section class="card about" aria-labelledby="h-about">
+        <h2 id="h-about">About</h2>
+        <p><b>StickTime Pi</b> runs <a href="https://github.com/juricabi/sticktime" target="_blank" rel="noopener">StickTime</a>, the FPV simulator for EdgeTX radios, on a Raspberry Pi, with the sticks of your own radio and the picture in your goggles. By juricabi. GPL-2.0.</p>
+        <p class="note">Inside: Lua 5.3 (MIT), stb (public domain), Roboto (OFL). The track editor is StickTime's own page; the WiFi joystick follows <a href="https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows" target="_blank" rel="noopener">ELRS-Crossfire-WiFi-Joystick</a>.</p>
+      </section>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<dialog class="dlg" id="confirmDlg" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+  <form method="dialog">
+    <h2 id="confirmTitle">Sure?</h2>
+    <div id="confirmBody"></div>
+    <div class="btn-row end">
+      <button class="btn ghost" value="cancel" type="submit" id="confirmNo">Cancel</button>
+      <button class="btn primary" value="ok" type="submit" id="confirmYes">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="joinDlg" aria-labelledby="joinTitle">
+  <form method="dialog" id="joinForm" novalidate>
+    <h2 id="joinTitle">Join a network</h2>
+    <div class="field">
+      <label for="joinSsid">Network name</label>
+      <input id="joinSsid" name="ssid" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32" required aria-describedby="joinSsidErr">
+      <p class="err" id="joinSsidErr"></p>
+    </div>
+    <div class="field" id="joinPassBox">
+      <label for="joinPass">Password</label>
+      <div class="pass"><input id="joinPass" name="password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64" aria-describedby="joinPassErr"><button class="btn sm ghost" type="button" data-reveal="joinPass" aria-pressed="false">Show</button></div>
+      <p class="err" id="joinPassErr"></p>
+    </div>
+    <div class="field">
+      <label for="joinCountry">Country</label>
+      <input id="joinCountry" name="country" maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" list="countries" aria-describedby="joinCountryHelp joinCountryErr">
+      <p class="help" id="joinCountryHelp">Two letters, for the WiFi rules where you are (US, GB, DE, HR, …).</p>
+      <p class="err" id="joinCountryErr"></p>
+    </div>
+    <label class="check-line"><input type="checkbox" id="joinHidden" name="hidden"><span>Hidden network</span></label>
+    <div class="alert warn"><svg class="i"><use href="#i-warn"/></svg><div>The Pi leaves its current network to join this one, so this page may lose the Pi for a minute. Then join the same network with this device and open <b class="hostUrl">http://sticktime.local</b>, or the address on the goggles' main menu. If the Pi can't join, it makes its own hotspot again.</div></div>
+    <p class="err" id="joinErr" role="alert"></p>
+    <div class="btn-row end">
+      <button class="btn ghost" value="cancel" type="button" id="joinCancel">Cancel</button>
+      <button class="btn primary" type="submit" id="joinGo">Join</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="overlay" id="waitBox" hidden role="alertdialog" aria-modal="true" aria-labelledby="waitTitle" aria-describedby="waitText">
+  <div class="overlay-card">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2 id="waitTitle">Restarting…</h2>
+    <p id="waitText"></p>
+    <p class="note" id="waitTime"></p>
+    <button class="btn" type="button" id="waitClose" hidden>Close</button>
+  </div>
+</div>
+
+<datalist id="countries"><option value="US"><option value="GB"><option value="DE"><option value="FR"><option value="IT"><option value="ES"><option value="NL"><option value="HR"><option value="SI"><option value="AT"><option value="CH"><option value="PL"><option value="CZ"><option value="SE"><option value="NO"><option value="DK"><option value="FI"><option value="CA"><option value="AU"><option value="NZ"><option value="JP"><option value="CN"><option value="BR"><option value="IN"></datalist>
+<noscript><p class="banner">This page needs JavaScript.</p></noscript>
+</body>
+</html>

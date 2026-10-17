@@ -1,0 +1,26 @@
+-- Editing inference: Track item (5) with ENTER, then Up = next track (INC while editing);
+-- Settings EXIT saves StickTime.dat.
+dofile(SCEN_DIR .. "/lib.lua")
+frames(60)
+expect_state(MENU, "boot")
+for _ = 1, 4 do key("next") frames(1) end
+local before = select(11, test("info"))
+key("enter") frames(1)
+check(editing(), "ENTER on Track starts editing")
+key("up") frames(2)
+local after = select(11, test("info"))
+check(before ~= after, "Up changed the track while editing (" .. tostring(before) .. " -> " .. tostring(after) .. ")")
+key("enter") frames(1)
+check(not editing(), "ENTER again stops editing")
+key("up") frames(1)
+check(select(11, test("info")) == after, "Up moves the focus when not editing")
+key("down") frames(1)          -- back to Track (5)
+key("down") frames(1)          -- Settings (6)
+key("enter") frames(2)
+expect_state(SETUP, "settings")
+key("exit") frames(3)
+expect_state(MENU, "back from settings")
+local dat = sd_read("/SCRIPTS/TOOLS/StickTime.dat")
+check(dat and dat:sub(1, 7) == "FPVSIM2", "StickTime.dat saved: " .. tostring(dat and dat:sub(1, 20)))
+no_error("editing")
+return true

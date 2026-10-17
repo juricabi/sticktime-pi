@@ -1,0 +1,93 @@
+# drawFilledCircle: rows dy = -r..r of half width floor(sqrt(r*r - dy*dy)); drawCircle: 360 points
+# rounded from cx + r cos(a), cy + r sin(a). drawPoint: inside the screen only.
+drawFilledCircle 15 20 -2 0x110000
+drawFilledCircle 42 20 -1 0x120000
+drawFilledCircle 69 20 0 0x130000
+drawFilledCircle 96 20 1 0x140000
+drawFilledCircle 123 20 2 0x150000
+drawFilledCircle 150 20 3 0x160000
+drawFilledCircle 177 20 4 0x170000
+drawFilledCircle 204 20 5 0x180000
+drawFilledCircle 231 20 6 0x190000
+drawFilledCircle 258 20 7 0x1A0000
+drawFilledCircle 285 20 8 0x1B0000
+drawFilledCircle 312 20 9 0x1C0000
+drawFilledCircle 339 20 10 0x1D0000
+drawFilledCircle 366 20 11 0x1E0000
+drawFilledCircle 393 20 12 0x110000
+drawFilledCircle 420 20 13 0x120000
+drawFilledCircle 447 20 14 0x130000
+drawCircle 12 70 0 0x110000
+drawCircle 34 70 1 0x120000
+drawCircle 56 70 2 0x130000
+drawCircle 78 70 3 0x140000
+drawCircle 100 70 4 0x150000
+drawCircle 122 70 5 0x160000
+drawCircle 144 70 6 0x170000
+drawCircle 166 70 7 0x180000
+drawCircle 188 70 8 0x190000
+drawCircle 210 70 9 0x1A0000
+drawCircle 232 70 10 0x1B0000
+drawCircle 254 70 11 0x1C0000
+drawCircle 276 70 12 0x1D0000
+drawCircle 298 70 13 0x1E0000
+drawCircle 320 70 14 0x110000
+drawCircle 342 70 15 0x120000
+drawCircle 364 70 16 0x130000
+drawCircle 386 70 17 0x140000
+drawCircle 408 70 18 0x150000
+drawCircle 430 70 19 0x160000
+drawCircle 452 70 20 0x170000
+drawCircle 100 140 -10 0xFFFF8000
+drawCircle 140 140 -1 0xFFFF8000
+drawCircle 160 140 1 0xFFFF8000
+drawCircle 180 140 2 0xFFFF8000
+drawCircle 240 160 50 0xF8008000
+drawCircle 240 160 51 0x07E08000
+drawCircle 240 160 52 0x001F8000
+drawCircle 240 160 100 0xFFE08000
+drawCircle 400 200 120
+drawFilledCircle 0 0 30 0xF8008000
+drawFilledCircle 480 272 30 0x07E08000
+drawFilledCircle 640 480 30 0x001F8000
+drawFilledCircle -20 136 25 0xFFFF8000
+drawFilledCircle 240 -20 25 0xFFFF8000
+drawFilledCircle 240 300 40 0xFFFF8000
+drawFilledCircle 600 300 45
+drawCircle 0 0 40 0xFFFF8000
+drawCircle 479 271 40 0xFFFF8000
+drawCircle 639 479 40 0xFFFF8000
+drawCircle -40 100 41 0xFFFF8000
+snap
+clear
+drawFilledCircle 240 136 300 0x18E38000
+drawFilledCircle -100000 136 100100 0xF8008000
+drawFilledCircle 240 100136 100000 0x07E08000
+drawFilledCircle 240 136 -2147483648 0xFFFF8000
+drawFilledCircle 2147483647 2147483647 5 0xFFFF8000
+drawFilledCircle -2147483648 -2147483648 5 0xFFFF8000
+# r * r beyond 2^53: the doubles round (engine.js loops all 2r + 1 rows, so not 2^31)
+drawFilledCircle 240 100000100 100000000 0xF81F8000
+drawFilledCircle -99999800 136 100000000 0x07FF8000
+drawCircle 240 136 1000000 0xFFFF8000
+drawCircle 240 136 2147483647 0xFFFF8000
+drawCircle 240 136 -2147483648 0xFFFF8000
+drawCircle -1000 136 1240 0xFFE08000
+drawCircle 2147483647 -2147483648 3 0xFFE08000
+snap
+clear
+# points
+drawPoint 0 0 0xFFFF8000
+drawPoint 479 271 0xFFFF8000
+drawPoint 480 271 0xF8008000
+drawPoint 479 272 0xF8008000
+drawPoint 639 479 0xFFFF8000
+drawPoint 640 0 0xF8008000
+drawPoint 0 480 0xF8008000
+drawPoint -1 0 0xF8008000
+drawPoint 0 -1 0xF8008000
+drawPoint 100 100
+drawPoint 101 100 0x50000
+drawPoint -2147483648 2147483647 0xFFFF8000
+drawPoint 2147483647 0 0xFFFF8000
+drawPoint 200 200 0x1F0000

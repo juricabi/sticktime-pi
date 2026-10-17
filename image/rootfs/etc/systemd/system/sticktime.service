@@ -1,0 +1,42 @@
+# The simulator: draws on the composite/HDMI output (DRM/KMS, tty1 in graphics mode), reads the
+# sticks (evdev, ELRS/Crossfire WiFi joystick on UDP 11000) and serves the web page on port 80.
+# The binary, the game and the web files live on the FAT partition (updates are folder swaps).
+[Unit]
+Description=StickTime Pi
+Documentation=file:///boot/firmware/sticktime.txt
+After=sticktime-setup.service sticktime-update-repair.service systemd-user-sessions.service
+After=getty@tty1.service autovt@tty1.service plymouth-quit-wait.service systemd-tmpfiles-setup.service
+Wants=sticktime-setup.service sticktime-update-repair.service
+RequiresMountsFor=/boot/firmware
+# the app owns tty1: no login prompt there (Alt+F2 or SSH for a console)
+Conflicts=getty@tty1.service autovt@tty1.service
+# keep trying forever, slower and slower: a missing DRM device or a bad update must end neither
+# in a failed unit nor in a hot restart loop
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/boot/firmware/sticktime/bin/sticktime-pi --base /boot/firmware/sticktime --settings /boot/firmware/sticktime.txt --libexec /usr/lib/sticktime --state /run/sticktime
+Restart=always
+RestartSec=1
+RestartSteps=6
+RestartMaxDelaySec=30
+TimeoutStopSec=10
+# the host sets SCHED_FIFO for its frame loop (pinned to a core) and locks its memory
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-800
+# helpers the app starts (sticktime-update apply, sticktime-wifi connect) must outlive a restart
+# of the app: an app update restarts this very service at its end
+KillMode=process
+# tty1: systemd resets it (text mode, keyboard) before the start and after the app ends, even
+# after a SIGKILL; the app itself switches it to graphics mode
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

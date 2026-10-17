@@ -1,0 +1,29 @@
+# Applies /boot/firmware/sticktime.txt at every boot: hostname, WiFi profiles and country, ssh,
+# the pi password, Bluetooth radio, CPU governor, the config.txt block and cmdline.txt tokens.
+# Runs before the network, avahi, ssh and the app, so they start with the new settings; reboots
+# once by itself when the video config changed (sticktime.noreboot=1 on the kernel command line
+# turns that off).
+[Unit]
+Description=StickTime Pi: apply /boot/firmware/sticktime.txt
+Documentation=file:///boot/firmware/sticktime.txt
+DefaultDependencies=no
+RequiresMountsFor=/boot/firmware /var/lib
+After=local-fs.target systemd-remount-fs.service boot-firmware.mount systemd-tmpfiles-setup.service
+Before=network-pre.target NetworkManager.service wpa_supplicant.service avahi-daemon.service
+Before=bluetooth.service ssh.service systemd-user-sessions.service
+Before=sticktime.service sticktime-hotspot.service sticktime-bt.service sticktime-update-repair.service
+Wants=network-pre.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/sticktime/sticktime-setup boot
+# a broken step must never hold up the boot for long (each command has its own timeout too)
+TimeoutStartSec=3min
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

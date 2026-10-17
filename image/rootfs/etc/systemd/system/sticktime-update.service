@@ -1,0 +1,15 @@
+# Started by sticktime-update.timer a little after boot: repairs, then (auto_update = on)
+# installs new versions of the game and the app when online. Never periodically while flying.
+[Unit]
+Description=StickTime Pi: updates at boot (auto_update)
+After=sticktime-setup.service sticktime.service network.target time-set.target
+RequiresMountsFor=/boot/firmware
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sticktime/sticktime-update --base /boot/firmware/sticktime --settings /boot/firmware/sticktime.txt --state /run/sticktime boot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+StandardOutput=journal
+StandardError=journal

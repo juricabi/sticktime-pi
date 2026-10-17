@@ -1,0 +1,102 @@
+# colorOf(flags): named colors are index << 16 (31 of them; past the table: black), the 0x8000
+# flag means the top 16 bits are RGB565, and the low flag bits never change the color.
+# clear without an argument is named color 5 (COLOR_THEME_SECONDARY3).
+clear
+snap
+clear 0
+snap
+clear 0x1E0000
+snap
+clear 0x1F0000
+snap
+clear 0xFFFF0000
+snap
+clear 0xF8008000
+snap
+clear 0x07E08005
+snap
+clear 0x001F83FF
+snap
+# SMLSIZE + white + SHADOWED as the game passes it (negative as an int32)
+clear -31872
+snap
+clear 0x8000
+snap
+clear 0xFFFF8000
+snap
+clear 0x00057FFF
+snap
+# every named color, and 31 / 0xFFFF past the end, with flag bits in the low half
+drawFilledRectangle 0 0 14 100 0x0
+drawFilledRectangle 14 0 14 100 0x10001
+drawFilledRectangle 28 0 14 100 0x20080
+drawFilledRectangle 42 0 14 100 0x30300
+drawFilledRectangle 56 0 14 100 0x47FFF
+drawFilledRectangle 70 0 14 100 0x55F04
+drawFilledRectangle 84 0 14 100 0x60000
+drawFilledRectangle 98 0 14 100 0x70001
+drawFilledRectangle 112 0 14 100 0x80080
+drawFilledRectangle 126 0 14 100 0x90300
+drawFilledRectangle 140 0 14 100 0xA7FFF
+drawFilledRectangle 154 0 14 100 0xB5F04
+drawFilledRectangle 168 0 14 100 0xC0000
+drawFilledRectangle 182 0 14 100 0xD0001
+drawFilledRectangle 196 0 14 100 0xE0080
+drawFilledRectangle 210 0 14 100 0xF0300
+drawFilledRectangle 224 0 14 100 0x107FFF
+drawFilledRectangle 238 0 14 100 0x115F04
+drawFilledRectangle 252 0 14 100 0x120000
+drawFilledRectangle 266 0 14 100 0x130001
+drawFilledRectangle 280 0 14 100 0x140080
+drawFilledRectangle 294 0 14 100 0x150300
+drawFilledRectangle 308 0 14 100 0x167FFF
+drawFilledRectangle 322 0 14 100 0x175F04
+drawFilledRectangle 336 0 14 100 0x180000
+drawFilledRectangle 350 0 14 100 0x190001
+drawFilledRectangle 364 0 14 100 0x1A0080
+drawFilledRectangle 378 0 14 100 0x1B0300
+drawFilledRectangle 392 0 14 100 0x1C7FFF
+drawFilledRectangle 406 0 14 100 0x1D5F04
+drawFilledRectangle 420 0 14 100 0x1E0000
+drawFilledRectangle 434 0 14 100 0x1F0001
+drawFilledRectangle 448 0 14 100 0xFFFF0080
+# RGB colors with flag bits
+drawFilledRectangle 0 100 15 50 0x007F8000
+drawFilledRectangle 15 100 15 50 0x235E8001
+drawFilledRectangle 30 100 15 50 0x4E1D8080
+drawFilledRectangle 45 100 15 50 0x68FC8300
+drawFilledRectangle 60 100 15 50 0x93DBFFFF
+drawFilledRectangle 75 100 15 50 0xBEBADF04
+drawFilledRectangle 90 100 15 50 0xD9798000
+drawFilledRectangle 105 100 15 50 0x04588001
+drawFilledRectangle 120 100 15 50 0x2F378080
+drawFilledRectangle 135 100 15 50 0x4A168300
+drawFilledRectangle 150 100 15 50 0x74D5FFFF
+drawFilledRectangle 165 100 15 50 0x97B4DF04
+drawFilledRectangle 180 100 15 50 0xBA938000
+drawFilledRectangle 195 100 15 50 0xE5728001
+drawFilledRectangle 210 100 15 50 0x00318080
+drawFilledRectangle 225 100 15 50 0x2B108300
+drawFilledRectangle 240 100 15 50 0x55EFFFFF
+drawFilledRectangle 255 100 15 50 0x70CEDF04
+drawFilledRectangle 270 100 15 50 0x9B8D8000
+drawFilledRectangle 285 100 15 50 0xBE6C8001
+drawFilledRectangle 300 100 15 50 0xE14B8080
+drawFilledRectangle 315 100 15 50 0x0C2A8300
+drawFilledRectangle 330 100 15 50 0x2EE9FFFF
+drawFilledRectangle 345 100 15 50 0x51C8DF04
+drawFilledRectangle 360 100 15 50 0x7CA78000
+drawFilledRectangle 375 100 15 50 0x9F868001
+drawFilledRectangle 390 100 15 50 0xC2458080
+drawFilledRectangle 405 100 15 50 0xE5248300
+drawFilledRectangle 420 100 15 50 0x0803FFFF
+drawFilledRectangle 435 100 15 50 0x32E2DF04
+drawFilledRectangle 450 100 15 50 0x55A18000
+drawFilledRectangle 465 100 15 50 0x78808001
+drawFilledRectangle 0 150 480 20 0xFFFF8000
+drawFilledRectangle 0 170 480 20 0x00008000
+drawFilledRectangle 0 190 480 20 0x7BEF8000
+# defaults: drawFilledRectangle / drawPoint / drawLine without a color are named color 0 (black)
+drawFilledRectangle 10 215 50 20
+drawPoint 70 220
+drawLine 80 220 120 220 255

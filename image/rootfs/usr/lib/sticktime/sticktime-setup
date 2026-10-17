@@ -1,0 +1,542 @@
+#!/usr/bin/python3 -I
+"""sticktime-setup: apply /boot/firmware/sticktime.txt to the system.
+
+    sticktime-setup boot              at every boot (sticktime-setup.service, before NetworkManager,
+                                      avahi, ssh, bluetooth and sticktime.service); reboots once when
+                                      the video config in config.txt / cmdline.txt changed
+    sticktime-setup apply [--json]    the same while running, never reboots; says whether a reboot
+                                      is needed (the web UI offers it)
+    sticktime-setup bake              files only (config.txt, cmdline.txt, hostname, NM profiles):
+                                      image/build.sh runs it on the mounted image (--root DIR)
+    sticktime-setup extract-template HEADER [OUT]
+                                      the default sticktime.txt from SETTINGS_TEMPLATE_TEXT in
+                                      host/src/settings_keys.h (build time, so the two never drift)
+  options: --root DIR (a fake or mounted root; tests and the image build), --no-reboot
+
+What it applies: hostname (+ /etc/hosts), the WiFi client profile (NetworkManager keyfile, 0600),
+the hotspot profile, WiFi country (regulatory domain, rfkill unblock), Bluetooth rfkill, ssh on/off
+(also /boot/firmware/ssh or ssh.txt from a PC), the pi user's password (chpasswd, then cleared from
+sticktime.txt; never logged), the CPU governor, the managed block of config.txt and our tokens of
+cmdline.txt. Reboot loops are impossible: the reboot happens only when the files changed, at most
+once for the same content (/var/lib/sticktime/boot-config.json), and never with sticktime.noreboot=1
+on the kernel command line. sticktime.ci=1 on the command line prints CI markers on the console.
+"""
+import json
+import os
+import re
+import socket
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import stboot  # noqa: E402
+import stlib as st  # noqa: E402
+
+HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+GUARD = st.VARLIB + "/boot-config.json"
+MAX_REBOOTS = 2         # setup reboots in a row without a clean boot in between (E14)
+
+
+class Ctx:
+    def __init__(self, mode, no_reboot=False):
+        self.mode = mode                   # boot | apply | bake
+        self.files_only = mode == "bake"
+        self.no_reboot = no_reboot
+        self.warnings = []
+        self.done = []
+        self.report = {}
+
+    def warn(self, msg):
+        self.warnings.append(msg)
+        st.log("warning: " + msg)
+
+
+# ---- steps -------------------------------------------------------------------------------------
+
+def step_hostname(c, s):
+    h = s.get("hostname").strip().lower()
+    if not HOST_RE.match(h):
+        if h:
+            c.warn(f"hostname {h!r} is not valid (letters, digits and '-', at most 63): using 'sticktime'")
+        h = "sticktime"
+    changed = st.write_if_changed("/etc/hostname", h + "\n")
+    hosts = st.read_text("/etc/hosts", "") or ""
+    lines = hosts.split("\n")
+    found = False
+    for i, ln in enumerate(lines):
+        if re.match(r"^\s*127\.0\.1\.1\s", ln):
+            if not found:
+                lines[i] = f"127.0.1.1\t{h}"
+            else:
+                lines[i] = ""              # duplicate entries: keep the first
+            found = True
+    if not found:
+        if lines and lines[-1] == "":
+            lines.insert(len(lines) - 1, f"127.0.1.1\t{h}")
+        else:
+            lines.append(f"127.0.1.1\t{h}")
+    new = "\n".join(lines)
+    if not new.endswith("\n"):
+        new += "\n"
+    if not hosts.strip():
+        new = f"127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost ip6-loopback\n127.0.1.1\t{h}\n"
+    changed |= st.write_if_changed("/etc/hosts", new)
+    if not c.files_only and st.ROOT in ("", "/"):
+        try:
+            if socket.gethostname() != h:
+                socket.sethostname(h)                     # early boot: no D-Bus, no hostnamectl
+                changed = True
+        except OSError as e:
+            c.warn(f"sethostname: {e}")
+    if changed and c.mode == "apply":
+        st.run(["systemctl", "--no-block", "try-restart", "avahi-daemon.service"])   # E19
+    c.report["hostname"] = h
+    if changed:
+        c.done.append(f"hostname {h}")
+
+
+def valid_country(cc):
+    if not re.match(r"^[A-Z]{2}$", cc):
+        return False
+    tab = st.read_text("/usr/share/zoneinfo/iso3166.tab")
+    if tab is None:
+        return True
+    return any(ln.startswith(cc + "\t") for ln in tab.splitlines())
+
+
+def country_of(c, s):
+    cc = s.get("wifi_country").strip().upper()
+    if cc and not valid_country(cc):
+        c.warn(f"wifi_country {cc!r} is not a two-letter country code: WiFi uses the world channels (1-11)")
+        return ""
+    return cc
+
+
+def step_wifi(c, s, cc):
+    """profiles (always), radio unblock + regulatory domain (not in bake)"""
+    ssid = s.get("wifi_ssid")
+    psk = s.get("wifi_password")
+    hidden = s.bool("wifi_hidden") if s.get("wifi_hidden") else False
+    wifi = {"ssid_set": bool(ssid), "country": cc, "error": ""}
+    if ssid:
+        err = st.ssid_problem(ssid) or (st.psk_problem(psk) if psk else None)
+        if err:
+            wifi["error"] = err
+            c.warn(f"WiFi network not set up: {err}")
+            if st.remove(st.keyfile_path(st.WIFI_ID)):
+                c.done.append("removed the WiFi profile")
+        elif st.write_keyfile(st.WIFI_ID, st.keyfile_client(ssid, psk, hidden)):
+            c.done.append("WiFi profile")
+    elif st.remove(st.keyfile_path(st.WIFI_ID)):
+        c.done.append("removed the WiFi profile (no wifi_ssid)")
+
+    hs = s.get("hotspot_ssid") or "StickTime"
+    if st.ssid_problem(hs):
+        c.warn(f"hotspot_ssid: {st.ssid_problem(hs)}: using StickTime")
+        hs = "StickTime"
+    hp = s.get("hotspot_password")
+    if not hp or st.psk_problem(hp):
+        if hp:
+            c.warn(f"hotspot_password: {st.psk_problem(hp)}: using the default 'sticktime'")
+        else:
+            c.warn("hotspot_password is empty: using the default 'sticktime'")
+        hp = "sticktime"
+    if st.write_keyfile(st.HOTSPOT_ID, st.keyfile_hotspot(hs, hp)):
+        c.done.append("hotspot profile")
+    c.report["wifi"] = wifi
+    if c.files_only:
+        return
+    if c.mode == "apply" and any("profile" in x for x in c.done) and st.nm_running():
+        st.run(["nmcli", "connection", "reload"], quiet=True)   # load, don't activate (sticktime-wifi does)
+    # radios: rfkill default_state=0 soft-blocks WiFi until someone unblocks it (E5)
+    if cc and st.have("iw"):
+        st.run(["iw", "reg", "set", cc], quiet=True)
+    nmstate = st.read_text(st.NM_STATE)
+    if c.mode == "boot":
+        new = set_ini(nmstate or "", "main", "WirelessEnabled", "true")
+        if st.write_if_changed(st.NM_STATE, new):
+            c.done.append("WiFi radio enabled")
+    elif st.nm_running():
+        st.run(["nmcli", "radio", "wifi", "on"], quiet=True)
+    rfkill(c, "wlan", True)
+
+
+def set_ini(text, section, key, value):
+    lines = text.replace("\r\n", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    sec, idx_sec, done = None, None, False
+    for i, ln in enumerate(lines):
+        m = re.match(r"^\s*\[(.+)\]\s*$", ln)
+        if m:
+            sec = m.group(1)
+            if sec == section:
+                idx_sec = i
+            continue
+        if sec == section and re.match(rf"^\s*{re.escape(key)}\s*=", ln):
+            lines[i] = f"{key}={value}"
+            done = True
+    if not done:
+        if idx_sec is None:
+            lines += [f"[{section}]", f"{key}={value}"]
+        else:
+            lines.insert(idx_sec + 1, f"{key}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def rfkill(c, kind, unblock):
+    """unblock/block now (rfkill) and in systemd-rfkill's saved state, so the next boot agrees"""
+    if st.have("rfkill"):
+        st.run(["rfkill", "unblock" if unblock else "block", kind], quiet=True)
+    d = "/var/lib/systemd/rfkill"
+    try:
+        names = os.listdir(st.p(d))
+    except OSError:
+        names = []
+    for n in names:
+        if n.endswith(":" + kind):
+            st.write_if_changed(f"{d}/{n}", "0\n" if unblock else "1\n")
+
+
+def step_bluetooth(c, s):
+    on = s.bool("bluetooth")
+    c.report["bluetooth"] = on
+    if not c.files_only:
+        rfkill(c, "bluetooth", on)                      # E21: off = less 2.4 GHz noise next to WiFi
+
+
+def step_ssh(c, s):
+    want = s.bool("ssh")
+    flags = [f for f in (st.BOOT + "/ssh", st.BOOT + "/ssh.txt") if os.path.exists(st.p(f))]
+    if flags:
+        # the Raspberry Pi way to turn on SSH from a PC; sshswitch is masked, sticktime.txt is the truth
+        if not want:
+            try:
+                st.update_settings({"ssh": "on"})
+            except (OSError, ValueError) as e:
+                c.warn(f"cannot write ssh = on into sticktime.txt: {e}")
+        for f in flags:
+            st.remove(f)
+        want = True
+        c.done.append("ssh turned on by the ssh file on the SD card")
+    c.report["ssh"] = want
+    if c.files_only:
+        return
+    if want:
+        ensure_shell(c)
+    # the unit links are made here, not by 'systemctl enable': that one asks PID 1 and can hang for
+    # minutes in the middle of a first boot (seen under QEMU); the links are all it changes anyway.
+    # --no-block: we run before ssh.service, waiting for its start job would deadlock
+    enabled = st.unit_enabled("ssh.service")
+    if want and not enabled:
+        st.enable_unit("ssh.service")
+        st.run(["systemctl", "start", "--no-block", "ssh.service"], timeout=60)
+        c.done.append("ssh on")
+    elif not want and enabled:
+        st.disable_unit("ssh.service")
+        st.run(["systemctl", "stop", "--no-block", "ssh.service"], timeout=60)
+        c.done.append("ssh off")
+
+
+def ensure_shell(c):
+    pw = st.read_text("/etc/passwd", "") or ""
+    for ln in pw.splitlines():
+        f = ln.split(":")
+        if len(f) >= 7 and f[0] == "pi" and f[6] != "/bin/bash":
+            st.run(["usermod", "-s", "/bin/bash", "pi"])
+            return
+
+
+def step_password(c, s):
+    pw = s.get("password")
+    if not pw or c.files_only:
+        return
+    # chpasswd reads "user:password" lines from stdin: never on a command line, never in a log
+    r = st.run(["chpasswd"], input=f"pi:{pw}\n", quiet=True)
+    if not r.ok:
+        c.warn(f"could not set the password of user pi (chpasswd exit {r.returncode})")
+        return
+    ensure_shell(c)
+    try:
+        st.update_settings({"password": ""})
+        c.done.append("password of user pi set (and cleared from sticktime.txt)")
+    except (OSError, ValueError) as e:
+        c.warn(f"password set, but it could not be cleared from sticktime.txt: {e}")
+
+
+def step_governor(c):
+    if c.files_only:
+        return
+    d = st.p("/sys/devices/system/cpu/cpufreq")
+    try:
+        pols = [x for x in os.listdir(d) if x.startswith("policy")]
+    except OSError:
+        return                                          # QEMU: no cpufreq
+    for pol in pols:
+        f = os.path.join(d, pol, "scaling_governor")
+        try:
+            with open(f) as fh:
+                cur = fh.read().strip()
+            if cur != "performance":
+                with open(f, "w") as fh:
+                    fh.write("performance")
+        except OSError as e:
+            c.warn(f"governor {pol}: {e}")
+
+
+def step_boot_config(c, s, cc):
+    """(changed, reboot_wanted)"""
+    video = s.enum("video", stboot.VIDEOS)
+    tv = s.enum("tv", tuple(stboot.TV_NORMS))
+    audio = s.enum("audio_out", stboot.AUDIO_OUTS)
+    vtx = s.enum("vtx", stboot.VTX_MODES)
+    port = s.enum("vtx_port", stboot.VTX_PORTS) if vtx != "off" else None
+    uart = port if port in stboot.VTX_UARTS else None      # a single pin (gpioN) needs no overlay
+    cfg_path, cmd_path = st.BOOT + "/config.txt", st.BOOT + "/cmdline.txt"
+    old_cfg = st.read_text(cfg_path)
+    old_cmd = st.read_text(cmd_path)
+    c.report["video"] = {"video": video, "tv": tv, "audio_out": audio, "vtx_uart": uart or ""}
+    if old_cfg is None:
+        c.warn(f"{cfg_path} is missing: not creating one (the firmware's defaults apply)")
+        new_cfg = None
+    else:
+        new_cfg, w = stboot.config_txt(old_cfg, video, tv, audio, uart)
+        for x in w:
+            c.warn(x)
+    new_cmd = stboot.cmdline_txt(old_cmd or "", tv, cc)
+    if new_cmd is None:
+        c.warn(f"{cmd_path} is missing or has no root=: leaving it alone")
+    changed = False
+    if new_cfg is not None and new_cfg != old_cfg:
+        st.atomic_write(cfg_path, new_cfg)
+        changed = True
+        c.done.append("config.txt")
+    if new_cmd is not None and new_cmd != old_cmd:
+        st.atomic_write(cmd_path, new_cmd)
+        changed = True
+        c.done.append("cmdline.txt")
+    eff_cfg = new_cfg if new_cfg is not None else (old_cfg or "")
+    eff_cmd = new_cmd if new_cmd is not None else (old_cmd or "")
+    reboot = changed and stboot.video_signature(old_cfg or "", old_cmd or "") != stboot.video_signature(eff_cfg, eff_cmd)
+    return changed, reboot, st.sha256_text(eff_cfg, eff_cmd)
+
+
+def reboot_once(c, changed, reboot, h):
+    """E14: reboot only when the video config changed, and never twice for the same content"""
+    if c.files_only:
+        return False
+    g = st.read_json(GUARD, {}) or {}
+    if not changed:
+        if g.get("reboot_for"):
+            g = {"last_ok": h, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            st.write_json(GUARD, g)                     # the earlier reboot took effect
+        return False
+    if not reboot:
+        return False
+    if c.mode != "boot":
+        c.report["reboot_needed"] = True
+        return False
+    if g.get("reboot_for") == h:
+        c.warn("the video settings were written again after the reboot meant to apply them: not rebooting a "
+               "second time (is the SD card's boot partition read-only or damaged?)")
+        c.report["reboot_needed"] = True
+        return False
+    try:
+        count = int(g.get("count", 0)) if g.get("reboot_for") else 0
+    except (TypeError, ValueError):
+        count = 0
+    if count >= MAX_REBOOTS:
+        # every boot since the last clean one rewrote the files differently: something else edits
+        # config.txt / cmdline.txt too. Stop here instead of rebooting forever.
+        c.warn(f"the boot config changed again after {count} reboots in a row: not rebooting (something else "
+               "keeps changing config.txt or cmdline.txt)")
+        c.report["reboot_needed"] = True
+        return False
+    g = {"reboot_for": h, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "count": count + 1}
+    try:
+        st.write_json(GUARD, g)
+    except OSError as e:
+        c.warn(f"cannot record the reboot ({e}): not rebooting, to be safe")
+        return False
+    if c.no_reboot:
+        c.warn("the video settings changed: a reboot is needed (not rebooting: sticktime.noreboot)")
+        c.report["reboot_needed"] = True
+        return False
+    return True
+
+
+# ---- main --------------------------------------------------------------------------------------
+
+def extract_template(header, out=None):
+    """SETTINGS_TEMPLATE_TEXT's C string literals -> text (raises ValueError when it is not found)"""
+    data = open(header, "rb").read()
+    m = re.search(rb"#\s*define\s+SETTINGS_TEMPLATE_TEXT\b", data)
+    if not m:
+        raise ValueError(f"{header}: no #define SETTINGS_TEMPLATE_TEXT")
+    body = []
+    for ln in data[m.end():].split(b"\n"):
+        body.append(ln)
+        if not ln.rstrip(b" \t\r").endswith(b"\\"):
+            break
+    src = b"\n".join(body)
+    lits = re.findall(rb'"((?:[^"\\\n]|\\.)*)"', src)
+    if not lits:
+        raise ValueError(f"{header}: SETTINGS_TEMPLATE_TEXT has no string literals")
+    esc = {b"n": b"\n", b"t": b"\t", b"r": b"\r", b'"': b'"', b"\\": b"\\", b"'": b"'", b"?": b"?",
+           b"a": b"\a", b"b": b"\b", b"f": b"\f", b"v": b"\v"}
+    out_b = bytearray()
+    for lit in lits:
+        i = 0
+        while i < len(lit):
+            ch = lit[i:i + 1]
+            if ch != b"\\":
+                out_b += ch
+                i += 1
+                continue
+            nx = lit[i + 1:i + 2]
+            if nx == b"x":
+                mm = re.match(rb"[0-9A-Fa-f]{1,2}", lit[i + 2:])
+                out_b.append(int(mm.group(0), 16))
+                i += 2 + len(mm.group(0))
+            elif nx and nx in b"01234567":
+                mm = re.match(rb"[0-7]{1,3}", lit[i + 1:])
+                out_b.append(int(mm.group(0), 8) & 0xFF)
+                i += 1 + len(mm.group(0))
+            elif nx in esc:
+                out_b += esc[nx]
+                i += 2
+            else:
+                raise ValueError(f"unknown escape \\{nx.decode(errors='replace')}")
+    text = bytes(out_b).decode("utf-8")
+    if not text.endswith("\n") or "\0" in text:
+        raise ValueError("the template must end with a newline and contain no NUL")
+    sf = st.SettingsFile(text.encode("utf-8"))
+    for k in ("video", "tv", "hostname", "wifi_ssid", "hotspot", "ssh", "password"):
+        if k not in sf.values:
+            raise ValueError(f"the template has no {k!r} line")
+    if out:
+        with open(out, "wb") as f:
+            f.write(text.encode("utf-8"))
+    return text
+
+
+def apply(mode, no_reboot=False):
+    c = Ctx(mode, no_reboot)
+    toks = st.cmdline_tokens()
+    ci = "sticktime.ci=1" in toks
+    if "sticktime.noreboot=1" in toks or os.environ.get("STICKTIME_NOREBOOT") == "1":
+        c.no_reboot = True
+    if not c.files_only:
+        try:
+            os.makedirs(st.p(st.STATE), exist_ok=True)
+            os.makedirs(st.p(st.VARLIB), exist_ok=True)
+        except OSError:
+            pass
+    s = st.load_settings(repair=True)
+    for w in s.warnings:
+        c.warn(w)
+    s.warnings = []
+    cc = country_of(c, s)
+    changed = reboot = False
+    h = ""
+    steps = [("hostname", lambda: step_hostname(c, s)),
+             ("ssh", lambda: step_ssh(c, s)),
+             ("password", lambda: step_password(c, s)),
+             ("wifi", lambda: step_wifi(c, s, cc)),
+             ("bluetooth", lambda: step_bluetooth(c, s)),
+             ("governor", lambda: step_governor(c))]
+    failed = []
+    for name, fn in steps:
+        try:
+            fn()
+        except Exception as e:                          # noqa: BLE001  (one broken step must not stop the rest)
+            failed.append(name)
+            c.warn(f"{name}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+    try:
+        changed, reboot, h = step_boot_config(c, s, cc)
+    except Exception as e:                              # noqa: BLE001
+        failed.append("boot-config")
+        c.warn(f"boot config: {type(e).__name__}: {e}")
+        traceback.print_exc()
+    for w in s.warnings:
+        c.warn(w)
+    do_reboot = False
+    try:
+        do_reboot = reboot_once(c, changed, reboot, h)
+    except Exception as e:                              # noqa: BLE001
+        c.warn(f"reboot guard: {e}")
+    c.report.update({"mode": mode, "at": st.now_ms(), "changed": c.done, "warnings": c.warnings,
+                     "failed": failed, "reboot": do_reboot,
+                     "reboot_needed": bool(c.report.get("reboot_needed") or do_reboot)})
+    if not c.files_only:
+        try:
+            st.write_json(st.STATE + "/setup.json", c.report)
+        except OSError as e:
+            st.log(f"cannot write setup.json: {e}")
+    st.log(("applied: " + ", ".join(c.done)) if c.done else "nothing to change")
+    if mode == "boot":
+        line = (f"setup done hostname={c.report.get('hostname', '?')} reboot={1 if do_reboot else 0} "
+                f"warnings={len(c.warnings)} failed={','.join(failed) or '-'}")
+        st.kmsg(line)
+        if ci:
+            st.console("STICKTIME-CI: " + line)       # the QEMU boot test waits for this line
+    if do_reboot:
+        st.kmsg("rebooting once to apply the video settings")
+        os.sync() if hasattr(os, "sync") else None
+        st.run(["systemctl", "--no-block", "reboot"])
+    return c, failed
+
+
+def main(argv):
+    args = list(argv)
+    root = None
+    no_reboot = False
+    as_json = False
+    while args and args[0].startswith("--"):
+        a = args.pop(0)
+        if a == "--root" and args:
+            root = args.pop(0)
+        elif a.startswith("--root="):
+            root = a.split("=", 1)[1]
+        elif a == "--no-reboot":
+            no_reboot = True
+        elif a == "--json":
+            as_json = True
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        else:
+            print(f"unknown option {a}", file=sys.stderr)
+            return 2
+    if root:
+        st.set_root(root)
+    cmd = args.pop(0) if args else "boot"
+    if "--json" in args:
+        as_json = True
+        args.remove("--json")
+    if cmd == "extract-template":
+        if not args:
+            print("usage: sticktime-setup extract-template HEADER [OUT]", file=sys.stderr)
+            return 2
+        try:
+            text = extract_template(args[0], args[1] if len(args) > 1 else None)
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            print(f"extract-template: {e}", file=sys.stderr)
+            return 1
+        if len(args) < 2:
+            sys.stdout.write(text)
+        return 0
+    if cmd not in ("boot", "apply", "bake"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    c, failed = apply(cmd, no_reboot)
+    if as_json or cmd == "apply":
+        print(json.dumps({"ok": not failed, "reboot_needed": bool(c.report.get("reboot_needed")),
+                          "changed": c.done, "warnings": c.warnings}))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

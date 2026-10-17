@@ -1,0 +1,18 @@
+# Finishes an app or game update that a power cut interrupted, before the app starts (local
+# only, no network: a few file renames on the FAT partition at most).
+[Unit]
+Description=StickTime Pi: finish an interrupted update
+After=sticktime-setup.service local-fs.target
+Before=sticktime.service
+RequiresMountsFor=/boot/firmware
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/sticktime/sticktime-update --base /boot/firmware/sticktime --settings /boot/firmware/sticktime.txt --state /run/sticktime repair
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

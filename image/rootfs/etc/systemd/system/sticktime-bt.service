@@ -1,0 +1,18 @@
+# bluetooth = on: pairs, trusts and connects ELRS BLE joysticks and Bluetooth gamepads by
+# themselves. Waits quietly when there is no adapter; exits at once when bluetooth = off.
+[Unit]
+Description=StickTime Pi: pair ELRS BLE joysticks and gamepads
+After=bluetooth.service sticktime-setup.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/sticktime/sticktime-bt run
+Restart=on-failure
+RestartSec=15
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
