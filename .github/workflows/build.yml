@@ -37,7 +37,7 @@ jobs:
       - name: Headless game scenarios
         working-directory: sticktime-pi
         run: python3 host/tests/run_scenarios.py --quick --out build/scenario-shots
-      - name: VTX control end to end (the program and a fake VTX on a pty: the termios path)
+      - name: "VTX control end to end (the program and a fake VTX on a pty: the termios path)"
         working-directory: sticktime-pi
         run: python3 host/tests/vtx_live_test.py --pty
       - uses: actions/upload-artifact@v4
