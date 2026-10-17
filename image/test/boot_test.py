@@ -477,24 +477,27 @@ class Console:
         except OSError:
             pass
 
-    def login(self, user, password, timeout=180):
+    def login(self, user, password, timeout=180, slow=False):
+        """slow (-icount): a prompt can take a minute to come, and the Enter that starts the next try
+        is then read as an empty password ("Login incorrect"): wait longer, and keep trying"""
+        k = 4 if slow else 1
         end = time.time() + timeout
         while time.time() < end:
             m0 = self.mark()
             self.send("\r")
-            if self.wait(r"login: ?$", 8, m0) or self.wait(r"login:", 1, m0):
+            if self.wait(r"login: ?$", 8 * k, m0) or self.wait(r"login:", 1, m0):
                 m1 = self.mark()
                 self.send(user + "\r")
-                if not self.wait(r"[Pp]assword: ?", 20, m1):
+                if not self.wait(r"[Pp]assword: ?", 20 * k, m1):
                     continue
                 m2 = self.mark()
                 self.send(password + "\r")
-                m = self.wait(r"(\$ ?$|Login incorrect)", 40, m2)
+                m = self.wait(r"(\$ ?$|Login incorrect)", 40 * k, m2)
                 if m and "incorrect" not in m.group(0):
                     self.run("stty -echo cols 250 2>/dev/null; export TERM=dumb SYSTEMD_PAGER= SYSTEMD_COLORS=0 PAGER=cat "
-                             "SYSTEMD_URLIFY=0 LC_ALL=C", 20)
+                             "SYSTEMD_URLIFY=0 LC_ALL=C", 20 * k)
                     return True
-                if m:
+                if m and not slow:
                     return False
             elif self.wait(r"\$ ?$", 1, m0):
                 return True                     # still logged in from before
@@ -735,7 +738,7 @@ class BootTest:
     def login(self):
         # -icount (after QEMU's SD controller flaked) can keep the console busy with boot messages for
         # minutes after 'ready'
-        return self.console.login("pi", self.password, timeout=600 if self.icount else 180)
+        return self.console.login("pi", self.password, timeout=600 if self.icount else 180, slow=self.icount)
 
     def sh(self, cmd, timeout=60):
         rc, out = self.console.run(cmd, timeout)
@@ -975,8 +978,11 @@ class BootTest:
                 self.prepare()
                 self.launch(1, first=True)
                 t = self.wait_boot(1)
-                flake = re.search(SD_FLAKE, self.console.text()) if "error" in t else None
-                if not flake or "ready_s" in t or attempt > self.a.retries:
+                # the stalled card can also make the units that wait on D-Bus give up (avahi-daemon,
+                # wpa_supplicant) while the boot still gets to 'ready'
+                bad = "error" in t or ("ready_s" in t and "failed=none" not in t.get("ready_line", ""))
+                flake = re.search(SD_FLAKE, self.console.text()) if bad else None
+                if not flake or attempt > self.a.retries:
                     break
                 self.info(f"boot 1 attempt {attempt}", f"QEMU's SD controller timed out ({flake.group(0)}): starting over"
                           " with -icount")
