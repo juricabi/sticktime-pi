@@ -205,7 +205,7 @@ elif name == "bluetoothctl":
 sys.stdout.write(out)
 sys.exit(rc)
 '''
-FAKES = ("nmcli", "systemctl", "iw", "rfkill", "chpasswd", "usermod", "bluetoothctl")
+FAKES = ("nmcli", "systemctl", "iw", "rfkill", "chpasswd", "usermod", "bluetoothctl", "journalctl")
 PYCACHE = os.path.join(LIB, "__pycache__")
 _PYC_BEFORE = set(os.listdir(PYCACHE)) if os.path.isdir(PYCACHE) else None
 
@@ -938,6 +938,30 @@ class TestSetup(Env):
         self.assertIn("unblock bluetooth", self.argvs("rfkill"))
         if not nt:
             self.assertEqual(self.r("/var/lib/systemd/rfkill/platform-fe215040.serial:bluetooth"), "0\n")
+
+    def test_keep_logs(self):
+        conf = "/etc/systemd/journald.conf.d/91-sticktime-keep-logs.conf"
+        restart = "restart systemd-journald.service"
+        self.baked()
+        c, _ = self.run_setup()                             # off, the default: the journal stays in RAM
+        self.assertFalse(self.exists(conf))
+        self.assertNotIn(restart, self.argvs("systemctl"))
+        self.assertIs(c.report["keep_logs"], False)
+        self.settings(keep_logs="on")
+        c, _ = self.run_setup()
+        self.assertIn("Storage=persistent\nSystemMaxUse=50M\n", self.r(conf))
+        self.assertIn(restart, self.argvs("systemctl"))
+        self.assertEqual(self.argvs("journalctl"), ["--flush"])     # this boot's log so far goes to the card too
+        self.assertIn("logs kept across restarts", c.done)
+        self.clear_calls()
+        c, _ = self.run_setup()                             # already so: journald isn't restarted again
+        self.assertNotIn(restart, self.argvs("systemctl"))
+        self.assertNotIn("logs kept across restarts", c.done)
+        self.settings(keep_logs="off")
+        c, _ = self.run_setup()
+        self.assertFalse(self.exists(conf))
+        self.assertIn(restart, self.argvs("systemctl"))
+        self.assertIn("logs in RAM only", c.done)
 
     def test_governor(self):
         self.baked()

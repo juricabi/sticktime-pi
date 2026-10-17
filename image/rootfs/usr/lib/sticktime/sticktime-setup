@@ -16,8 +16,8 @@
 What it applies: hostname (+ /etc/hosts), the WiFi client profile (NetworkManager keyfile, 0600),
 the hotspot profile, WiFi country (regulatory domain, rfkill unblock), Bluetooth rfkill, ssh on/off
 (also /boot/firmware/ssh or ssh.txt from a PC), the pi user's password (chpasswd, then cleared from
-sticktime.txt; never logged), the CPU governor, the managed block of config.txt and our tokens of
-cmdline.txt. Reboot loops are impossible: the reboot happens only when the files changed, at most
+sticktime.txt; never logged), keep_logs (the journal on the SD card or in RAM), the CPU governor, the
+managed block of config.txt and our tokens of cmdline.txt. Reboot loops are impossible: the reboot happens only when the files changed, at most
 once for the same content (/var/lib/sticktime/boot-config.json), and never with sticktime.noreboot=1
 on the kernel command line. sticktime.ci=1 on the command line prints CI markers on the console.
 """
@@ -285,6 +285,31 @@ def step_governor(c):
             c.warn(f"governor {pol}: {e}")
 
 
+KEEP_LOGS = "/etc/systemd/journald.conf.d/91-sticktime-keep-logs.conf"
+KEEP_LOGS_TEXT = ("# keep_logs = on in sticktime.txt (sticktime-setup removes this file again for off): the journal\n"
+                  "# on the SD card, so it survives a restart; written to the card every minute\n"
+                  "[Journal]\nStorage=persistent\nSystemMaxUse=50M\nSyncIntervalSec=1m\n")
+
+
+def step_logs(c, s):
+    """keep_logs: the journal on the SD card, or in RAM only (Raspberry Pi OS's volatile default). The
+    logs already kept stay in /var/log/journal when it is turned off (at most 50 MB)."""
+    want = s.bool("keep_logs")
+    c.report["keep_logs"] = want
+    if c.files_only:
+        return
+    if want:
+        if not st.write_if_changed(KEEP_LOGS, KEEP_LOGS_TEXT):
+            return
+    elif not st.remove(KEEP_LOGS):
+        return
+    # journald reads its settings when it starts; the flush moves this boot's log so far to the card
+    st.run(["systemctl", "restart", "systemd-journald.service"], timeout=60)
+    if want:
+        st.run(["journalctl", "--flush"], timeout=60)
+    c.done.append("logs kept across restarts" if want else "logs in RAM only")
+
+
 def step_boot_config(c, s, cc):
     """(changed, reboot_wanted)"""
     video = s.enum("video", stboot.VIDEOS)
@@ -445,6 +470,7 @@ def apply(mode, no_reboot=False):
              ("password", lambda: step_password(c, s)),
              ("wifi", lambda: step_wifi(c, s, cc)),
              ("bluetooth", lambda: step_bluetooth(c, s)),
+             ("logs", lambda: step_logs(c, s)),
              ("governor", lambda: step_governor(c))]
     failed = []
     for name, fn in steps:

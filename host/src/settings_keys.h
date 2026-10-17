@@ -51,6 +51,7 @@
   X("ssh",              SK_BOOL,   "off",         "",                                                  false, false, "SSH login as user pi (set a password first)") \
   X("password",         SK_SECRET, "",            "",                                                  false, false, "Sets the password of user pi, then is cleared") \
   X("auto_update",      SK_BOOL,   "off",         "",                                                  false, false, "Install updates of the game and StickTime Pi when online") \
+  X("keep_logs",        SK_BOOL,   "off",         "",                                                  false, false, "Keep the system log across restarts (on the SD card, at most 50 MB), to see why the Pi stopped") \
   X("github_token",     SK_SECRET, "",            "",                                                  false, false, "GitHub token (optional): only for app updates from a private fork")
 
 /* The file written when there is none (and the image's /boot/firmware/sticktime.txt). */
@@ -166,5 +167,8 @@
 "password =\n" \
 "# install updates of the game and StickTime Pi at boot when online: on, off\n" \
 "auto_update = off\n" \
+"# keep the system log across restarts (on the SD card, at most 50 MB), to see what happened\n" \
+"# before the Pi stopped or restarted: on, off\n" \
+"keep_logs = off\n" \
 "# GitHub token (optional): only needed for StickTime Pi updates from a private fork\n" \
 "github_token =\n"

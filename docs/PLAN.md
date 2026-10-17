@@ -161,6 +161,7 @@ hostname = sticktime
 ssh = off
 password =              # sets the 'pi' user's password (then cleared from this file)
 auto_update = off
+keep_logs = off         # on: the journal on the SD card (Storage=persistent, 50 MB), applied by sticktime-setup
 ```
 
 ### 3.7 Image (`image/`, built in GitHub Actions)

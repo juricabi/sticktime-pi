@@ -374,7 +374,8 @@ static bool in_list(const char *k, const char *const *list) {
 static const char *const RESTART_KEYS[] = { "aspect", "av_mode", "hdmi_mode", "margin", "fonts", "audio_out", NULL };
 /* applied by sticktime-setup at boot */
 static const char *const BOOT_KEYS[] = { "wifi_ssid", "wifi_password", "wifi_country", "hotspot", "hotspot_ssid",
-                                         "hotspot_password", "bluetooth", "hostname", "ssh", "password", NULL };
+                                         "hotspot_password", "bluetooth", "hostname", "ssh", "password", "keep_logs",
+                                         NULL };
 
 static const char *kind_str(settings_kind_t k) {
   switch (k) {

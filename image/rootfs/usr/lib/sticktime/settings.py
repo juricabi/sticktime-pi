@@ -93,6 +93,7 @@ KEYS = (
     Key("ssh", BOOL, "off", "", False, False, "SSH login as user pi (set a password first)"),
     Key("password", SECRET, "", "", False, False, "Sets the password of user pi, then is cleared"),
     Key("auto_update", BOOL, "off", "", False, False, "Install updates of the game and StickTime Pi when online"),
+    Key("keep_logs", BOOL, "off", "", False, False, "Keep the system log across restarts (on the SD card, at most 50 MB), to see why the Pi stopped"),
     Key("github_token", SECRET, "", "", False, False, "GitHub token (optional): only for app updates from a private fork"),
 )
 
@@ -209,6 +210,9 @@ TEMPLATE = (
     "password =\n"
     "# install updates of the game and StickTime Pi at boot when online: on, off\n"
     "auto_update = off\n"
+    "# keep the system log across restarts (on the SD card, at most 50 MB), to see what happened\n"
+    "# before the Pi stopped or restarted: on, off\n"
+    "keep_logs = off\n"
     "# GitHub token (optional): only needed for StickTime Pi updates from a private fork\n"
     "github_token =\n"
 )

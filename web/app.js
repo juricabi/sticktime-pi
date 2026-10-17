@@ -268,7 +268,8 @@
     stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
     latency: 'Camera prediction', stick_mode: 'Stick mode', script: 'Script', stats: 'Timing stats', sd_write: 'The web page may change',
     sound: 'Sound', volume: 'Volume', music: 'Music', music_volume: 'Music volume', music_source: 'Music from', audio_out: 'Output', audio_mono: 'Mono',
-    hostname: 'Name', ssh: 'SSH', password: 'Password of user pi', auto_update: 'Automatic updates', github_token: 'GitHub token',
+    hostname: 'Name', ssh: 'SSH', password: 'Password of user pi', keep_logs: 'Keep logs', auto_update: 'Automatic updates',
+    github_token: 'GitHub token',
     vtx: 'VTX control', vtx_port: 'Pin', vtx_send_only: 'Send only',
   };
   const CHOICE = {
@@ -297,6 +298,7 @@
     music: 'Plays while you fly: generated live, or your own songs (below).',
     password: 'Set it before you turn SSH on. It is applied at the next boot and then removed from the file, so this shows "None waiting" again; the Pi keeps the password.',
     hotspot_password: 'Not set: the hotspot\'s password is sticktime.',
+    keep_logs: 'Turn it on when the Pi stops or restarts by itself: the log of the run before a restart is then kept (over SSH: journalctl -b -1). Applies at the next boot.',
     vtx: 'One pin works at once; the two-pin UART mode needs a reboot when you turn it on (the Pi turns the UART on as it starts).',
     vtx_port: 'One pin (one wire through 1 kΩ) is the usual way; two pins (a UART) are the most reliable if one pin gives errors.',
     vtx_send_only: 'For a VTX whose answers can\'t be read: this page then can\'t show what the VTX is set to.',
