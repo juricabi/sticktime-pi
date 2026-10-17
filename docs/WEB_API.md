@@ -214,7 +214,10 @@ keys apply at once otherwise.
 - `POST /api/update/check` → 202 `{"ok":true}` (runs `sticktime-update check`; staging the latest game release also
   makes the editor page's Install offer it).
 - `POST /api/update/apply` body `game|app` → 202 (runs `sticktime-update apply <what>`; the app update restarts the
-  service, so the page polls `/api/status` until it answers again).
+  service, so the page polls `/api/status` until it answers again). An app update or rollback also brings that
+  version's system scripts (`lib/` → `/usr/lib/sticktime`); when some of them apply only after a reboot, `message`
+  ends with "Some system changes apply after a reboot.", and when they couldn't be installed, with "The system
+  scripts weren't updated: …" (the app itself is installed either way).
 - `POST /api/update/rollback` body `game|app` → 202.
 
 ## System

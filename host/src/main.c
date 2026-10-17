@@ -227,6 +227,7 @@ int main(int argc, char **argv) {
     wc.max_upload = 64u << 20;
     if (web_start(&app, &wc) != 0) app_log(&app, "web: can't listen on port %d", a.port);
   }
+  web_sync_system(&app);
   device_loop(&h, a.frames);
   app_log(&app, "stopping");
   web_stop();

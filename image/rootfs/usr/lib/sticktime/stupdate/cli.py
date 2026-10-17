@@ -7,7 +7,7 @@ import sys
 import time
 import traceback
 
-from . import VERSION
+from . import VERSION, system
 from .app import App
 from .common import (EXIT_BUSY, EXIT_INTERNAL, EXIT_OK, EXIT_UPDATE, Config, Lock, Status, UpdateError, fs_error,
                      log, read_settings, truthy)
@@ -52,6 +52,9 @@ def parser():
     b = sub.add_parser("boot", help="at boot: finish or undo an interrupted update; then, when auto_update is on, update")
     b.add_argument("--no-network", action="store_true", help="only the repair")
     sub.add_parser("repair", help="the repair part of boot (no network)")
+    y = sub.add_parser("sync", help="make the system scripts match the installed app's lib/ (the host runs it at start)")
+    y.add_argument("--to", help="the folder they are in (/usr/lib/sticktime)")
+    y.add_argument("--wait", type=float, default=120, help="seconds to wait for a running update (120)")
     return p
 
 
@@ -77,11 +80,13 @@ def main(argv=None):
     cfg = Config(args.base, args.settings, args.state)
     if args.cmd == "status":
         return cmd_status(cfg)
+    if args.cmd == "sync":
+        return cmd_sync(cfg, args)
     lock = Lock(cfg.s("update.lock"))
     if not lock.acquire():
         print("Another update is running.", file=sys.stderr)
         return EXIT_BUSY
-    app = None
+    app = st = None
     try:
         st = Status(cfg)
         settings = read_settings(cfg.settings)
@@ -115,6 +120,7 @@ def main(argv=None):
         # last: sticktime.service's restart may take this process with it (it runs in the host's cgroup)
         try:
             if app is not None and app.need_restart:
+                system.sync_after_app(cfg, st)      # the system scripts of the set now installed
                 app.restart(auto=getattr(args, "auto", False) or args.cmd in ("boot", "repair"))
         except Exception as e:
             log("restart: %s" % e)        # the update itself is done; the next start runs it
@@ -160,6 +166,32 @@ def cmd_status(cfg):
         finally:
             lock.release()
     print(json.dumps(st.d, indent=1))
+    return EXIT_OK
+
+
+def cmd_sync(cfg, args):
+    """the host, at every start: waits for a running update (which syncs itself when it changed the app)"""
+    lock = Lock(cfg.s("update.lock"))
+    end = time.monotonic() + max(0.0, args.wait)
+    while not lock.acquire():
+        if time.monotonic() >= end:
+            print("An update is running: the system scripts are synced at the next start.", file=sys.stderr)
+            return EXIT_BUSY
+        time.sleep(2)
+    try:
+        r = system.sync(cfg, args.to)
+    except UpdateError as e:
+        log(e.message)
+        print(e.message, file=sys.stderr)
+        return e.exit_code
+    except OSError as e:
+        log("system scripts: %s" % e)
+        print("The system scripts couldn't be updated: %s" % e, file=sys.stderr)
+        return EXIT_INTERNAL
+    finally:
+        lock.release()
+    if not r:
+        print(r.summary())          # a change is in the log already (stderr: the journal)
     return EXIT_OK
 
 

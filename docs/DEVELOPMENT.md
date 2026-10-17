@@ -142,7 +142,10 @@ host/third_party/  Lua 5.3.6, stb, minimp3, dr_libs (unmodified, see its README)
 host/fonts/      Roboto (OFL)
 web/             the Pi's web page (index.html, app.js, style.css, pi-sd.js) and its tests/
 image/           build.sh, base.env (pinned inputs), rootfs/ (systemd units, /usr/lib/sticktime helpers,
-                 the updater stupdate/), test/ (setup and boot tests), tests/ (updater tests)
+                 the updater stupdate/), test/ (setup and boot tests), tests/ (updater tests). The helpers
+                 also go into every app package as lib/ (tools/make_app_package.py lib_files) and reach
+                 running Pis through the updater's sync (stupdate/system.py); systemd units and other
+                 files outside /usr/lib/sticktime still need a new image
 tools/           patch_editor.py (makes the emulator page work on the Pi), compare_emulator.py
 build/, out/     build output and images (ignored by git)
 ```

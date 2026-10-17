@@ -110,6 +110,10 @@ class Config:
         self.state = state or env.get("STICKTIME_STATE") or "/run/sticktime"
         # where programs may run (the preflight): Pi OS mounts /run noexec, the ext4 root isn't
         self.var = env.get("STICKTIME_VAR") or "/var/lib/sticktime"
+        # the system scripts (stupdate/system.py): synced from the app set's lib/
+        self.libdir = env.get("STICKTIME_LIBDIR") or "/usr/lib/sticktime"
+        self.python = env.get("STICKTIME_PYTHON") or sys.executable or "/usr/bin/python3"
+        self.systemctl = env.get("STICKTIME_SYSTEMCTL", "systemctl --no-block")     # a JSON list too; "" skips
         self.api = (env.get("STICKTIME_GITHUB_API") or "https://api.github.com").rstrip("/")
         self.raw = (env.get("STICKTIME_GITHUB_RAW") or "https://raw.githubusercontent.com").rstrip("/")
         self.pages = (env.get("STICKTIME_PAGES") or "https://juricabi.github.io/sticktime").rstrip("/")

@@ -761,11 +761,16 @@ class BootTest:
         ver2 = self.a.update_ver
         rc, out = self.sh("cat /boot/firmware/sticktime/VERSION")
         ver1 = out.strip()
+        # its system scripts differ from the image's: a new file and a changed one (stupdate/system.py)
+        lib = make_app_package.lib_files()
+        extra = {"boot-test.txt": b"from the update\n", "stboot.py": lib["stboot.py"] + b"\n# boot test\n"}
         try:
-            data, _n = make_app_package.build(self.a.update_bin, ver2, 1700000000)
+            data, _n = make_app_package.build(self.a.update_bin, ver2, 1700000000, lib_extra=extra)
         except Exception as e:                       # noqa: BLE001
             self.check(f"boot {n}: app package {ver2} built", False, e)
             return
+        scripts = ("cat /usr/lib/sticktime/boot-test.txt 2>/dev/null; grep -c '^# boot test' /usr/lib/sticktime/stboot.py;"
+                   " test -f /var/lib/sticktime/system/image.json && echo image-kept")
         gh = fake_github.FakeGitHub(advertise="10.0.2.2").start()
         try:
             gh.add_release("juricabi/sticktime-pi", "v" + ver2, f"sticktime-pi-app-{ver2}.tar.gz", data)
@@ -778,12 +783,32 @@ class BootTest:
             self.check(f"boot {n}: app update {ver1} -> {ver2} installed", v.strip() == ver2, f"VERSION {v.strip()!r}; {out[-600:]}")
             seen = self.app_version_seen(ver2)
             self.check(f"boot {n}: the updated app runs (status says {ver2})", seen == ver2, f"status version {seen!r}")
+            rc2, s = self.sh(scripts)
+            self.check(f"boot {n}: the update's system scripts are in /usr/lib/sticktime",
+                       s.split() == ["from", "the", "update", "1", "image-kept"], s)
+            rc2, s = self.sh("cat /run/sticktime/update.json")
+            self.check(f"boot {n}: the web page is told what applies after a reboot",
+                       "Some system changes apply after a reboot" in s, s[-600:])
+            # the host runs the set's own sync (lib/ on the FAT, python -I -B) at every start: at boot and
+            # after the update's restart, which then had nothing left to do
+            end, jl, syncs = time.time() + 60, "", 0
+            while time.time() < end:
+                rc2, jl = self.console.sudo("journalctl -b -u sticktime.service --no-pager -o cat | grep -c "
+                                            "\"system scripts are up to date\"", self.password, timeout=60)
+                last = (jl or "").strip().splitlines()[-1:]
+                syncs = int(last[0]) if last and last[0].isdigit() else 0
+                if syncs >= 2:
+                    break
+                time.sleep(3)
+            self.check(f"boot {n}: the host's start sync ran at boot and after the update (up to date)", syncs >= 2, jl)
             rc, out = self.console.sudo(upd + " rollback app", self.password, timeout=600)
             self.info(f"boot {n}: sticktime-update rollback app", out[-1500:])
             rc2, v = self.sh("cat /boot/firmware/sticktime/VERSION")
             self.check(f"boot {n}: rollback to {ver1}", v.strip() == ver1, f"VERSION {v.strip()!r}; {out[-600:]}")
             seen = self.app_version_seen(ver1)
             self.check(f"boot {n}: the old app runs again (status says {ver1})", seen == ver1, f"status version {seen!r}")
+            rc2, s = self.sh(scripts)
+            self.check(f"boot {n}: the rollback brought the image's system scripts back", s.split() == ["0", "image-kept"], s)
         finally:
             gh.stop()
 

@@ -142,6 +142,7 @@ int main(int argc, char **argv) {
   }
   printf("READY\n");
   fflush(stdout);
+  web_sync_system(&app);              /* as main.c: the set's lib/sticktime-update sync, when there is one */
 
   int64_t t0 = plat_now_us();
   for (uint32_t frame = 0;; frame++) {

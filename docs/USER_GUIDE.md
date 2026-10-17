@@ -177,7 +177,9 @@ live, or your own songs from the `sticktime/music` folder (upload them on the we
 Web page → Updates → Check. Game updates come from the StickTime releases on GitHub and update all three
 editions together (color, B&W and Lite); they never touch your saves (including the Lite's
 `StickTimeLite/data.txt`), tracks and ghosts. A bad update can be rolled back from the same page, again all
-three together. `auto_update = on` installs updates at boot when the Pi is online. If you put files of your
+three together. StickTime Pi updates bring its program, the web page and its system scripts (the boot
+setup, WiFi, hotspot and Bluetooth helpers, the updater itself); a few of those changes apply after the next
+reboot, and the Updates page says so. `auto_update = on` installs updates at boot when the Pi is online. If you put files of your
 own in an edition (a test build from a PC), automatic updates leave that edition as it is; a manual update
 replaces them and keeps a copy in `sticktime/backup/`.
 

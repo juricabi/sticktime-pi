@@ -203,6 +203,29 @@ static int run_capture(const char *cmd, char *out, size_t max, int timeout_ms) {
 #endif
 }
 
+void web_sync_system(app_t *app) {
+  char upd[700], q[5][800], pq[600], cmd[4400];
+  web_stat_t st;
+  if (snprintf(upd, sizeof upd, "%s/lib/sticktime-update", app->paths.base) >= (int)sizeof upd) return;
+  if (web_fs_stat(upd, &st) != 0 || !st.exists || st.is_dir) return;
+  const char *py = getenv("STICKTIME_PYTHON");
+#ifdef _WIN32
+  if (!py || !*py) py = "python";
+#else
+  if (!py || !*py) py = "/usr/bin/python3";
+#endif
+  quote_arg(pq, sizeof pq, py);
+  quote_arg(q[0], sizeof q[0], upd);
+  quote_arg(q[1], sizeof q[1], app->paths.base);
+  quote_arg(q[2], sizeof q[2], app->paths.settings);
+  quote_arg(q[3], sizeof q[3], app->paths.state);
+  quote_arg(q[4], sizeof q[4], app->paths.libexec);
+  /* -B: no bytecode written into lib/ on the FAT partition */
+  snprintf(cmd, sizeof cmd, "%s -I -B %s --base %s --settings %s --state %s sync --to %s", pq, q[0], q[1], q[2],
+           q[3], q[4]);
+  if (plat_spawn(cmd) != 0) app_log(app, "can't start the system scripts' sync");
+}
+
 /* start a helper in the background; false when it isn't installed or couldn't start */
 static bool spawn_helper(const char *name, const char *args) {
   char cmd[1600];

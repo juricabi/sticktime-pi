@@ -36,9 +36,11 @@ PATCHER = os.path.join(REPO, "tools", "patch_editor.py")
 FIXTURE = os.path.join(REPO, "build", "agent-updater", "fixture", "StickTime-1.7.2-sdcard.zip")
 sys.path.insert(0, LIB)
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
 
 from fake_github import FakeGitHub  # noqa: E402
-from stupdate import common, gamezip, net, app as appmod, game as gamemod  # noqa: E402
+from stupdate import common, gamezip, net, app as appmod, game as gamemod, system as sysmod  # noqa: E402
+import make_app_package  # noqa: E402
 
 GAME = "juricabi/sticktime"
 APPR = "juricabi/sticktime-pi"
@@ -229,6 +231,7 @@ class Device:
         self.base = os.path.join(root, "boot", "sticktime")
         self.settings = os.path.join(root, "boot", "sticktime.txt")
         self.state = os.path.join(root, "run")
+        self.libdir = os.path.join(root, "usr-lib-sticktime")
         self.tools = os.path.join(self.base, "sd", "SCRIPTS", "TOOLS")
         os.makedirs(self.tools)
         os.makedirs(self.state)
@@ -310,6 +313,10 @@ class Device:
             "STICKTIME_STATUS_URL": self.gh.base + "/status",
             "STICKTIME_IMAGE_VERSION_FILE": os.path.join(self.root, "image-version"),
             "STICKTIME_VAR": os.path.join(self.root, "var"),
+            # the system scripts (/usr/lib/sticktime) and systemctl, which logs what it was asked
+            "STICKTIME_LIBDIR": self.libdir,
+            "STICKTIME_SYSTEMCTL": json.dumps([sys.executable, "-c", "import sys; open(r'%s', 'a').write(' '.join("
+                                               "sys.argv[1:]) + chr(10))" % os.path.join(self.state, "systemctl.log")]),
         })
         e.update({k: str(v) for k, v in kw.items()})
         return e
@@ -2611,6 +2618,216 @@ class TestReconcileRules(FakeServerCase):
         os.unlink(self.dev.p("update/sd.json"))
         self.assertTrue(g._replaceable(self.dev.factory_lua, s, False))
         self.assertFalse(g._replaceable(self.new + b"-- mine\n", s, False))
+
+
+# ---------------------------------------------------------------- the system scripts (lib/)
+
+_LIB = None
+
+
+def image_lib():
+    """the system scripts as the image installs them (and an app package's lib/ holds them)"""
+    global _LIB
+    if _LIB is None:
+        _LIB = make_app_package.lib_files()
+    return dict(_LIB)
+
+
+def newer_lib():
+    """a later version's lib/: a changed library and daemon, a new file"""
+    lib = image_lib()
+    lib["stlib.py"] = lib["stlib.py"] + b"\n# changed in 0.2.2\n"
+    lib["sticktime-bt"] = lib["sticktime-bt"] + b"\n# changed in 0.2.2\n"
+    lib["stnew.py"] = b"NEW = 1\n"
+    return lib
+
+
+class TestSystemSync(FakeServerCase):
+    """stupdate/system.py: /usr/lib/sticktime (STICKTIME_LIBDIR) from the installed set's lib/"""
+
+    def setUp(self):
+        super().setUp()
+        self.image = image_lib()
+        self.put_tree(self.dev.libdir, self.image)
+
+    @staticmethod
+    def put_tree(root, files):
+        for rel, b in files.items():
+            p = os.path.join(root, *rel.split("/"))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b)
+
+    def install_set(self, lib, version="0.2.2", tweak=None):
+        """an installed app set with this lib/ (as the updater leaves it): files + SHA256SUMS"""
+        d = self.dev
+        d.put("VERSION", (version + "\n").encode())
+        shutil.rmtree(d.p("lib"), ignore_errors=True)
+        files = {"lib/" + rel: b for rel, b in lib.items()}
+        files["VERSION"] = (version + "\n").encode()
+        sums = "".join("%s  %s\n" % (hashlib.sha256(b).hexdigest(), p) for p, b in sorted(files.items()))
+        for p, b in files.items():
+            d.put(p, b)
+        d.put("SHA256SUMS", sums.encode())
+        if tweak:
+            tweak(d)
+
+    def libdir(self):
+        return sysmod.tree(self.dev.libdir)
+
+    def systemctl(self):
+        try:
+            with open(os.path.join(self.dev.state, "systemctl.log")) as f:
+                return f.read().splitlines()
+        except OSError:
+            return []
+
+    def test_no_lib_changes_nothing(self):
+        d = self.dev
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertIn("up to date", d.out())
+        self.assertEqual(self.libdir(), self.image)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "var", "system")))
+
+    def test_install_keep_the_image_and_go_back(self):
+        d, new = self.dev, newer_lib()
+        self.install_set(new)
+        os.makedirs(os.path.join(d.libdir, "__pycache__"))
+        with open(os.path.join(d.libdir, "__pycache__", "stlib.cpython-313.pyc"), "wb") as f:
+            f.write(b"stale")
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertEqual(self.libdir(), new)
+        self.assertFalse(os.path.exists(os.path.join(d.libdir, "__pycache__")))
+        self.assertIn("System scripts from StickTime Pi 0.2.2: updated sticktime-bt, stlib.py, stnew.py.", d.out())
+        self.assertIn("Restarted sticktime-bt.service. Some changes apply after a reboot.", d.out())
+        self.assertEqual(self.systemctl(), ["try-restart sticktime-bt.service"])
+        if os.name != "nt":
+            self.assertEqual(os.stat(os.path.join(d.libdir, "sticktime-bt")).st_mode & 0o777, 0o755)
+            self.assertEqual(os.stat(os.path.join(d.libdir, "stnew.py")).st_mode & 0o777, 0o644)
+        # the image's own files are kept, and what happened is noted
+        var = os.path.join(self.tmp, "var", "system")
+        self.assertEqual(sysmod.tree(os.path.join(var, "image")), self.image)
+        state = json.load(open(os.path.join(var, "state.json")))
+        self.assertEqual((state["changed"], state["reboot"]), (["sticktime-bt", "stlib.py", "stnew.py"], True))
+        # again: nothing to do, nothing restarted
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertIn("up to date", d.out())
+        self.assertEqual(len(self.systemctl()), 1)
+        # a later set changes only what differs; the image copy stays the image's
+        newer = dict(new, **{"stboot.py": new["stboot.py"] + b"# 0.2.3\n"})
+        self.install_set(newer, "0.2.3")
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertIn("updated stboot.py.", d.out())
+        self.assertEqual(len(self.systemctl()), 1)                    # not one of sticktime-bt's files
+        self.assertEqual(sysmod.tree(os.path.join(var, "image")), self.image)
+        # a set without lib/ (rolled back to 0.2.1): the image's files, and what an update added goes
+        shutil.rmtree(d.p("lib"))
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertEqual(self.libdir(), self.image)
+        self.assertIn("System scripts from the SD image: updated stboot.py, sticktime-bt, stlib.py; removed stnew.py.",
+                      d.out())
+
+    def test_refused_files_change_nothing(self):
+        d = self.dev
+        cases = {
+            "doesn't match": lambda dv: dv.put("lib/stlib.py", b"# changed after the sums\n"),
+            "is missing": lambda dv: os.unlink(dv.p("lib/stnew.py")),
+            "no SHA256SUMS": lambda dv: os.unlink(dv.p("SHA256SUMS")),
+        }
+        for why, tweak in cases.items():
+            self.install_set(newer_lib(), tweak=tweak)
+            self.assertEqual(d.run("sync"), 5, why + ": " + d.out())
+            self.assertIn(why, d.out())
+            self.assertEqual(self.libdir(), self.image, why)
+        broken = dict(newer_lib(), **{"stlib.py": b"def broken(:\n"})
+        self.install_set(broken)
+        self.assertEqual(d.run("sync"), 5, d.out())
+        self.assertIn("don't compile (stlib.py:", d.out())
+        noupd = newer_lib()
+        del noupd["sticktime-update"]
+        self.install_set(noupd)
+        self.assertEqual(d.run("sync"), 5, d.out())
+        self.assertIn("lib/ has no sticktime-update", d.out())
+        self.assertEqual(self.libdir(), self.image)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "var", "system", "image.json")))
+        self.assertEqual(self.systemctl(), [])
+
+    def test_failed_self_test_puts_the_old_files_back(self):
+        d = self.dev
+        for rel, code in (("stupdate/cli.py", b"raise SystemExit('broken updater')\n"),
+                          ("stlib.py", b"import no_such_module_here\n")):
+            self.install_set(dict(newer_lib(), **{rel: code}))
+            self.assertEqual(d.run("sync"), 5, d.out())
+            self.assertIn("failed their test", d.out())
+            self.assertEqual(self.libdir(), self.image, rel)
+            self.assertEqual(self.systemctl(), [])
+
+    def test_waits_for_a_running_update(self):
+        d = self.dev
+        self.install_set(newer_lib())
+        lock = common.Lock(os.path.join(d.state, "update.lock"))
+        self.assertTrue(lock.acquire())
+        try:
+            self.assertEqual(d.run("sync", "--wait", "0"), 7, d.out())
+            self.assertIn("An update is running", d.out())
+            self.assertEqual(self.libdir(), self.image)
+        finally:
+            lock.release()
+        self.assertEqual(d.run("sync", "--wait", "0"), 0, d.out())
+        self.assertEqual(self.libdir(), newer_lib())
+
+    def test_app_update_brings_its_scripts_and_rollback_takes_them_back(self):
+        d, new = self.dev, newer_lib()
+        self.app_release("0.2.2", sums=True, tgz=app_tgz("0.2.2", extra={"lib/" + r: b for r, b in new.items()}))
+        self.assertEqual(d.run("apply", "app"), 0, d.out())
+        self.assert_app("0.2.2")
+        self.assertEqual(self.libdir(), new)
+        self.assertEqual(d.restarts(), 1)
+        self.assertEqual(self.systemctl(), ["try-restart sticktime-bt.service"])
+        self.assertEqual(d.status()["message"], "StickTime Pi 0.2.2 is installed; restarting… Some system changes "
+                                                "apply after a reboot.")
+        # the host's own sync at its next start finds nothing to do
+        self.assertEqual(d.run("sync"), 0, d.out())
+        self.assertIn("up to date", d.out())
+        # back to 0.1.0, which has no lib/: the image's scripts
+        self.assertEqual(d.run("rollback", "app"), 0, d.out())
+        self.assert_app("0.1.0")
+        self.assertEqual(self.libdir(), self.image)
+        self.assertEqual(len(self.systemctl()), 2)
+        # forward again: lib.prev went back to lib/ with the rest of the set
+        self.assertEqual(d.run("rollback", "app"), 0, d.out())
+        self.assert_app("0.2.2")
+        self.assertEqual(self.libdir(), new)
+        self.assert_consistent()
+
+    def test_a_set_with_broken_scripts_still_installs_the_app(self):
+        d = self.dev
+        bad = dict(newer_lib(), **{"stboot.py": b"def broken(:\n"})
+        self.app_release("0.2.2", sums=True, tgz=app_tgz("0.2.2", extra={"lib/" + r: b for r, b in bad.items()}))
+        self.assertEqual(d.run("apply", "app"), 0, d.out())
+        self.assert_app("0.2.2")
+        self.assertEqual(self.libdir(), self.image)
+        self.assertIn("The system scripts weren't updated: The system scripts of StickTime Pi 0.2.2 don't compile "
+                      "(stboot.py:", d.status()["message"])
+        self.assertEqual(d.restarts(), 1)
+
+    def test_make_app_package_carries_the_image_scripts(self):
+        elf = os.path.join(self.tmp, "sticktime-pi")
+        with open(elf, "wb") as f:
+            f.write(fake_elf(payload=b"--version 0.2.2"))
+        data, _n = make_app_package.build(elf, "0.2.2", 1700000000)
+        pkg = appmod.validate_app_tar(data, "0.2.2")
+        self.assertEqual({p[4:]: b for p, b in pkg.files.items() if p.startswith("lib/")}, self.image)
+        self.assertIn("sticktime.txt.default", self.image)
+        self.assertIn("patch_editor.py", self.image)
+        self.assertNotIn(b"\r\n", self.image["stlib.py"])
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            modes = {m.name: m.mode for m in tf if m.name.startswith("lib/")}
+        self.assertEqual((modes["lib/sticktime-update"], modes["lib/stlib.py"]), (0o755, 0o644))
+        # the boot test's later version: a changed file and one fewer
+        data, _n = make_app_package.build(elf, "0.2.2", 1700000000, lib_extra={"x.txt": b"x\n", "stboot.py": None})
+        lib = {p[4:] for p in appmod.validate_app_tar(data, "0.2.2").files if p.startswith("lib/")}
+        self.assertEqual(lib, (set(self.image) | {"x.txt"}) - {"stboot.py"})
 
 
 if __name__ == "__main__":

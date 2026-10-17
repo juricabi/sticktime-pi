@@ -358,12 +358,16 @@ fi
   while IFS= read -r -d '' f; do install -D -m 0644 "$REPO/web/$f" "$P/web/$f"; done
 [ -f "$P/web/index.html" ] || die "web/index.html is missing"
 install -m 0644 "$REPO"/host/fonts/*.ttf "$REPO/host/fonts/OFL.txt" "$P/fonts/"
+# the system scripts as an app update carries them (the updater syncs /usr/lib/sticktime from lib/):
+# the same files as the root filesystem gets below, which is checked there
+python3 -I "$REPO/tools/make_app_package.py" --lib-dir "$P/lib" || die "cannot make lib/ (the system scripts)"
+[ -f "$P/lib/sticktime-update" ] || die "lib/ has no sticktime-update"
 cat > "$P/music/README.txt" <<'TXT'
 Your own songs for StickTime Pi: put mp3, ogg or wav files here (from a PC, or on the web page
 under Sound), then set music = on and music_source = songs in sticktime.txt or on the web page.
 TXT
 printf '%s\n' "$VER" > "$P/VERSION"
-(cd "$P" && find bin web fonts -type f | LC_ALL=C sort | xargs -d '\n' sha256sum && sha256sum VERSION) > "$P/SHA256SUMS"
+(cd "$P" && find bin web fonts lib -type f | LC_ALL=C sort | xargs -d '\n' sha256sum && sha256sum VERSION) > "$P/SHA256SUMS"
 
 # the settings file and its default: SETTINGS_TEMPLATE_TEXT from host/src/settings_keys.h, so the
 # template can't drift from the host's
@@ -529,6 +533,8 @@ install -o root -g root -m 0644 "$REPO/tools/patch_editor.py" "$R/usr/lib/stickt
 sed -i 's/\r$//' "$R/usr/lib/sticktime/patch_editor.py"
 [ -f "$R/usr/lib/sticktime/settings.py" ] || warn "settings.py is not in image/rootfs yet: the helpers use their own writer"
 install -m 0644 "$PAY/sticktime.txt" "$R/usr/lib/sticktime/sticktime.txt.default"
+# the app set's lib/ must be what the image installed, else the first start "updates" the scripts
+diff -r -x __pycache__ "$P/lib" "$R/usr/lib/sticktime" >/dev/null || die "lib/ differs from /usr/lib/sticktime"
 UNITS="sticktime-setup.service sticktime.service sticktime-hotspot.service sticktime-bt.service sticktime-ci.service"
 [ -f "$R/usr/lib/sticktime/sticktime-update" ] && UNITS="$UNITS sticktime-update-repair.service sticktime-update.timer"
 # shellcheck disable=SC2086

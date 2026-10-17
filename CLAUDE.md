@@ -41,6 +41,9 @@ Keep the sibling repos checked out next to this one. The plan points into them:
 - Image: Raspberry Pi OS Lite 64-bit, customized in GitHub Actions.
 - Everything that changes (binary, game, web UI, settings, tracks, saves) lives on the FAT boot
   partition under `/boot/firmware/sticktime/`. Updates are folder swaps, and the user can edit from a PC.
+- The system scripts (`/usr/lib/sticktime`) travel in app updates as `lib/` and are synced from there
+  (`stupdate/system.py`). Put system changes in those scripts, not in image-only steps of `image/build.sh`,
+  or they only reach people who reflash.
 
 ## Layout
 

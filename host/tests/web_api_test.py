@@ -409,6 +409,10 @@ def make_base(base):
     libexec = os.path.join(base, "libexec")
     for n in ("sticktime-wifi", "sticktime-update", "power"):
         make_helper(n, libexec, state)
+    # the installed set's own updater (lib/, from an app update): the host runs its sync at start
+    write(os.path.join(base, "lib", "sticktime-update"),
+          "import json, sys\nopen(%r, 'w').write(json.dumps({'argv': sys.argv[1:], 'isolated': sys.flags.isolated, "
+          "'no_bytecode': sys.flags.dont_write_bytecode}))\n" % os.path.join(state, "sync.json"))
 
 
 class Server:
@@ -476,6 +480,25 @@ TESTS = []
 def test(fn):
     TESTS.append(fn)
     return fn
+
+
+# ================================================================ start
+@test
+def start_syncs_the_system_scripts():
+    """at start the host runs the installed set's lib/sticktime-update sync into libexec (stupdate/system.py)"""
+    p = path("state", "sync.json")
+    end = time.time() + 10
+    while not os.path.exists(p) and time.time() < end:
+        time.sleep(0.1)
+    ok(os.path.exists(p), "lib/sticktime-update sync didn't run")
+    d = json.loads(read(p))
+    a = d["argv"]
+    eq(a[0::2][:3] + a[6:7], ["--base", "--settings", "--state", "sync"], f"arguments {a}")
+    norm = lambda x: os.path.normcase(os.path.normpath(x))  # noqa: E731
+    eq([norm(x) for x in (a[1], a[3], a[5], a[8])],
+       [norm(x) for x in (BASE, path("sticktime.txt"), path("state"), path("libexec"))], f"paths {a}")
+    eq(a[7], "--to")
+    eq((d["isolated"], d["no_bytecode"]), (1, 1), "python -I -B")
 
 
 # ================================================================ pages

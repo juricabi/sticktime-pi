@@ -9,6 +9,8 @@
     sticktime-update boot [--no-network]        (the boot service: finish or undo an interrupted update,
                                                  then, with auto_update = on, update)
     sticktime-update repair                     (boot without the network part)
+    sticktime-update sync [--to DIR] [--wait S] (the system scripts in DIR, /usr/lib/sticktime, from the
+                                                 installed app's lib/; the host runs its own copy at start)
     sticktime-update --self-test                (prints "ok <version>")
     --game / --app may stand for the word.
 

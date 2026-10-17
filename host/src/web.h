@@ -47,6 +47,11 @@ typedef struct {
 int  web_start(app_t *app, const web_config_t *cfg);
 void web_stop(void);
 
+/* The installed app set's system scripts (its lib/ folder, from an app update) into libexec: starts
+ * the set's own "sticktime-update sync" in the background when <base>/lib/sticktime-update exists,
+ * so a set that an older updater installed brings its scripts too (stupdate/system.py). */
+void web_sync_system(app_t *app);
+
 /* docs/WEB_API.md is the authoritative route list. max_upload caps PUT /api/songs (default 64 MiB);
  * /api/sd bodies are capped at 64 KB for a track slot and 2 MiB otherwise, as WEB_API.md says. */
 

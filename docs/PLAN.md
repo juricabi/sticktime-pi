@@ -207,7 +207,16 @@ System Access calls it uses. Serve the gallery (`tracks/*.txt|json` + `index.jso
   `StickTime.lua` and the B&W and Lite editions (loader + folder), kept and installed as one set (a slot,
   never the player's saves: `*.dat`, `StickTimeLite/data.txt`). Take `web/simulator.html` and `tracks/` from the same tag
   (`raw.githubusercontent.com/juricabi/sticktime/<tag>/…`).
-- **App**: releases of this repo: `sticktime-pi-app-<ver>.tar.gz` with `bin/`, `web/`, `VERSION`, `SHA256SUMS`.
+- **App**: releases of this repo: `sticktime-pi-app-<ver>.tar.gz` with `bin/`, `web/`, `fonts/`, `lib/`,
+  `VERSION`, `SHA256SUMS`. `lib/` is the system scripts (`/usr/lib/sticktime`: the boot setup, the WiFi,
+  hotspot and Bluetooth helpers, this updater), exactly as the image installs them. The updater swaps and
+  rolls `lib/` back with the rest of the set; `stupdate/system.py` then copies it into `/usr/lib/sticktime`
+  (checked against `SHA256SUMS`, compiled, written atomically, and put back if the updater no longer starts).
+  The host runs the installed set's own copy (`lib/sticktime-update sync`) at every start, so a set that an
+  older updater installed still brings its scripts. Before the first change the image's own files are kept
+  in `/var/lib/sticktime/system/image/`; a set without `lib/` (0.2.1 and older) brings them back. So a fix in
+  the system scripts reaches a running Pi with an app update; keep system changes in these scripts (the boot
+  setup can change `/etc` and the boot files) rather than in image-only steps of `image/build.sh`.
 - Updater (`sticktime-update`, Python 3 from Pi OS): check, download to `.staging/`, verify, swap
   folders with `rename`, keep `.prev/`, restart the service. The web UI shows "update available"
   and installs on a button (or `auto_update = on`, checked at boot when online).

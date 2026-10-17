@@ -37,8 +37,8 @@ Pi's AV jack, or over HDMI to goggles with an HDMI input or to any screen. You f
 - **Web page** at `http://sticktime.local`: WiFi (scan, join, hotspot), sticks (live bars, channel order,
   stick mapping with a Detect wizard, invert, pause switch), video, sound, tracks, a remote keypad, updates,
   system and log.
-- **Updates** of the game (all three editions together) and of StickTime Pi itself from GitHub releases,
-  with rollback. Saves, tracks and ghosts are never touched.
+- **Updates** of the game (all three editions together) and of StickTime Pi itself (program, web page and
+  system scripts) from GitHub releases, with rollback. Saves, tracks and ghosts are never touched.
 - **Everything on the SD card's FAT partition** (`sticktime.txt`, tracks, saves, songs), so you can edit
   it from a PC.
 
