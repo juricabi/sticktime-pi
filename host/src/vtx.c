@@ -300,7 +300,10 @@ static int tty_open(vtx_io_t *io, char *err, size_t errlen) {
 
 static void tty_close(vtx_io_t *io) {
   tty_line_t *t = io->ud;
-  if (t->fd >= 0) close(t->fd);
+  if (t->fd >= 0) {
+    ioctl(t->fd, TIOCNXCL);                  /* TIOCEXCL outlives our fd while another opener remains */
+    close(t->fd);
+  }
   t->fd = -1;
 }
 

@@ -982,9 +982,12 @@ static void test_music_songs(void) {
   CHECK(r > 0.05);                                                    /* 0.354 x 0.216, compressed */
   CHECK_STR(np, "Playing 01 tone");
   music_next(m);
-  plat_sleep_us(100000);
-  rms_render(m, 0.2, NULL);
-  music_now_playing(m, np, sizeof np);
+  for (int i = 0; i < 30; i++) {                                     /* up to 3 s (slow under emulation) */
+    plat_sleep_us(100000);
+    rms_render(m, 0.05, NULL);
+    music_now_playing(m, np, sizeof np);
+    if (!strcmp(np, "Playing 02 tone")) break;
+  }
   CHECK_STR(np, "Playing 02 tone");
   /* back to the generated music: the songs fade out (50 ms), a new generated song */
   music_set(m, true, 0.6f, AUDIO_MUSIC_GENERATED);

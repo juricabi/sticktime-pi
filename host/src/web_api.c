@@ -1832,7 +1832,9 @@ static void r_system(web_conn_t *c) {
   char os[160] = "", kernel[96] = "", model[128] = "";
 #ifdef __linux__
   size_t len;
+  /* /etc/os-release is a symlink to /usr/lib/os-release on Debian and Pi OS (read_small won't follow one) */
   char *t = read_small("/etc/os-release", 8192, &len);
+  if (!t) t = read_small("/usr/lib/os-release", 8192, &len);
   if (t) {
     char *p = strstr(t, "PRETTY_NAME=");
     if (p && (p == t || p[-1] == '\n')) {

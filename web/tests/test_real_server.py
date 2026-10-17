@@ -441,7 +441,7 @@ class RealServerTest(unittest.TestCase):
         self.assertEqual(disk.read_text(encoding="utf-8"), p.evaluate("sim.editor.file()"))
         self.until(lambda: "sd_dirty" in self.events(), what="the game told to reload")
         p.evaluate("location.hash = '#mine'")
-        p.wait_for_selector('[data-sdel="r2"]')
+        p.wait_for_function("!sim.editor.radio().busy && document.querySelector('[data-sdel=\"r2\"]')", timeout=15000)
         p.click('[data-sdel="r2"]')
         p.wait_for_function("!sim.editor.radio().busy && document.getElementById('edMineStatus').textContent.includes('c2.txt')", timeout=15000)
         self.assertFalse(disk.exists())
