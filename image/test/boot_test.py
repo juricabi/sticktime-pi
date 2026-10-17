@@ -998,11 +998,17 @@ class BootTest:
                     self.check("boot 4: ssh disabled and stopped", out.split()[:2] == ["disabled", "inactive"], out)
                     banner = ssh_banner(self.ssh_port, 5)
                     self.check("boot 4: no ssh banner on the forwarded port", not banner.startswith("SSH-"), banner)
-                    try:
-                        code, _ = http_get(self.http_port, "/api/status")
-                        self.check("boot 4: web still answers", code == 200)
-                    except (OSError, urllib.error.URLError) as e:
-                        self.check("boot 4: web still answers", False, e)
+                    # the program may still be starting: on a fast runner the checks above take ~8 s
+                    code, err, end = None, None, time.time() + 120
+                    while time.time() < end:
+                        try:
+                            code, _ = http_get(self.http_port, "/api/status")
+                            if code == 200:
+                                break
+                        except (OSError, urllib.error.URLError) as e:
+                            err = e
+                        time.sleep(3)
+                    self.check("boot 4: web still answers", code == 200, err)
                     self.screenshot("boot-4")
             return self.finish(started)
         finally:

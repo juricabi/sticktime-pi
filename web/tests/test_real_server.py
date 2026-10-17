@@ -398,6 +398,8 @@ class RealServerTest(unittest.TestCase):
         p.click(f"{fld} button:has-text('Use the channel order')")
         p.click('form[data-form="sticks"] .savebar button[type=submit]')
         self.until(lambda: "stick_channels = 6" not in settings(), what="the mapping cleared")
+        # the form is filled again from the saved file: a change made before that would be undone
+        p.wait_for_function("document.querySelector('form[data-form=sticks] .savebar').hidden", timeout=8000)
         # Stick source = Bluetooth while the WiFi joystick sends: the page says it is ignored; Use auto
         p.select_option("#f-sticks-input", "bluetooth")
         p.click('form[data-form="sticks"] .savebar button[type=submit]')
