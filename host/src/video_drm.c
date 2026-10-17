@@ -101,8 +101,8 @@ typedef struct {
   res_t res;
   conn_t scan, best;               /* scratch for connector selection */
   /* timing */
-  uint32_t last_seq;
-  bool have_seq, flip_on_time;
+  int64_t mode_period_us;          /* one refresh by the mode's timings */
+  bool have_seq, flip_on_time;     /* have_seq: a flip since the mode set (its time is last_vblank_us) */
   int64_t flip_issued_us, flip_ok_streak;
   uint32_t good_flips;
   int force_flip_err;              /* test hooks */
@@ -895,7 +895,7 @@ static int drm_setup(drm_t *d, int flags, bool first) {
     xioctl(d->fd, DRM_IOCTL_MODE_SETCRTC, &off);
   }
   /* timing restarts with the new mode */
-  d->base.period_us = (int64_t)llround(1e6 / video_mode_hz(&d->mode));
+  d->base.period_us = d->mode_period_us = (int64_t)llround(1e6 / video_mode_hz(&d->mode));
   int64_t now = plat_now_us();
   d->base.last_vblank_us = now;
   d->base.phase_us = now;
@@ -1034,25 +1034,31 @@ static int read_events(drm_t *d) {
             ts += arrival - ((int64_t)rt.tv_sec * 1000000 + rt.tv_nsec / 1000);
           }
           if (ts > arrival + 50000 || ts < arrival - 1000000) ts = arrival;   /* nonsense stamp */
-          uint32_t dseq = d->have_seq ? vb.sequence - d->last_seq : 0;
-          if (dseq >= 1 && dseq < 1000) {
-            int64_t per = (ts - d->base.last_vblank_us) / dseq;
-            if (per > 4000 && per < 100000)
+          /* refreshes since the last flip, counted by time (like video_fb.c): the vblank counter
+           * can run faster than the refresh. On a Pi 4's composite 576i it counts 2 per 20 ms
+           * refresh, so every frame looked late (period estimate 10 ms, margin and pacer budget
+           * at their maximum, frames started ~10 ms too early). */
+          int64_t dt = ts - d->base.last_vblank_us, nom = d->mode_period_us;
+          int64_t nv = d->have_seq && dt > 0 && nom > 0 ? (dt + nom / 2) / nom : 0;
+          if (d->have_seq && dt > 0 && nv < 1) nv = 1;
+          if (nv >= 1000) nv = 0;
+          if (nv >= 1) {
+            int64_t per = dt / nv;
+            if (per > nom * 9 / 10 && per < nom * 11 / 10)
               d->base.period_us = (d->base.period_us * 15 + per) / 16;
             /* adaptive margin [5.3]: missed although queued in time -> more margin */
             int64_t T = d->base.period_us;
-            if (dseq > 1 && d->flip_on_time) {
+            if (nv > 1 && d->flip_on_time) {
               d->base.margin_us += 250;
               d->good_flips = 0;
-            } else if (dseq == 1 && ++d->good_flips >= 100) {
+            } else if (nv == 1 && ++d->good_flips >= 100) {
               d->base.margin_us -= 50;
               d->good_flips = 0;
             }
             if (d->base.margin_us < 500) d->base.margin_us = 500;
             if (d->base.margin_us > T / 2) d->base.margin_us = T / 2;
           }
-          video_note_shown(&d->base, ts, arrival, dseq >= 1 && dseq < 1000000 ? dseq : 0);
-          d->last_seq = vb.sequence;
+          video_note_shown(&d->base, ts, arrival, (uint32_t)nv);
           d->have_seq = true;
           d->front = (int)idx;
           d->pending = -1;

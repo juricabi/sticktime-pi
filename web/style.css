@@ -393,6 +393,7 @@ input[type="checkbox"][role="switch"]:checked::after { transform: translateX(20p
 .chan-grid span.now::after { content: ""; position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .vtx-table { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .vtx-table .note { margin: 0 0 8px; }
+.vtx-table .btn-row + .note { margin: 10px 0 4px; }
 #vtxCard form.settings { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
 
 /* ---------------------------------------------------------------- status */
