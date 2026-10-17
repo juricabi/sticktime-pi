@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
@@ -204,16 +205,25 @@ PLAYER = {
     "StickTimeTracks/c8.txt": b"Last slot\r\n1 654321 9 5\r\n",
     "StickTimeGhosts/c1.txt": bytes(range(256)) * 8,
     "StickTimeGhosts/c12.txt": b"ghost 12\n",
-    "StickTimeLite/data.txt": b"lite save\n",
+    "StickTimeLite/data.txt": b"lite save\n",       # the Lite's save, inside its game folder
+    "StickTimeBW.dat": b"BW save\n",
 }
+
+
+def editions_of(zbytes):
+    """the B&W and Lite editions' files of a release zip as the updater installs them {rel: bytes}"""
+    gz = gamezip.validate_game_zip(zbytes, common.header_version(zip_member(zbytes, "SCRIPTS/TOOLS/StickTime.lua")))
+    m, files = gamezip.manifest(gz)
+    return {f["path"]: files[f["path"]] for f in m["files"] if f["edition"] in ("bw", "lite")}
 
 
 # ---------------------------------------------------------------- the device
 
 class Device:
-    """a temporary SD card + /run folder, factory state: game 1.7.2 (no slots), app 0.1.0"""
+    """a temporary SD card + /run folder, factory state: game 1.7.2 (no slots) with its B&W and Lite
+    editions as the image installs them (editions=False: an image before 0.2, color only), app 0.1.0"""
 
-    def __init__(self, root, gh):
+    def __init__(self, root, gh, editions=True, factory_zip=None):
         self.root = root
         self.gh = gh
         self.base = os.path.join(root, "boot", "sticktime")
@@ -222,10 +232,13 @@ class Device:
         self.tools = os.path.join(self.base, "sd", "SCRIPTS", "TOOLS")
         os.makedirs(self.tools)
         os.makedirs(self.state)
-        z = game_zip("1.7.2")
+        z = factory_zip or game_zip("1.7.2")
         self.factory_lua = zip_member(z, "SCRIPTS/TOOLS/StickTime.lua")
         self.put("sd/SCRIPTS/TOOLS/StickTime.lua", self.factory_lua)
         self.put("sd/SCRIPTS/TOOLS/GAME_VERSION", b"1.7.2\n")
+        self.factory_editions = editions_of(z) if editions else {}
+        for rel, b in self.factory_editions.items():
+            self.put("sd/SCRIPTS/TOOLS/" + rel, b)
         # the player edited this one; StickTimeGhosts/README.txt is missing
         self.tracks_readme = b"My notes: c1 is the park, c8 the garage.\r\n"
         self.put("sd/SCRIPTS/TOOLS/StickTimeTracks/README.txt", self.tracks_readme)
@@ -270,6 +283,19 @@ class Device:
             out[rel] = self.get("sd/SCRIPTS/TOOLS/" + rel)
         return out
 
+    def editions(self):
+        """the B&W and Lite editions' files in sd/ (loaders, everything in their folders but the
+        player's data.txt) {rel: bytes}"""
+        out = {}
+        for loader, folder in (("StickTimeBW.lua", "StickTimeBW"), ("StickTimeLite.lua", "StickTimeLite")):
+            if self.exists("sd/SCRIPTS/TOOLS/" + loader):
+                out[loader] = self.get("sd/SCRIPTS/TOOLS/" + loader)
+            d = self.p("sd/SCRIPTS/TOOLS/" + folder)
+            for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+                if folder + "/" + n not in PLAYER:
+                    out[folder + "/" + n] = self.get("sd/SCRIPTS/TOOLS/%s/%s" % (folder, n))
+        return out
+
     def env(self, **kw):
         e = dict(os.environ)
         for k in list(e):
@@ -283,6 +309,7 @@ class Device:
             "STICKTIME_RELOAD_URL": self.gh.base + "/reload",
             "STICKTIME_STATUS_URL": self.gh.base + "/status",
             "STICKTIME_IMAGE_VERSION_FILE": os.path.join(self.root, "image-version"),
+            "STICKTIME_VAR": os.path.join(self.root, "var"),
         })
         e.update({k: str(v) for k, v in kw.items()})
         return e
@@ -416,6 +443,9 @@ class FakeServerCase(unittest.TestCase):
         self.assertEqual(d.get("sd/SCRIPTS/TOOLS/StickTime.lua"),
                          self.lua(version) if version in self.releases else d.factory_lua)
         self.assertEqual(d.get("sd/SCRIPTS/TOOLS/GAME_VERSION"), (version + "\n").encode())
+        # the B&W and Lite editions are the same release's (and the Lite's data.txt is still there)
+        self.assertEqual(d.editions(), editions_of(self.releases[version][0]) if version in self.releases
+                         else d.factory_editions)
         pv = page_version or version
         want = d.factory_page if pv == "factory" else patched(sim_html(pv))
         self.assertEqual(d.get("editor/index.html"), want)
@@ -439,8 +469,14 @@ class FakeServerCase(unittest.TestCase):
         self.assertIsNotNone(lua)
         self.assertEqual(d.get("sd/SCRIPTS/TOOLS/GAME_VERSION"), (common.header_version(lua) + "\n").encode())
         inst = g.installed()
+        if inst.slot is None:
+            self.assertEqual(d.editions(), d.factory_editions, "no slot: the editions are the image's")
         if inst.state == "slot":
             act = inst.slot
+            if act.editions is not None:
+                # never a mix: the editions in sd/ are exactly the active slot's
+                self.assertEqual(d.editions(), {rel: act.read(rel) for rel in act.sd_files() if rel != "StickTime.lua"},
+                                 "the editions follow %s" % act.name)
             if act.has("simulator.html"):
                 try:
                     want = patched(act.read("simulator.html"))
@@ -813,6 +849,57 @@ class TestGameZip(unittest.TestCase):
         self.assertEqual(pp(b"<html>" + sim_html("1.7.3"), "1.7.3"), "not an HTML page")
         self.assertEqual(pp(sim_html("1.7.3"), "1.7.4"), "not StickTime 1.7.4's page")
         self.assertEqual(pp(sim_html("1.7.3") + b"\xff", "1.7.3"), "not UTF-8")
+
+
+class TestPreflight(unittest.TestCase):
+    """the start test of a new binary before it is installed: it runs from STICKTIME_VAR (Pi OS mounts
+    /run noexec, so 0.1.0's test from the state folder always failed with "Permission denied")"""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="stpi-preflight-")
+        self.cfg = common.Config(base=self.tmp, state=os.path.join(self.tmp, "run"),
+                                 env={"STICKTIME_UPDATE_PREFLIGHT": "on", "STICKTIME_VAR": os.path.join(self.tmp, "var")})
+        self.app = appmod.App(self.cfg, None, None, {})
+        self.pkg = appmod.AppPackage("0.2.1", {appmod.BIN: b"\x7fELF usage: [--version]"}, {})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def preflight(self, run):
+        with mock.patch.object(appmod.subprocess, "run", run):
+            self.app._preflight(self.pkg)
+
+    def test_runs_from_the_var_folder(self):
+        seen = []
+        def run(argv, **kw):
+            seen.append((argv, open(argv[0], "rb").read()))
+            return subprocess.CompletedProcess(argv, 0, b"sticktime-pi 0.2.1\n")
+        self.preflight(run)
+        self.assertEqual(seen[0][0][1:], ["--version"])
+        self.assertEqual(os.path.dirname(seen[0][0][0]), os.path.join(self.tmp, "var", "preflight"))
+        self.assertEqual(seen[0][1], self.pkg.files[appmod.BIN])
+        self.assertFalse(os.path.exists(seen[0][0][0]), "removed afterwards")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "run", "preflight")), "nothing in the state folder")
+
+    def test_a_folder_that_cant_run_programs_skips_the_test(self):
+        def run(argv, **kw):
+            raise PermissionError(13, "Permission denied", argv[0])
+        self.preflight(run)                       # no UpdateError: the update goes on
+
+    def test_a_binary_for_another_machine_is_refused(self):
+        def run(argv, **kw):
+            raise OSError(8, "Exec format error", argv[0])
+        with self.assertRaises(common.UpdateError) as c:
+            self.preflight(run)
+        self.assertIn("can't run on this Pi", str(c.exception))
+
+    def test_the_wrong_version_is_refused(self):
+        with self.assertRaises(common.UpdateError) as c:
+            self.preflight(lambda argv, **kw: subprocess.CompletedProcess(argv, 0, b"sticktime-pi 0.2.0\n"))
+        self.assertIn("start test", str(c.exception))
+
+    def test_a_crash_is_refused(self):
+        with self.assertRaises(common.UpdateError):
+            self.preflight(lambda argv, **kw: subprocess.CompletedProcess(argv, -11, b""))
 
 
 class TestAppTar(unittest.TestCase):
@@ -1369,6 +1456,234 @@ class TestGameRollback(FakeServerCase):
         self.assert_game("1.7.2", "factory")
 
 
+def tweaked_zip(version):
+    """a release whose editions changed more than their headers: the Lite's t1.txt gone, a t9.txt new,
+    the B&W's game.luac other bytes"""
+    return game_zip(version, drop=("SCRIPTS/TOOLS/StickTimeLite/t1.txt",),
+                    add={"SCRIPTS/TOOLS/StickTimeLite/t9.txt": b"Track nine\n"},
+                    change={"SCRIPTS/TOOLS/StickTimeBW/game.luac": lambda b: b + b"\x00new"})
+
+
+def no_editions_zip(version):
+    """a release with only the color game (as StickTime before its B&W editions)"""
+    return game_zip(version, drop=tuple(n for n, _ in MODEL if n.startswith(("SCRIPTS/TOOLS/StickTimeBW", "SCRIPTS/TOOLS/StickTimeLite"))))
+
+
+class TestGameEditions(FakeServerCase):
+    """StickTime.lua, StickTimeBW.lua + StickTimeBW/ and StickTimeLite.lua + StickTimeLite/ are one game:
+    installed, updated and rolled back together, and the player's files among them (StickTimeLite/data.txt,
+    StickTimeBW.dat) are never touched"""
+
+    BW, LITE = "sd/SCRIPTS/TOOLS/StickTimeBW", "sd/SCRIPTS/TOOLS/StickTimeLite"
+
+    def test_update_and_rollback(self):
+        z = self.release("1.7.3", zbytes=tweaked_zip("1.7.3"))
+        d = self.dev
+        self.assertEqual(sorted(d.factory_editions)[:1], ["StickTimeBW.lua"])
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        self.assert_game("1.7.3")
+        self.assertFalse(d.exists(self.LITE + "/t1.txt"), "a file the release doesn't have goes")
+        self.assertEqual(d.get(self.LITE + "/t9.txt"), b"Track nine\n")
+        self.assertEqual(d.get(self.BW + "/game.luac"), zip_member(z, "SCRIPTS/TOOLS/StickTimeBW/game.luac"))
+        self.assertEqual(d.get(self.LITE + "/data.txt"), PLAYER["StickTimeLite/data.txt"])
+        # the slot keeps the editions, the image's game (slot 0000) its own
+        snap, new = (json.loads(d.get("game/%s/SLOT.json" % s)) for s in d.slots())
+        self.assertEqual(sorted(new["editions"]), ["bw", "lite"])
+        self.assertIn("StickTimeLite/t9.txt", new["editions"]["lite"])
+        self.assertIn("StickTimeBW.lua", new["editions"]["bw"])
+        self.assertEqual(json.loads(d.get("update/editions.json"))["files"]["StickTimeLite/t9.txt"]["sha256"],
+                         hashlib.sha256(b"Track nine\n").hexdigest())
+        self.assertEqual(sorted(r for rels in snap["editions"].values() for r in rels), sorted(d.factory_editions))
+        for m in (snap, new):
+            self.assertFalse([r for r in m["files"] if "data.txt" in r.lower() or r.lower().endswith(".dat")])
+        # the backup before the version change has the saves, data.txt among them, and no game files
+        b = sorted(os.listdir(d.p("backup")))[-1]
+        self.assertEqual(d.get("backup/%s/StickTimeLite/data.txt" % b), PLAYER["StickTimeLite/data.txt"])
+        self.assertEqual(d.get("backup/%s/StickTimeBW.dat" % b), PLAYER["StickTimeBW.dat"])
+        self.assertFalse(d.exists("backup/%s/StickTimeLite/core.lua" % b))
+        self.assertFalse(d.exists("backup/%s/StickTimeBW.lua" % b))
+        self.assert_consistent()
+        # rollback: all three go back to the image's together; data.txt stays the player's
+        self.assertEqual(d.run("rollback", "game"), 0, d.out())
+        self.assert_game("1.7.2", "factory")
+        self.assertTrue(d.exists(self.LITE + "/t1.txt"))
+        self.assertFalse(d.exists(self.LITE + "/t9.txt"))
+        self.assert_consistent()
+        # and on request the update again, then once more back (from a release to a release)
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        self.assert_game("1.7.3")
+        self.release("1.7.4")
+        self.assertEqual(d.run("apply", "game", "--no-cache"), 0, d.out())
+        self.assert_game("1.7.4")
+        self.assertEqual(d.get(self.LITE + "/t1.txt"), editions_of(self.releases["1.7.4"][0])["StickTimeLite/t1.txt"])
+        self.assertEqual(d.run("rollback", "game"), 0, d.out())
+        self.assert_game("1.7.3")
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assert_game("1.7.3")
+        self.assert_consistent()
+
+    def test_an_image_without_editions_and_a_release_without_them(self):
+        # an image from before the editions shipped: the first update brings them, a rollback takes them away
+        old = Device(os.path.join(self.tmp, "old"), self.gh, editions=False)
+        self.assertEqual(old.editions(), {})
+        z = self.release("1.7.3")
+        self.assertEqual(old.run("apply", "game"), 0, old.out())
+        self.assert_game("1.7.3", dev=old)
+        self.assertEqual(sorted(old.editions()), sorted(editions_of(z)))
+        self.assertEqual(json.loads(old.get("game/%s/SLOT.json" % old.slots()[0]))["editions"], {})
+        self.assertEqual(old.run("rollback", "game"), 0, old.out())
+        self.assert_game("1.7.2", "factory", dev=old)
+        self.assertEqual(old.editions(), {})
+        self.assertFalse(old.exists("sd/SCRIPTS/TOOLS/StickTimeBW"), "the emptied folder goes")
+        self.assertEqual(os.listdir(old.p("sd/SCRIPTS/TOOLS/StickTimeLite")), ["data.txt"], "the save stays, and its folder")
+        self.assert_consistent(old)
+        # a release with the color game only: the editions it lacks go too (never data.txt), and come back
+        self.release("1.7.4", zbytes=no_editions_zip("1.7.4"))
+        d = self.dev
+        self.assertEqual(d.run("apply", "game", "--version", "1.7.4"), 0, d.out())
+        self.assert_game("1.7.4")
+        self.assertEqual(d.editions(), {})
+        self.assertEqual(d.get(self.LITE + "/data.txt"), PLAYER["StickTimeLite/data.txt"])
+        self.assert_consistent()
+        self.assertEqual(d.run("rollback", "game"), 0, d.out())
+        self.assert_game("1.7.2", "factory")
+        self.assert_consistent()
+
+    def test_own_edition_files(self):
+        self.release("1.7.3")
+        d = self.dev
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        mine = b"-- my own B&W build\n" + d.get(self.BW + "/core.lua")
+        d.put(self.BW + "/core.lua", mine)
+        bw_loader = d.get("sd/SCRIPTS/TOOLS/StickTimeBW.lua")
+        # the boot leaves it, and the rest of its edition, as it is
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assertEqual(d.get(self.BW + "/core.lua"), mine)
+        # an automatic update installs the new release but leaves that edition whole
+        self.release("1.7.4")
+        self.assertEqual(d.run("apply", "game", "--auto", "--no-cache", STICKTIME_SETTLE_S="0"), 0, d.out())
+        self.assertIn("StickTime 1.7.4 is installed", d.status()["message"])
+        self.assertIn("The B&W edition stays as it is: it holds files of your own", d.status()["message"])
+        self.assertEqual(d.get(LUA_REL), self.lua("1.7.4"))
+        self.assertEqual((d.get(self.BW + "/core.lua"), d.get("sd/SCRIPTS/TOOLS/StickTimeBW.lua")), (mine, bw_loader))
+        new = editions_of(self.releases["1.7.4"][0])
+        self.assertEqual({r: b for r, b in d.editions().items() if r.startswith("StickTimeLite")},
+                         {r: b for r, b in new.items() if r.startswith("StickTimeLite")})
+        # without the file of one's own the boot puts the release's back
+        os.unlink(d.p(self.BW + "/core.lua"))
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assert_game("1.7.4")
+        self.assert_consistent()
+        # a manual install replaces such a file, and keeps a copy in the backup
+        d.put(self.BW + "/core.lua", mine)
+        self.release("1.7.5")
+        self.assertEqual(d.run("apply", "game", "--no-cache"), 0, d.out())
+        self.assert_game("1.7.5")
+        b = sorted(os.listdir(d.p("backup")))[-1]
+        self.assertEqual(d.get("backup/%s/StickTimeBW/core.lua" % b), mine)
+        self.assertFalse(d.exists("backup/%s/StickTimeBW.lua" % b), "a release's file isn't backed up")
+        self.assert_consistent()
+        # a file of one's own that no release has stays where it is, whatever happens
+        d.put(self.LITE + "/notes.txt", b"my notes\n")
+        self.assertEqual(d.run("rollback", "game"), 0, d.out())
+        self.assertEqual(d.get(self.LITE + "/notes.txt"), b"my notes\n")
+        os.unlink(d.p(self.LITE + "/notes.txt"))
+        self.assert_game("1.7.4")
+        self.assert_consistent()
+
+    def test_editions_from_the_pages_install(self):
+        self.release("1.7.3")
+        d = self.dev
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        self.release("1.7.4")
+        self.assertEqual(d.run("check", "game", "--no-cache"), 10, d.out())
+        m = self.assert_staged_ok("1.7.4")
+        self.assertEqual(sorted(m["editions"]), ["bw", "color", "lite"])
+        # the page's Install writes the staged B&W and Lite editions (not the color one)
+        staged = {f["path"]: d.get("editor/sdcard/SCRIPTS/TOOLS/" + f["path"]) for f in m["files"] if f["edition"] in ("bw", "lite")}
+        for rel, b in staged.items():
+            d.put("sd/SCRIPTS/TOOLS/" + rel, b)
+        # the boot leaves the player's choice alone
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assertEqual(d.editions(), staged)
+        self.assertEqual(d.get(LUA_REL), self.lua("1.7.3"))
+        # a newer release staged: those files are still known as a release's, so an automatic update
+        # replaces them like ours (no "files of your own", no backup of them)
+        self.release("1.7.5")
+        self.assertEqual(d.run("check", "game", "--no-cache"), 10, d.out())
+        self.assertEqual(d.run("apply", "game", "--auto", "--no-cache", STICKTIME_SETTLE_S="0"), 0, d.out())
+        self.assertNotIn("of your own", d.status()["message"])
+        self.assert_game("1.7.5")
+        for b in os.listdir(d.p("backup")):
+            self.assertFalse(d.exists("backup/%s/StickTimeBW.lua" % b))
+        self.assert_consistent()
+
+    def test_damaged_edition_files(self):
+        self.release("1.7.3")
+        d = self.dev
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        slot = d.slots()[-1]
+        # the slot's copy damaged (a FAT error): the boot repairs it from the slot's release zip
+        p = "game/%s/StickTimeLite/core.lua" % slot
+        good = d.get(p)
+        d.put(p, good[:-10] + b"\0" * 10)
+        # and the copy in sd/ cut short by a power cut
+        d.put(self.BW + "/core.lua", d.get(self.BW + "/core.lua")[:100])
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assertEqual(d.get(p), good)
+        self.assertIn("repaired StickTime 1.7.3 from its release zip", d.status()["message"])
+        self.assert_game("1.7.3")
+        self.assert_consistent()
+        # the slot's copy damaged and its zip too: the slot isn't used, the image's game is (all three)
+        d.put(p, good[:-10] + b"\0" * 10)
+        z = d.get("game/%s/release.zip" % slot)
+        d.put("game/%s/release.zip" % slot, z[:-50] + b"\0" * 50)
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assertTrue(d.exists("game/%s/DISABLED" % slot))
+        self.assert_game("1.7.2", "factory")
+        self.assert_consistent()
+
+    def test_slot_editions_are_checked(self):
+        # SLOT.json may only list the editions' own game files, each of them in the slot
+        self.release("1.7.3")
+        d = self.dev
+        self.assertEqual(d.run("apply", "game"), 0, d.out())
+        g = self.inspect()[0]
+        act = g.active(g.slots())
+        self.assertEqual(act.sd_files()[0], "StickTime.lua")
+        self.assertEqual(len(act.sd_files()), 1 + len(editions_of(self.releases["1.7.3"][0])))
+        path = os.path.join(act.dir, "SLOT.json")
+        with open(path, "rb") as f:
+            good = json.loads(f.read())
+        bad = [
+            lambda m: m["editions"].update(color=["StickTime.lua"]),
+            lambda m: m["editions"]["lite"].append("StickTimeLite/data.txt"),
+            lambda m: m["editions"]["lite"].append("StickTimeLite/nothere.lua"),
+            lambda m: m["editions"]["bw"].remove("StickTimeBW.lua"),
+            lambda m: m["editions"]["bw"].append("StickTime.lua"),
+            lambda m: m.update(editions=["bw"]),
+        ]
+        for n, change in enumerate(bad):
+            with self.subTest(n):
+                m = json.loads(json.dumps(good))
+                change(m)
+                with open(path, "w") as f:
+                    json.dump(m, f)
+                self.assertFalse(gamemod.Slot(g.cfg.game_dir, act.name).valid)
+        with open(path, "w") as f:
+            json.dump(good, f)
+        self.assertTrue(gamemod.Slot(g.cfg.game_dir, act.name).valid)
+        # a slot from before the editions were kept: valid, and the editions on the card are left alone
+        m = dict(good)
+        del m["editions"]
+        with open(path, "w") as f:
+            json.dump(m, f)
+        d.put(self.BW + "/core.lua", b"-- anything\n")
+        self.assertEqual(d.run("boot"), 0, d.out())
+        self.assertEqual(d.get(self.BW + "/core.lua"), b"-- anything\n")
+        self.assertEqual(d.get(LUA_REL), self.lua("1.7.3"))
+
+
 class TestGameFailures(FakeServerCase):
     def assert_unchanged(self):
         d = self.dev
@@ -1639,11 +1954,13 @@ class TestGamePowerCuts(FakeServerCase):
     OLD, NEW = "old", "new"
     FIRST = [("after_download", OLD), ("after_verify", OLD), ("slot_partial", OLD), ("before_slot_json", OLD),
              ("after_slot_json", OLD), ("after_snapshot", OLD),          # the first three hit the snapshot slot
-             ("after_backup", NEW), ("reconcile_lua", NEW), ("reconcile_page", NEW), ("after_reconcile", NEW),
-             ("stage_cleared", NEW), ("stage_files", NEW), ("after_stage", NEW)]
-    LATER = [("after_download", OLD), ("after_verify", OLD), ("slot_partial", OLD), ("before_slot_json", OLD),
-             ("after_slot_json", NEW), ("after_backup", NEW), ("reconcile_lua", NEW), ("reconcile_page", NEW),
+             ("after_backup", NEW), ("reconcile_editions", NEW), ("reconcile_lua", NEW), ("reconcile_page", NEW),
              ("after_reconcile", NEW), ("stage_cleared", NEW), ("stage_files", NEW), ("after_stage", NEW)]
+    # (reconcile_editions: the first edition file is written, StickTime.lua is still the old one)
+    LATER = [("after_download", OLD), ("after_verify", OLD), ("slot_partial", OLD), ("before_slot_json", OLD),
+             ("after_slot_json", NEW), ("after_backup", NEW), ("reconcile_editions", NEW), ("reconcile_lua", NEW),
+             ("reconcile_page", NEW), ("after_reconcile", NEW), ("stage_cleared", NEW), ("stage_files", NEW),
+             ("after_stage", NEW)]
 
     def cut(self, name, point, prepare=None, cmd=("apply", "game")):
         dv = Device(os.path.join(self.tmp, name), self.gh)
@@ -1691,9 +2008,11 @@ class TestGamePowerCuts(FakeServerCase):
 
         def installed(dv):
             self.assertEqual(dv.run_fast("apply", "game"), 0, dv.out())
-        dv = self.cut("rb", "rollback_marked", installed, ("rollback", "game"))
-        self.assert_consistent(dv)
-        self.assert_game("1.7.2", "factory", dev=dv)
+        for point in ("rollback_marked", "reconcile_editions", "reconcile_lua"):
+            with self.subTest(point):
+                dv = self.cut("rb-" + point, point, installed, ("rollback", "game"))
+                self.assert_consistent(dv)
+                self.assert_game("1.7.2", "factory", dev=dv)
 
     def test_check_staging_cut(self):
         self.release("1.7.3")
@@ -1726,7 +2045,8 @@ class TestGameDiskFull(FakeServerCase):
         new = zip_member(z, "SCRIPTS/TOOLS/StickTime.lua")
         n, failed = 0, 0
         while True:
-            dv = Device(os.path.join(self.tmp, "%s%d" % ("o" if once else "s", n)), self.gh)
+            # (the small game's editions on the card too: every write of theirs is hit as well)
+            dv = Device(os.path.join(self.tmp, "%s%d" % ("o" if once else "s", n)), self.gh, factory_zip=small_zip("1.7.2"))
             env = {"STICKTIME_UPDATE_ENOSPC_AFTER": str(n)}
             if once:
                 env["STICKTIME_UPDATE_ENOSPC_ONCE"] = "1"

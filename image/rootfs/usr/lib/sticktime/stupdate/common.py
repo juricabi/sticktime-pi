@@ -108,6 +108,8 @@ class Config:
         self.base = base or env.get("STICKTIME_BASE") or "/boot/firmware/sticktime"
         self.settings = settings or env.get("STICKTIME_SETTINGS") or "/boot/firmware/sticktime.txt"
         self.state = state or env.get("STICKTIME_STATE") or "/run/sticktime"
+        # where programs may run (the preflight): Pi OS mounts /run noexec, the ext4 root isn't
+        self.var = env.get("STICKTIME_VAR") or "/var/lib/sticktime"
         self.api = (env.get("STICKTIME_GITHUB_API") or "https://api.github.com").rstrip("/")
         self.raw = (env.get("STICKTIME_GITHUB_RAW") or "https://raw.githubusercontent.com").rstrip("/")
         self.pages = (env.get("STICKTIME_PAGES") or "https://juricabi.github.io/sticktime").rstrip("/")

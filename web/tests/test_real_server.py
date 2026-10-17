@@ -346,15 +346,17 @@ class RealServerTest(unittest.TestCase):
         self.assertIn("my_custom_key = keep me", text)
         # the server's own validation, shown per field; nothing saved
         self.tab("sticks")
-        p.fill("#f-sticks-channel_order", "AXTR")
+        p.fill("#f-sticks-wifi_module_ip", "10.0.0")           # the page doesn't check IPs: the server does
         p.click('form[data-form="sticks"] .savebar button[type=submit]')
-        p.wait_for_function("document.getElementById('f-sticks-channel_order-err').textContent.length > 3", timeout=8000)
-        self.assertNotIn("channel_order", (self.base / "sticktime.txt").read_text())
-        # the normalized value comes back (taer -> TAER)
-        p.fill("#f-sticks-channel_order", "taer")
-        p.press("#f-sticks-channel_order", "Enter")
-        self.until(lambda: "channel_order = TAER" in (self.base / "sticktime.txt").read_text() or
-                   "channel_order = taer" in (self.base / "sticktime.txt").read_text(), what="the save")
+        p.wait_for_function("document.getElementById('f-sticks-wifi_module_ip-err').textContent.length > 3", timeout=8000)
+        self.assertNotIn("wifi_module_ip = 10.0.0", (self.base / "sticktime.txt").read_text())
+        p.fill("#f-sticks-wifi_module_ip", "")
+        # the channel order: a list of all 24 orders
+        opts = p.eval_on_selector_all("#f-sticks-channel_order option", "els => els.map((e) => e.value)")
+        self.assertEqual((len(opts), len(set(opts)), opts[:2]), (24, 24, ["AETR", "TAER"]))
+        p.select_option("#f-sticks-channel_order", "TAER")
+        p.click('form[data-form="sticks"] .savebar button[type=submit]')
+        self.until(lambda: "channel_order = TAER" in (self.base / "sticktime.txt").read_text(), what="the save")
         p.wait_for_function("document.getElementById('f-sticks-channel_order').value === 'TAER'", timeout=8000)
         # a secret: set, then cleared
         self.tab("updates")
@@ -369,8 +371,55 @@ class RealServerTest(unittest.TestCase):
         p.click("#f-sound-music")
         self.until(lambda: "music = on" in (self.base / "sticktime.txt").read_text(), what="music = on")
 
+    def test_stick_mapping_and_source(self):
+        """Stick mapping by Detect on the real server's stick stream, and the notice for a fixed stick source"""
+        move = self.base / "state" / "stick_move"
+        settings = lambda: (self.base / "sticktime.txt").read_text()   # noqa: E731
+        p = self.open("sticks")
+        p.wait_for_function("document.querySelectorAll('#srcCards .src-card').length === 2", timeout=10000)
+        fld = 'form[data-form="sticks"] .field:has(#f-sticks-stick_channels-help)'
+        sels = ["#f-sticks-stick_channels", "#f-sticks-stick_channels-ele", "#f-sticks-stick_channels-thr", "#f-sticks-stick_channels-rud"]
+        try:
+            p.click(f"{fld} button:has-text('Detect')")
+            p.wait_for_selector("#detectDlg[open]")
+            for ch, nxt in ((6, "ELEVATOR"), (2, "THROTTLE"), (3, "YAW"), (4, None)):
+                move.write_text(str(ch))
+                if nxt:
+                    p.wait_for_selector(f"#detectAsk:has-text('{nxt}')", timeout=10000)
+                else:
+                    p.wait_for_selector("#detectDlg", state="hidden", timeout=10000)
+        finally:
+            move.unlink(missing_ok=True)
+        self.assertEqual([p.input_value(s) for s in sels], ["6", "2", "3", "4"])
+        p.click('form[data-form="sticks"] .savebar button[type=submit]')
+        self.until(lambda: "stick_channels = 6 2 3 4" in settings(), what="the mapping saved")
+        p.wait_for_function("document.querySelector('form[data-form=sticks] .savebar').hidden", timeout=8000)
+        # back to the channel order: the key is cleared
+        p.click(f"{fld} button:has-text('Use the channel order')")
+        p.click('form[data-form="sticks"] .savebar button[type=submit]')
+        self.until(lambda: "stick_channels = 6" not in settings(), what="the mapping cleared")
+        # Stick source = Bluetooth while the WiFi joystick sends: the page says it is ignored; Use auto
+        p.select_option("#f-sticks-input", "bluetooth")
+        p.click('form[data-form="sticks"] .savebar button[type=submit]')
+        self.until(lambda: "input = bluetooth" in settings(), what="input = bluetooth")
+        p.wait_for_selector("#inputWarnSticks", state="visible", timeout=8000)
+        self.assertIn("Stick source is set to Bluetooth: ELRS 10.0.0.1 (WiFi) is ignored.", p.inner_text("#inputWarnSticks"))
+        p.click("#inputWarnSticks button:has-text('Use auto')")
+        self.until(lambda: "input = auto" in settings(), what="input = auto")
+        p.wait_for_selector("#inputWarnSticks", state="hidden", timeout=8000)
+
     def test_keys_scripts_reload(self):
+        # the B&W and Lite editions as the image installs them: listed by their names, with what they are
+        tools = self.base / "sd" / "SCRIPTS/TOOLS"
+        write(tools / "StickTimeBW.lua", 'local toolName = "TNS|StickTime BW|TNE"\n-- StickTime BW v1.7.2\nreturn {}\n')
+        write(tools / "StickTimeLite.lua", 'local toolName = "TNS|StickTime Lite|TNE"\n-- StickTime Lite v1.7.2\nreturn {}\n')
+        self.addCleanup(lambda: [os.remove(tools / n) for n in ("StickTimeBW.lua", "StickTimeLite.lua")])
         p = self.open("game")
+        p.wait_for_selector("#toolList label:has-text('StickTime Lite')")
+        names = p.eval_on_selector_all("#toolList label", "els => els.map((e) => [e.querySelector('b').textContent, "
+                                       "(e.querySelector('.tdesc') || {}).textContent || ''])")
+        self.assertEqual([(n, d.split(":")[0]) for n, d in names],
+                         [("Other", ""), ("StickTime", "Color edition"), ("StickTime BW", "B&W edition"), ("StickTime Lite", "Lite edition")])
         n = len(self.events())
         order = ["enter", "exit", "next", "prev", "inc", "dec", "nextpage", "prevpage", "menu", "up", "down"]
         for k in order:
@@ -420,6 +469,65 @@ class RealServerTest(unittest.TestCase):
         self.assertEqual(p.eval_on_selector_all("#updGame .notes > *", "els => els.map((e) => e.tagName)"), ["H3", "UL"])
 
     # ---------------------------------------------------------------- the emulator page and pi-sd.js
+    def test_editor_install_of_all_three_editions(self):
+        # the editor's Install of the release the updater staged (editor/sdcard/), with sd_write = game:
+        # the color, B&W and Lite editions are written, a file an older release left in a folder goes,
+        # and the player's saves (the Lite's data.txt inside its folder, StickTimeBW.dat) stay
+        mk = REPO.parent / "sticktime" / "tools" / "sd_manifest.py"
+        if not self.editor or not mk.is_file():
+            self.skipTest("../sticktime is not checked out next to this repo")
+        import hashlib
+        b, tools = self.base, self.base / "sd" / "SCRIPTS/TOOLS"
+        staged = b / "editor" / "sdcard"
+        subprocess.run([sys.executable, str(mk), str(staged)], check=True, capture_output=True)
+        man = json.loads((staged / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(man["editions"]), ["bw", "color", "lite"])
+        color = (tools / "StickTime.lua").read_bytes()
+        saves = {"StickTimeLite/data.txt": b"lite save\x00\xff", "StickTimeBW.dat": b"BW save"}
+        for rel, data in saves.items():
+            write(tools / rel, data)
+        write(tools / "StickTimeLite" / "old.lua", "-- left by an older release\n")
+
+        def restore():
+            shutil.rmtree(staged, ignore_errors=True)
+            for n in ("StickTimeBW", "StickTimeLite"):
+                shutil.rmtree(tools / n, ignore_errors=True)
+            for n in ("StickTimeBW.lua", "StickTimeLite.lua", "StickTimeBW.dat", "StickTimeTracks/README.txt", "StickTimeGhosts/README.txt"):
+                if (tools / n).exists():
+                    os.remove(tools / n)
+            write(tools / "StickTime.lua", color)
+        self.addCleanup(restore)
+        p = self.page
+        p.goto(self.url + "editor/#install")
+        p.wait_for_selector("#edEditions [data-ed]", timeout=30000)
+        p.wait_for_function("!sim.editor.radio().busy", timeout=20000)
+        self.assertIn(f"StickTime {man['version']} (staged on this Pi) onto StickTime Pi", p.inner_text("#edInstallHead"))
+        for e in ("color", "bw", "lite"):
+            p.check(f'#edEditions [data-ed="{e}"]')
+        p.click("#edInstallGo")
+        p.wait_for_function("!sim.editor.radio().busy && document.getElementById('rpStatus').textContent.includes('StickTime')", timeout=60000)
+        st = p.inner_text("#rpStatus")
+        self.assertIn(f"StickTime {man['version']} is on the Pi: Color, B&W and Lite.", st)
+        self.assertIn("Removed StickTimeLite/old.lua", st)
+        for f in man["files"]:
+            disk = tools / f["path"]
+            self.assertTrue(disk.is_file(), f["path"])
+            self.assertEqual(hashlib.sha256(disk.read_bytes()).hexdigest(), f["sha256"], f["path"])
+        for rel, data in saves.items():
+            self.assertEqual((tools / rel).read_bytes(), data, f"{rel} untouched")
+        self.assertFalse((tools / "StickTimeLite" / "old.lua").exists())
+        self.until(lambda: "sd_dirty" in self.events(), what="the game told to reload")
+        # the server itself refuses the player's data.txt to the page, whatever the page does
+        res = p.evaluate("""async () => {
+          const tools = await (await (await showDirectoryPicker()).getDirectoryHandle('SCRIPTS')).getDirectoryHandle('TOOLS');
+          const lite = await tools.getDirectoryHandle('StickTimeLite');
+          const name = async (f) => { try { await f(); return 'ok'; } catch (e) { return e.name; } };
+          return [await name(async () => { const w = await (await lite.getFileHandle('data.txt')).createWritable(); await w.write('x'); await w.close(); }),
+                  await name(() => lite.removeEntry('data.txt'))];
+        }""")
+        self.assertEqual(res, ["NoModificationAllowedError", "NoModificationAllowedError"])
+        self.assertEqual((tools / "StickTimeLite" / "data.txt").read_bytes(), saves["StickTimeLite/data.txt"])
+
     def test_editor_on_the_real_server(self):
         if not self.editor:
             self.skipTest("../sticktime is not checked out next to this repo")

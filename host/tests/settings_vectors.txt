@@ -665,6 +665,31 @@ out: hdmi_mode = 1920x1080@59.94\nlatency = game\nsound = 0\npause_channel = +5\
 out: video = hdmi\nstick_menus = on\nssh = off\nmargin = 7\nhostname = MyPi\nmusic_source = songs\n
 out: invert = AIL, Thr\naspect = 4:3\ntv = VGA\n
 
+case: stick_channels
+in: stick_channels = ch3, 1 ,02\t4\n
+get: stick_channels = 3 1 2 4
+raw: stick_channels = ch3, 1 ,02\t4
+set: stick_channels = CH16,CH15,CH14,CH13
+raw: stick_channels = 16 15 14 13
+get: stick_channels = 16 15 14 13
+out: stick_channels = 16 15 14 13\n
+set: stick_channels = \s,\s,\s
+raw: stick_channels =
+get: stick_channels =
+out: stick_channels =\n
+set: stick_channels = 1 2 2 4
+raw: stick_channels = 1 2 2 4
+get: stick_channels =
+warn: line 1: stick_channels must be four different channels from 1 to 16 for aileron, elevator, throttle, yaw (like 1 2 3 4), or empty (using the default)
+out: stick_channels = 1 2 2 4\n
+
+case: stick_channels_invalid
+in: stick_channels = 1 2 3\n
+in: stick_channels = 1 2 3 17\n
+warn: line 2: stick_channels must be four different channels from 1 to 16 for aileron, elevator, throttle, yaw (like 1 2 3 4), or empty (using the default)
+get: stick_channels =
+raw: stick_channels = 1 2 3 17
+
 case: hotspot_password_empty_auto
 in: hotspot_password =\n
 warn: line 1: hotspot_password is empty but hotspot is not off (using the default)
@@ -822,6 +847,38 @@ invalid: channel_order = AAER
 invalid: channel_order = AETR\s
 invalid: channel_order =
 invalid: channel_order = A,E,T,R
+valid: stick_channels =
+valid: stick_channels = 1 2 3 4
+valid: stick_channels = 4 3 2 1
+valid: stick_channels = 16 15 14 13
+valid: stick_channels = 1,2,3,4
+valid: stick_channels = 1, 2, 3, 4
+valid: stick_channels = 1\t2\t3\t4
+valid: stick_channels = CH1 ch2 Ch3 cH4
+valid: stick_channels = ch10,ch11,ch12,ch9
+valid: stick_channels = 01 02 3 4
+valid: stick_channels = \s1 2 3 4\s
+valid: stick_channels = ,1,2,3,4,
+valid: stick_channels = \s,\s
+invalid: stick_channels = 1 2 3
+invalid: stick_channels = 1 2 3 4 5
+invalid: stick_channels = 1 1 2 3
+invalid: stick_channels = 1 2 3 01
+invalid: stick_channels = 0 1 2 3
+invalid: stick_channels = 17 1 2 3
+invalid: stick_channels = 1 2 3 x
+invalid: stick_channels = 1-2-3-4
+invalid: stick_channels = 1;2;3;4
+invalid: stick_channels = 1234
+invalid: stick_channels = ch 1 2 3 4
+invalid: stick_channels = c1 2 3 4
+invalid: stick_channels = chh1 2 3 4
+invalid: stick_channels = 001 2 3 4
+invalid: stick_channels = 1.0 2 3 4
+invalid: stick_channels = +1 2 3 4
+invalid: stick_channels = 1 2 3 4x
+invalid: stick_channels = AETR
+invalid: stick_channels = 1\xC2\xA02 3 4
 valid: invert =
 valid: invert = ail
 valid: invert = ail, thr

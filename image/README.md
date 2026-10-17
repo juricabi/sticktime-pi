@@ -1,7 +1,7 @@
 # image/: the StickTime Pi SD card image
 
 `image/build.sh` turns the official Raspberry Pi OS Lite (64-bit) image into the StickTime Pi image:
-flash it, put the card in a Pi 4, and it boots straight into the simulator (composite video by
+flash it, put the card in a Raspberry Pi, and it boots straight into the simulator (composite video by
 default), with its settings in `sticktime.txt` on the card's boot partition.
 
 ## Build
@@ -50,9 +50,12 @@ Host-side edits of the mounted image, no chroot, no packages (pios-image.md 6.2)
   power save, an avahi `_http._tcp` record, a 48 MB journal cap, `/run/sticktime` via tmpfiles.
 - **The FAT partition**: `sticktime.txt` (the template text `SETTINGS_TEMPLATE_TEXT` from
   `host/src/settings_keys.h`, extracted at build time so it can't drift from the host's), and
-  `sticktime/` with `bin/sticktime-pi`, `sd/SCRIPTS/TOOLS/{StickTime.lua, StickTimeTracks/,
-  StickTimeGhosts/, GAME_VERSION}`, `web/`, `editor/index.html` + `editor/tracks/index.json`,
-  `fonts/` (Roboto + OFL.txt), `music/README.txt`, `VERSION`, `SHA256SUMS`.
+  `sticktime/` with `bin/sticktime-pi`, `sd/SCRIPTS/TOOLS/{StickTime.lua, StickTimeBW.lua, StickTimeBW/,
+  StickTimeLite.lua, StickTimeLite/, StickTimeTracks/, StickTimeGhosts/, GAME_VERSION}` (all three
+  editions from the release zip: the color one, and the B&W and Lite loaders with their folders' game files,
+  never a save; an edition an older zip lacks, or whose loader is of another version, is left out with a
+  warning; the web page's Game tab switches between them), `web/`, `editor/index.html` +
+  `editor/tracks/index.json`, `fonts/` (Roboto + OFL.txt), `music/README.txt`, `VERSION`, `SHA256SUMS`.
 - `config.txt` and `cmdline.txt` are generated from the default settings by the same code that runs
   at every boot (`sticktime-setup bake`), so a fresh card needs no reboot to apply them.
 
@@ -136,7 +139,7 @@ reboot), and ssh turned off. QEMU for Windows works the same as qemu-system-aarc
 Under QEMU there is no DRM device, no WiFi and no Bluetooth chip; the image must (and does) boot
 without failed units anyway. The program then draws on QEMU's framebuffer (`fb0`, 800x480), so the
 screenshots (`<work>/screen-first-boot.png`, `screen-boot-4.png`) show the StickTime menu.
-Composite video, WiFi and Bluetooth need a real Pi 4.
+Composite video, WiFi and Bluetooth need a real Raspberry Pi.
 
 Last run (2026-10-17, `sticktime-pi-0.1.0.img.xz` with the real program): 50/50 checks in 8 minutes
 on Windows; boot 1 ready after 3 minutes (the first boot grows the root partition), later boots after

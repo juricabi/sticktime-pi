@@ -35,6 +35,7 @@ static void read_mix(host_t *h) {
   memset(m, 0, sizeof *m);
   m->fixed = mix_parse_input(settings_get(h->set, "input"));
   if (!mix_parse_order(settings_get(h->set, "channel_order"), m->order)) memcpy(m->order, "AETR", 5);
+  mix_parse_channels(settings_get(h->set, "stick_channels"), m->chan);     /* empty or invalid: all 0, the order */
   mix_parse_invert(settings_get(h->set, "invert"), m->invert);
   m->pause_ch = settings_get_int(h->set, "pause_channel", 5, 0, 16);
   nav_default_config(&h->navc);

@@ -10,7 +10,7 @@
  * listens on 127.0.0.1 (STP_WEB_BIND overrides) and runs until it is killed (or <state>/stop
  * appears). Without arguments it exits 0, so "build.sh test" can run it like the unit tests.
  * STP_VTX_PORT=tcp:127.0.0.1:PORT starts VTX control on that line (a fake VTX); without it /api/vtx
- * says "off". */
+ * says "off". A number N (1-16) in <state>/stick_move makes the WiFi source's CHN sweep end to end. */
 #include "app.h"
 #include "etx.h"
 #include "vtx.h"
@@ -22,6 +22,17 @@
 #include <string.h>
 
 static char events[600];
+static int move_ch;                     /* a channel of the WiFi source that sweeps (tests: <state>/stick_move) */
+
+static void read_move(const char *state) {
+  char p[700];
+  snprintf(p, sizeof p, "%s/stick_move", state);
+  FILE *f = fopen(p, "rb");
+  move_ch = 0;
+  if (!f) return;
+  if (fscanf(f, "%d", &move_ch) != 1) move_ch = 0;
+  fclose(f);
+}
 
 static void ev(const char *fmt, ...) {
   FILE *f = fopen(events, "ab");
@@ -76,6 +87,10 @@ static void fake_status(app_status_t *st, uint32_t frame, int64_t up_ms) {
   st->src[0].rate_hz = 250.0f;
   st->src[0].nch = 16;
   for (int i = 0; i < INPUT_CH; i++) st->src[0].ch[i] = (int16_t)(i * 100 - 800 + (int)(frame % 10));
+  if (move_ch >= 1 && move_ch <= INPUT_CH) {          /* <state>/stick_move: that channel sweeps -1000..1000 in 0.8 s */
+    int p = (int)(frame % 80);
+    st->src[0].ch[move_ch - 1] = (int16_t)(p < 40 ? -1000 + p * 50 : 1000 - (p - 40) * 50);
+  }
   st->src[1].kind = INSRC_KEYBOARD;
   plat_strlcpy(st->src[1].name, "Keyboard", sizeof st->src[1].name);
   st->src[1].nch = 4;
@@ -130,6 +145,7 @@ int main(int argc, char **argv) {
 
   int64_t t0 = plat_now_us();
   for (uint32_t frame = 0;; frame++) {
+    if (frame % 20 == 0) read_move(app.paths.state);
     app_status_t st;
     fake_status(&st, frame, (plat_now_us() - t0) / 1000);
     app_publish(&app, &st);

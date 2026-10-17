@@ -51,7 +51,7 @@ python host/tests/run_scenarios.py                 # the real game, headless, sc
 python host/tests/web_api_test.py --exe build/native-edgetx/web_test_main      # the web API, real C server
 python web/tests/test_real_server.py --exe=build/native-edgetx/web_test_main   # web page + editor in Chromium
 python tools/compare_emulator.py                   # same scenes in the browser emulator and in StickTime Pi
-python image/test/test_setup.py                    # boot-time setup helpers (settings, WiFi, config.txt, ...)
+python image/test/test_setup.py                    # boot-time setup helpers (settings, WiFi, config.txt, ...), the build's game step
 python image/tests/test_update.py                  # the updater against a fake GitHub (~4 min)
 python host/tests/check_settings_keys.py           # settings.py and settings_keys.h describe the same keys
 python host/tests/vtx_live_test.py                 # VTX control: the real program + the fake VTX (--pty on Linux: termios)

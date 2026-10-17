@@ -2,9 +2,10 @@
  *
  * Every source (the ELRS/Crossfire WiFi stream, each evdev joystick or gamepad, the keyboard)
  * reports channels CH1..CH16 in -1024..1024. The mixer picks the active source (the newest one
- * that moved, or the one the settings fix), maps channels to sticks with channel_order (default
- * AETR: CH1 = ail, CH2 = ele, CH3 = thr, CH4 = rud), applies inversion, and reports the pause
- * channel. Pure logic: no I/O, no allocation. */
+ * that moved, or the one the settings fix), maps channels to sticks with stick_channels (a channel
+ * per stick) or else channel_order (default AETR: CH1 = ail, CH2 = ele, CH3 = thr, CH4 = rud),
+ * applies inversion, and reports the pause channel. Sources whose channels are already sticks
+ * (gamepads, the keyboard: fixed_aetr) skip both maps. Pure logic: no I/O, no allocation. */
 #ifndef INPUT_H
 #define INPUT_H
 
@@ -36,19 +37,22 @@ typedef struct {
   int16_t ch[INPUT_CH];             /* -1024..1024 */
   uint8_t nch;                      /* channels this source has (4..16) */
   int64_t last_us;                  /* last update (packet / event) */
-  int64_t moved_us;                 /* last time a stick moved more than ~5% */
+  int64_t moved_us;                 /* last time a stick moved more than ~5% (CH1-4, or for a source that is
+                                       not fixed_aetr the stick_channels of the last mix_sticks call) */
   uint32_t updates;                 /* total updates, for rates */
 } insrc_t;
 
 typedef struct {
   insrc_kind_t fixed;               /* INSRC_NONE = auto */
   char order[5];                    /* permutation of "AETR"; letter i = what CHi+1 is */
+  uint8_t chan[4];                  /* stick_channels: the channel (1..16) of ail, ele, thr, rud, used instead
+                                       of order when all four are set and different; all 0 = use order */
   bool invert[4];                   /* ail, ele, thr, rud */
   int pause_ch;                     /* 1..16, 0 = none */
 } mix_config_t;
 
 typedef struct {
-  int ail, ele, thr, rud;           /* -1024..1024, after order and invert */
+  int ail, ele, thr, rud;           /* -1024..1024, after the channel map and invert */
   int pause;                        /* pause channel value, or INT32_MIN when none/unknown */
   int src;                          /* index of the active source, -1 when none */
   insrc_kind_t kind;
@@ -57,6 +61,11 @@ typedef struct {
 
 /* Parse "AETR"-style orders (case-insensitive, must be a permutation of A, E, T, R). */
 bool mix_parse_order(const char *s, char out[5]);
+/* Parse stick_channels: four different channels 1-16 for ail, ele, thr, rud, separated by spaces,
+ * tabs or commas, each 1-2 digits with an optional "CH" ("1 2 3 4", "3,1,2,4", "ch1 ch2 ch3 ch4").
+ * Returns 1 with the channels in out, 0 when there are none (empty or only separators: use
+ * channel_order), -1 when invalid; out is all 0 unless 1 is returned. */
+int mix_parse_channels(const char *s, uint8_t out[4]);
 /* Parse an invert list like "ail, thr" (also "a,t", "roll/pitch/throttle/yaw"). */
 void mix_parse_invert(const char *s, bool inv[4]);
 insrc_kind_t mix_parse_input(const char *s);   /* "auto" -> NONE, "wifi", "usb", "bluetooth", "keyboard", "gamepad", "joystick" */

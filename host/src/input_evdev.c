@@ -366,7 +366,14 @@ static void dev_map(const evdev_t *e, edev_t *d) {
     d->nch = (uint8_t)(8 + d->nbtn);
     break;
   case INSRC_BLUETOOTH: {
-    static const int8_t ble[8] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_THROTTLE, ABS_RUDDER };
+    /* CH1..CH8 by axis. ELRS calls setAxes(CH1, CH2, CH5, CH6, CH3, CH4, CH7, CH8) (devBLE.cpp);
+     * ESP32-BLE-Gamepad 0.7.2+ (ELRS 4.x, "ELRS Joystick") reads that as x, y, z, rX, rY, rZ, 0.5.2
+     * (ELRS 3.x, "ExpressLRS Joystick") as x, y, z, rZ, rX, rY. Other Bluetooth joysticks: like 4.x.
+     * The two sliders are both HID Slider: ABS_THROTTLE, then a duplicate that current kernels drop
+     * (older ones moved it to the next free code: RUDDER, or WHEEL). RESEARCH.md section 3. */
+    static const int8_t ble4[8] = { ABS_X, ABS_Y, ABS_RY, ABS_RZ, ABS_Z, ABS_RX, ABS_THROTTLE, ABS_RUDDER };
+    static const int8_t ble3[8] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_THROTTLE, ABS_RUDDER };
+    const int8_t *ble = has_text(d->name, "expresslrs", false) ? ble3 : ble4;
     for (int i = 0; i < 8; i++) map_axis(d, ble[i], i, false, false);
     if (!bit(d->absbit, ABS_RUDDER)) map_axis(d, ABS_WHEEL, 7, false, false);
     map_buttons(d, 8);

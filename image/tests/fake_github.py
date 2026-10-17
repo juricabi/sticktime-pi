@@ -45,7 +45,10 @@ class Repo:
 
 
 class FakeGitHub:
-    def __init__(self):
+    def __init__(self, advertise=None):
+        # the host name in the URLs it hands out (asset downloads, redirects): a QEMU guest reaches
+        # this machine's 127.0.0.1 as 10.0.2.2 (the boot test's update check)
+        self.advertise = advertise or "127.0.0.1"
         self.repos = {}
         self.gallery = None           # bytes of tracks/index.json on the Pages site
         self.gallery_type = "application/json; charset=utf-8"
@@ -79,7 +82,7 @@ class FakeGitHub:
 
     @property
     def base(self):
-        return "http://127.0.0.1:%d" % self.port
+        return "http://%s:%d" % (self.advertise, self.port)
 
     @property
     def api(self):

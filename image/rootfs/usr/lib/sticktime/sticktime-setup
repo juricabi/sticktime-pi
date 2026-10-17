@@ -304,7 +304,7 @@ def step_boot_config(c, s, cc):
         new_cfg, w = stboot.config_txt(old_cfg, video, tv, audio, uart)
         for x in w:
             c.warn(x)
-    new_cmd = stboot.cmdline_txt(old_cmd or "", tv, cc)
+    new_cmd = stboot.cmdline_txt(old_cmd or "", tv, cc, stboot.jack_audio(video, audio))
     if new_cmd is None:
         c.warn(f"{cmd_path} is missing or has no root=: leaving it alone")
     changed = False

@@ -875,6 +875,16 @@ def settings_post():
     ok("tv" in j["fields"])
     j = is_error(post("/api/settings", "Bad%20Key=1", headers={"Content-Type": "application/x-www-form-urlencoded"}), 400, "BadRequest")
     ok("bad key" in j["fields"], j)
+    # stick_channels: four different channels 1-16, stored as "a b c d"; anything else refused
+    eq(is_json(post("/api/settings", "stick_channels = ch3, 1 ,2 4\n"))["saved"], ["stick_channels"])
+    ok("stick_channels = 3 1 2 4" in settings_text(), settings_text())
+    eq(get("/api/settings").json()["values"]["stick_channels"], "3 1 2 4")
+    for bad in ("1 1 2 3", "1 2 3", "0 1 2 3", "1 2 3 17", "AETR"):
+        j = is_error(post("/api/settings", f"stick_channels = {bad}\n"), 400, "BadRequest")
+        ok("four different channels from 1 to 16" in j["fields"]["stick_channels"], j)
+    ok("stick_channels = 3 1 2 4" in settings_text(), "nothing saved")
+    eq(is_json(post("/api/settings", "stick_channels =\n"))["saved"], ["stick_channels"])
+    eq(get("/api/settings").json()["values"]["stick_channels"], "")
     # unknown keys are saved and kept; an empty value clears to the default
     eq(is_json(post("/api/settings", "new_thing = 42\n"))["saved"], ["new_thing"])
     ok("new_thing = 42" in settings_text() and "my_custom_key = keep me" in settings_text())
@@ -1238,6 +1248,52 @@ def sd_delete():
     set_policy("off")
     is_error(sd("DELETE", SLOT + "/c1.txt"), 403, "NoModificationAllowedError")
     set_policy("game")
+
+
+@test
+def sd_game_install():
+    # what the editor's Install of a release does with sd_write = game: the folders, every edition's
+    # files written, a file an older release left in a folder removed; the player's saves (the Lite's
+    # data.txt inside its game folder, *.dat) can't be written or removed
+    set_policy("game")
+    T, bw, lite = "SCRIPTS/TOOLS/", "SCRIPTS/TOOLS/StickTimeBW", "SCRIPTS/TOOLS/StickTimeLite"
+    color = read(sdp(T + "StickTime.lua"))
+    for d in (bw, lite):
+        ok(sd("POST", d, query="create=directory").status in (200, 201), d)
+    write(sdp(lite + "/data.txt"), "lite save\n")
+    write(sdp(lite + "/old.lua"), "-- an older release's\n")
+    write(sdp(T + "StickTimeBW.dat"), "bw save")
+    files = {T + "StickTime.lua": b"-- TNS|StickTime|TNE\n-- StickTime v1.7.3\n", T + "StickTimeBW.lua": b"-- StickTime BW v1.7.3\n",
+             T + "StickTimeLite.lua": b"-- StickTime Lite v1.7.3\n", bw + "/game.luac": b"\x1bLuaS\x00" + bytes(range(256)),
+             lite + "/game.luac": b"\x1bLuaS\x00lite"}
+    for d in (bw, lite):
+        for n in ("core.lua", "color.lua", "why.lua"):
+            files[f"{d}/{n}"] = f"-- {d}/{n}\n".encode()
+    for n in ("q1.txt", "q5.txt", "t1.txt", "t8.txt"):
+        files[f"{lite}/{n}"] = f"{n}\n".encode()
+    mark = len(events())
+    for rel, body in files.items():
+        eq(sd("PUT", rel, body).status, 200, rel)
+        eq(read(sdp(rel)), body, rel)
+    ok(wait_event(mark, lambda e: e == "sd_dirty"), "the game reloads after an Install")
+    eq(sd("DELETE", lite + "/old.lua").status, 204, "a file the release doesn't have")
+    for rel in (lite + "/data.txt", lite + "/DATA.TXT", "scripts/tools/sticktimelite/data.txt", T + "StickTimeBW.dat"):
+        is_error(sd("PUT", rel, "x"), 403, "NoModificationAllowedError")
+        is_error(sd("DELETE", rel), 403, "NoModificationAllowedError")
+    eq(read(sdp(lite + "/data.txt")), b"lite save\n", "the Lite's save stays")
+    eq(read(sdp(T + "StickTimeBW.dat")), b"bw save")
+    # its folder can't go while the save is in it
+    is_error(sd("DELETE", lite), 409, "InvalidModificationError")
+    is_error(sd("DELETE", lite, query="recursive=1"), 403, "NoModificationAllowedError")
+    eq(sorted(e["name"] for e in is_json(sd("GET", lite, query="list"))["entries"]),
+       ["color.lua", "core.lua", "data.txt", "game.luac", "q1.txt", "q5.txt", "t1.txt", "t8.txt", "why.lua"])
+    # as before for the tests after this one
+    for d in (bw, lite):
+        shutil.rmtree(sdp(d))
+    os.makedirs(sdp(bw))
+    for n in ("StickTimeBW.lua", "StickTimeLite.lua", "StickTimeBW.dat"):
+        os.remove(sdp(T + n))
+    write(sdp(T + "StickTime.lua"), color)
 
 
 @test

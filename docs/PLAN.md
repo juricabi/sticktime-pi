@@ -91,14 +91,15 @@ per frame:
 
 ### 3.4 Inputs and sticks
 
-Normalized to channels CH1..CH16 (−1024..1024), then `channel_order` (default `AETR`) picks
-ail/ele/thr/rud for `getValue`.
+Normalized to channels CH1..CH16 (−1024..1024), then `stick_channels` (a channel per stick, e.g. `1 2 3 4`)
+or else `channel_order` (default `AETR`) picks ail/ele/thr/rud for `getValue` (gamepads and the keyboard
+already give ail/ele/thr/rud).
 
 | Source | Detected by | Channels |
 |---|---|---|
 | ELRS/XF WiFi | beacon or `wifi_module_ip` | frame values 0..32767 → −1024..1024 |
 | EdgeTX/OpenTX USB | name contains "EdgeTX"/"OpenTX" | ABS codes 0..7 = CH1..CH8 |
-| ELRS BLE | name "ELRS Joystick"/"ExpressLRS Joystick" | X=CH1, Y=CH2, RX=CH3, RY=CH4, Z=CH5, RZ=CH6 |
+| ELRS BLE | name "ELRS Joystick" (4.x) / "ExpressLRS Joystick" (3.x) | 4.x: X=CH1, Y=CH2, RY=CH3, RZ=CH4, Z=CH5, RX=CH6; 3.x: RX=CH3, RY=CH4, RZ=CH6 (RESEARCH.md §3) |
 | Gamepad | has BTN_GAMEPAD | mode-2 layout: thr = −ABS_Y, rud = ABS_X, ele = −ABS_RY, ail = ABS_RX |
 | Other joystick | fallback | ABS codes in order |
 
@@ -117,10 +118,11 @@ ail/ele/thr/rud for `getValue`.
 /boot/firmware/sticktime.txt              settings (comments explain every key)
 /boot/firmware/sticktime/
   bin/sticktime-pi                        static aarch64 binary   (bin.prev/ kept for rollback)
-  sd/SCRIPTS/TOOLS/StickTime.lua          the game (from a StickTime release)
+  sd/SCRIPTS/TOOLS/StickTime.lua          the game (from a StickTime release), color edition
+  sd/SCRIPTS/TOOLS/StickTimeBW.lua, StickTimeBW/, StickTimeLite.lua, StickTimeLite/   the B&W and Lite editions
   sd/SCRIPTS/TOOLS/StickTimeTracks/c1..c8.txt   your tracks (9–16)
   sd/SCRIPTS/TOOLS/StickTimeGhosts/       ghosts
-  sd/SCRIPTS/TOOLS/StickTime.dat          bests and settings of the game
+  sd/SCRIPTS/TOOLS/StickTime.dat          bests and settings of the game (StickTimeBW.dat, StickTimeLite/data.txt)
   web/                                    the web UI, the StickTime editor page, the track gallery
   VERSION                                 app version; sd/.../GAME_VERSION for the game
 ```
@@ -143,6 +145,7 @@ hotspot_password = sticktime
 # sticks
 input = auto            # auto | wifi | usb | bluetooth | keyboard
 channel_order = AETR
+stick_channels =        # e.g. 1 2 3 4: the channel of ail, ele, thr, rud (empty: channel_order)
 wifi_module_ip =        # empty: find it by its beacon
 wifi_interval_us = 4000
 pause_channel = 5
@@ -201,7 +204,8 @@ System Access calls it uses. Serve the gallery (`tracks/*.txt|json` + `index.jso
 ### 3.9 Updates
 
 - **Game**: latest release of `juricabi/sticktime`. Its `StickTime-<ver>-sdcard.zip` gives
-  `StickTime.lua`. Take `web/simulator.html` and `tracks/` from the same tag
+  `StickTime.lua` and the B&W and Lite editions (loader + folder), kept and installed as one set (a slot,
+  never the player's saves: `*.dat`, `StickTimeLite/data.txt`). Take `web/simulator.html` and `tracks/` from the same tag
   (`raw.githubusercontent.com/juricabi/sticktime/<tag>/…`).
 - **App**: releases of this repo: `sticktime-pi-app-<ver>.tar.gz` with `bin/`, `web/`, `VERSION`, `SHA256SUMS`.
 - Updater (`sticktime-update`, Python 3 from Pi OS): check, download to `.staging/`, verify, swap

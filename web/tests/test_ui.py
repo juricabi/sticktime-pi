@@ -266,12 +266,16 @@ class UiTest(unittest.TestCase):
         self.assertEqual(self.posts("/api/settings")[1]["body"], b"aspect = 16:9\n")
         self.assertTrue(p.is_hidden('form[data-form="video"] .savebar'))
         self.assertTrue(p.is_checked('input[name="f-video-aspect"][value="16:9"]'))
-        # the Pi's normalized value comes back (a lower-case channel order, typed without leaving the field)
+        # the channel order is a list of all 24 orders; Enter in a text field submits the form
         self.tab("sticks")
-        p.fill("#f-sticks-channel_order", "taer")
-        p.press("#f-sticks-channel_order", "Enter")                 # submits: blur never happened
+        opts = p.eval_on_selector_all("#f-sticks-channel_order option", "els => els.map((e) => e.value)")
+        self.assertEqual((len(opts), len(set(opts)), opts[:2]), (24, 24, ["AETR", "TAER"]))
+        p.select_option("#f-sticks-channel_order", "TAER")
+        p.press("#f-sticks-wifi_module_ip", "Enter")
         self.until(lambda: len(self.posts("/api/settings")) == 3)
+        self.assertEqual(self.posts("/api/settings")[2]["body"], b"channel_order = TAER\n")
         self.until(lambda: p.input_value("#f-sticks-channel_order") == "TAER", what="the stored value")
+        self.assertEqual(self.pi.value("channel_order"), "TAER")
         # the Sound form saves by itself, a slider once when it stops
         self.tab("sound")
         n = len(self.posts("/api/settings"))
@@ -300,13 +304,14 @@ class UiTest(unittest.TestCase):
         # typing clears the error
         p.fill("#f-sticks-wifi_interval_us", "4000")
         self.assertEqual(p.inner_text("#f-sticks-wifi_interval_us-err"), "")
-        # from the Pi: per field, nothing saved
-        p.fill("#f-sticks-channel_order", "AXTR")
+        # from the Pi: per field, nothing saved (not even the valid channel order sent with it)
+        p.select_option("#f-sticks-channel_order", "TAER")
         p.fill("#f-sticks-wifi_module_ip", "10.0.0.300")
         self.save("sticks")
-        p.wait_for_selector("#f-sticks-channel_order-err:has-text('the four letters A, E, T and R')")
-        self.assertIn("an IP address like 10.0.0.1", p.inner_text("#f-sticks-wifi_module_ip-err"))
-        self.assertIn("invalid", p.get_attribute(self.field("sticks", "channel_order"), "class"))
+        p.wait_for_selector("#f-sticks-wifi_module_ip-err:has-text('an IP address like 10.0.0.1')")
+        self.assertIn("invalid", p.get_attribute(self.field("sticks", "wifi_module_ip"), "class"))
+        self.assertNotIn("invalid", p.get_attribute(self.field("sticks", "channel_order"), "class"))
+        self.assertEqual(self.posts("/api/settings")[0]["body"], b"channel_order = TAER\nwifi_module_ip = 10.0.0.300\n")
         self.assertEqual((self.pi.value("channel_order"), self.pi.value("wifi_module_ip")), ("AETR", ""))
         self.assertTrue(p.is_visible('form[data-form="sticks"] .savebar'), "the edits stay")
         self.shot("sticks-errors-desktop")
@@ -435,6 +440,180 @@ class UiTest(unittest.TestCase):
         self.until(lambda: len(self.gets("/api/sticks")) >= 5, timeout=8, what="polling after the stream failed")
         p.wait_for_function(LOADED["sticks"])
 
+    STICK_SELS = ["#f-sticks-stick_channels", "#f-sticks-stick_channels-ele", "#f-sticks-stick_channels-thr", "#f-sticks-stick_channels-rud"]
+
+    def stick_map(self):
+        return [self.page.input_value(s) for s in self.STICK_SELS]
+
+    def test_stick_mapping_field(self):
+        p = self.open("sticks")
+        f = self.field("sticks", "stick_channels")
+        self.assertEqual(p.eval_on_selector(self.STICK_SELS[0], "e => [...e.options].map((o) => o.textContent)"), ["By order"] + [f"CH{i}" for i in range(1, 17)])
+        self.assertEqual(p.eval_on_selector_all(f"{f} .chmap label > span", "els => els.map((e) => e.textContent)"), ["Aileron", "Elevator", "Throttle", "Yaw"])
+        self.assertEqual(p.inner_text(f"{f} .field-title .lbl"), "Stick mapping")
+        self.assertIn("Channel of each stick", p.inner_text("#f-sticks-stick_channels-help"))
+        self.assertEqual(self.stick_map(), ["", "", "", ""], "not set: the channel order decides")
+        self.assertTrue(p.is_hidden(f"{f} button:has-text('Use the channel order')"))
+        # the first pick fills the other sticks from the channel order (TAER: thr CH1, ail CH2, ele CH3, rud CH4)
+        p.select_option("#f-sticks-channel_order", "TAER")
+        p.select_option(self.STICK_SELS[0], "6")
+        self.assertEqual(self.stick_map(), ["6", "3", "1", "4"])
+        # a channel another stick has: they swap
+        p.select_option(self.STICK_SELS[1], "6")
+        self.assertEqual(self.stick_map(), ["3", "6", "1", "4"])
+        # a stick on the pause switch's channel: said
+        self.assertTrue(p.is_hidden("#f-sticks-stick_channels-note"))
+        p.select_option(self.STICK_SELS[3], "5")
+        p.wait_for_selector("#f-sticks-stick_channels-note:has-text('CH5 is also the pause switch: moving the yaw stick would pause the game.')")
+        p.select_option("#f-sticks-pause_channel", "0")
+        self.assertTrue(p.is_hidden("#f-sticks-stick_channels-note"))
+        self.assertTrue(p.is_visible(f"{f} .flag.changed"))
+        self.save("sticks")
+        self.until(lambda: self.posts("/api/settings"))
+        self.assertEqual(self.posts("/api/settings")[0]["body"], b"channel_order = TAER\nstick_channels = 3 6 1 5\npause_channel = 0\n")
+        self.assertEqual(self.pi.value("stick_channels"), "3 6 1 5")
+        self.until(lambda: p.is_hidden('form[data-form="sticks"] .savebar'), what="saved")
+        self.assertEqual(self.stick_map(), ["3", "6", "1", "5"])
+        # what the game gets follows the mapping (the mock's radio: its CH3 is the aileron now)
+        self.pi.stick_move = 3
+        self.until(lambda: abs(self.bars("#mixBars")[0]) > 300, what="the aileron bar on CH3")
+        # a channel twice (not possible with the lists alone) is refused in the page
+        p.evaluate("""() => { const f = stp.forms.find((x) => x.name === 'sticks');
+            document.getElementById('f-sticks-stick_channels-ele').value = '3'; f.changed(f.fields.get('stick_channels')); }""")
+        self.save("sticks")
+        p.wait_for_selector("#f-sticks-stick_channels-err:has-text('each stick needs its own channel')")
+        self.assertEqual(len(self.posts("/api/settings")), 1)
+        p.select_option(self.STICK_SELS[1], "")                     # "By order" on any stick: all of them
+        self.assertEqual(self.stick_map(), ["", "", "", ""])
+        p.select_option(self.STICK_SELS[2], "2")                    # from TAER (ail 2, ele 3, thr 1, rud 4), thr takes CH2
+        self.assertEqual(self.stick_map(), ["1", "3", "2", "4"])
+        p.click(f"{f} button:has-text('Use the channel order')")
+        self.assertEqual(self.stick_map(), ["", "", "", ""])
+        self.save("sticks")
+        self.until(lambda: len(self.posts("/api/settings")) == 2)
+        self.assertEqual(self.posts("/api/settings")[1]["body"], b"stick_channels = \n")
+        self.assertEqual(self.pi.value("stick_channels"), "")
+
+    def test_detect_wizard(self):
+        self.pi.stick_move = 0                                      # the radio's sticks rest (with a little noise)
+        p = self.open("sticks", mobile=True, dark=True)
+        f = self.field("sticks", "stick_channels")
+        p.click(f"{f} button:has-text('Detect')")
+        p.wait_for_selector("#detectDlg[open]")
+        self.assertEqual(p.inner_text("#detectAsk"), "Move the AILERON stick left and right")
+        self.assertIn("Step 1 of 4: the right stick in mode 2 (roll)", p.inner_text("#detectHint"))
+        p.wait_for_timeout(700)
+        self.assertIn("Waiting for a channel to move", p.inner_text("#detectMsg"), "noise doesn't count")
+        self.assertTrue(p.is_disabled("#detectUse"))
+        self.assertLessEqual(p.eval_on_selector("#detectDlg", "e => e.getBoundingClientRect().right"), MOBILE["width"])
+        self.no_sideways_scroll("the Detect wizard")
+        self.shot("sticks-detect-mobile")
+        # aileron: CH6 sweeps
+        self.pi.stick_move = 6
+        p.wait_for_selector("#detectAsk:has-text('ELEVATOR')", timeout=8000)
+        self.assertEqual(p.inner_text("#detectDlg .detect-steps li:nth-child(1) b"), "CH6")
+        self.assertIn("up and down", p.inner_text("#detectAsk"))
+        self.pi.stick_move = 0
+        p.wait_for_timeout(300)
+        self.pi.stick_move = 2
+        p.wait_for_selector("#detectAsk:has-text('THROTTLE')", timeout=8000)
+        self.assertIn("left stick", p.inner_text("#detectHint"))
+        # the aileron's channel again: refused
+        self.pi.stick_move = 6
+        p.wait_for_selector("#detectMsg:has-text('CH6 is already the aileron: move the THROTTLE stick')", timeout=8000)
+        self.assertIn("THROTTLE", p.inner_text("#detectAsk"))
+        # a channel that moves only part of the way: no step by itself, Use takes it
+        self.pi.stick_amp, self.pi.stick_move = 400, 7
+        p.wait_for_selector("#detectUse:has-text('Use CH7'):not([disabled])", timeout=8000)
+        p.wait_for_timeout(1000)
+        self.assertIn("THROTTLE", p.inner_text("#detectAsk"), "no step by itself")
+        p.click("#detectUse")
+        p.wait_for_selector("#detectAsk:has-text('YAW')")
+        self.pi.stick_amp, self.pi.stick_move = 1000, 4
+        p.wait_for_selector("#detectDlg", state="hidden", timeout=8000)
+        self.assertEqual(self.stick_map(), ["6", "2", "7", "4"])
+        self.toast("Save to keep it")
+        self.assertEqual(self.posts("/api/settings"), [], "nothing saved yet")
+        self.save("sticks")
+        self.until(lambda: self.posts("/api/settings"))
+        self.assertEqual(self.posts("/api/settings")[0]["body"], b"stick_channels = 6 2 7 4\n")
+        self.assertEqual(self.pi.value("stick_channels"), "6 2 7 4")
+        # Cancel and Esc leave the field as it was
+        self.until(lambda: p.is_hidden('form[data-form="sticks"] .savebar'), what="saved")
+        self.pi.stick_move = 0
+        p.click(f"{f} button:has-text('Detect')")
+        p.wait_for_selector("#detectDlg[open]")
+        self.pi.stick_move = 1
+        p.wait_for_selector("#detectAsk:has-text('ELEVATOR')", timeout=8000)
+        p.click("#detectCancel")
+        p.wait_for_selector("#detectDlg", state="hidden")
+        p.click(f"{f} button:has-text('Detect')")
+        p.wait_for_selector("#detectDlg[open]")
+        self.assertEqual(p.inner_text("#detectDlg .detect-steps li:nth-child(1) b"), "–", "a new run starts over")
+        p.keyboard.press("Escape")
+        p.wait_for_selector("#detectDlg", state="hidden")
+        self.assertEqual(self.stick_map(), ["6", "2", "7", "4"])
+        self.assertTrue(p.is_hidden('form[data-form="sticks"] .savebar'))
+        # no radio sending: said
+        kb = '{"sources":[{"kind":"keyboard","name":"Keyboard","live":true,"nch":4,"ch":[0,0,0,0]}],"active":0}'
+        p.route("**/api/sticks/stream", lambda r: r.fulfill(status=200, content_type="text/event-stream", body="data: " + kb + "\n\n"))
+        p.route("**/api/sticks", lambda r: r.fulfill(status=200, content_type="application/json", body=kb))
+        self.tab("video")
+        self.tab("sticks")
+        p.click(f"{f} button:has-text('Detect')")
+        p.wait_for_selector("#detectMsg:has-text('No radio sends sticks yet')", timeout=8000)
+        p.evaluate("location.hash = '#status'")                     # the back button: leaving the page closes it
+        p.wait_for_selector("#detectDlg", state="hidden")
+        p.wait_for_selector("#p-status", state="visible")
+
+    def test_fixed_source_ignores_the_others(self):
+        # Stick source = Bluetooth while only the ELRS WiFi joystick sends: the game gets nothing, the page says why
+        self.pi.file_values["input"] = "bluetooth"
+        p = self.open("status")
+        p.wait_for_selector("#inputWarnStatus", state="visible")
+        self.assertEqual(p.inner_text("#inputWarnStatus .input-warn-text"), "Stick source is set to Bluetooth: ELRS 10.0.0.1 (WiFi) is ignored.")
+        self.assertEqual(p.get_attribute("#inputWarnStatus", "role"), "status")
+        self.until(lambda: "(ignored)" in p.inner_text("#srcList"), what="the list marks it")
+        self.assertNotIn("(in use)", p.inner_text("#srcList"))
+        self.assertEqual(p.inner_text("[data-f=inputName]"), "none: the source is set to Bluetooth")
+        self.tab("sticks")
+        p.wait_for_selector("#inputWarnSticks", state="visible")
+        self.assertIn("ELRS 10.0.0.1 (WiFi) is ignored", p.inner_text("#inputWarnSticks"))
+        p.wait_for_function(LOADED["sticks"])
+        self.until(lambda: p.is_visible("#srcCards .src-card:nth-child(1) .pill.warn"), what="the ignored pill")
+        self.assertTrue(p.is_hidden("#srcCards .src-card:nth-child(1) .pill.ok"))
+        self.no_sideways_scroll("the notice")
+        self.shot("sticks-ignored-desktop")
+        p.click("#inputWarnSticks button:has-text('Use auto')")
+        self.until(lambda: self.posts("/api/settings"))
+        self.assertEqual(self.posts("/api/settings")[0]["body"], b"input = auto\n")
+        p.wait_for_selector("#inputWarnSticks", state="hidden")
+        self.toast("Stick source saved.")
+        self.assertEqual(self.pi.value("input"), "auto")
+        self.assertEqual(p.input_value("#f-sticks-input"), "auto")
+        self.until(lambda: p.is_visible("#srcCards .src-card:nth-child(1) .pill.ok"), what="in use")
+        self.assertTrue(p.is_hidden("#srcCards .src-card:nth-child(1) .pill.warn"))
+        self.tab("status")
+        self.until(lambda: "ELRS 10.0.0.1 (in use)" in p.inner_text("#srcList"), what="in use on Status")
+        self.assertTrue(p.is_hidden("#inputWarnStatus"))
+        # a fixed kind that does send: no notice, the other sources are marked as ignored
+        self.tab("sticks")
+        p.select_option("#f-sticks-input", "wifi")
+        self.save("sticks")
+        self.until(lambda: len(self.posts("/api/settings")) == 2)
+        self.until(lambda: p.is_visible("#srcCards .src-card:nth-child(2) .pill.warn"), what="USB ignored")
+        p.wait_for_timeout(300)
+        self.assertTrue(p.is_hidden("#inputWarnSticks"))
+        # the Pi refusing the save: said, nothing changes
+        self.pi.file_values["input"] = "usb"
+        self.net_errors_ok = True
+        self.page.evaluate("stp.S.values.input = 'usb'")
+        p.wait_for_selector("#inputWarnSticks", state="visible")
+        self.pi.fail["/api/settings"] = (500, "Internal", "Couldn't save the settings: Read-only file system", 1)
+        p.click("#inputWarnSticks button:has-text('Use auto')")
+        self.toast("Read-only file system")
+        self.assertTrue(p.is_visible("#inputWarnSticks"))
+
     def test_module_wifi(self):
         p = self.open("sticks")
         p.click('[data-modap="tbs"]')
@@ -561,12 +740,16 @@ class UiTest(unittest.TestCase):
     def test_scripts_and_reload(self):
         p = self.open("game")
         p.wait_for_function(LOADED["game"])
-        self.assertEqual(p.eval_on_selector_all("#toolList label b", "els => els.map((e) => e.textContent)"), ["StickTime", "StickTimeBW"])
+        # the three editions by their names, each with what it is
+        self.assertEqual(p.eval_on_selector_all("#toolList label b", "els => els.map((e) => e.textContent)"),
+                         ["StickTime", "StickTime BW", "StickTime Lite"])
+        self.assertEqual([d.split(":")[0] for d in p.eval_on_selector_all("#toolList .tdesc", "els => els.map((e) => e.textContent)")],
+                         ["Color edition", "B&W edition", "Lite edition"])
         self.assertTrue(p.is_checked('#toolList input[value="/SCRIPTS/TOOLS/StickTime.lua"]'))
-        p.click("#toolList label:has-text('StickTimeBW')")
+        p.click("#toolList label:has-text('StickTime BW')")
         self.until(lambda: self.posts("/api/settings"))
         self.assertEqual(self.posts("/api/settings")[0]["body"], b"script = /SCRIPTS/TOOLS/StickTimeBW.lua\n")
-        self.toast("Running StickTimeBW.")
+        self.toast("Running StickTime BW.")
         p.click("#p-game [data-action=reload-game]")
         self.until(lambda: self.posts("/api/game/reload"))
         self.toast("The game is reloading.")

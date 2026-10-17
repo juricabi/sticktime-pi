@@ -15,8 +15,11 @@ config.txt): it waits quietly and checks again every 30 s.
 """
 import json
 import os
+import queue
 import re
+import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -28,6 +31,7 @@ PAD_NAME_RE = re.compile(r"(gamepad|game ?pad|controller|joystick|xbox|dualshock
                          r"stadia|switch pro|nimbus|gamesir|ipega|shield)", re.I)
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x01|\x02|\r")
 SCAN_S = 8
+CONNECT_TRIES = 5
 
 
 def clean(s):
@@ -106,6 +110,94 @@ def adapters():
         return []
 
 
+class Session:
+    """one interactive bluetoothctl for a pairing. The agent (NoInputNoOutput, made the default) must be
+    registered BEFORE the pair command: a one-shot "bluetoothctl --agent NoInputNoOutput pair <mac>"
+    sends the pair first, and BlueZ 5.82 then answers the Just Works confirmation with "No agent
+    available" and refuses the pairing (seen with an ELRS Joystick on a Pi 4)."""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        self.p = None
+        try:
+            self.p = subprocess.Popen(st._resolve(["bluetoothctl"]), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+        except OSError as e:
+            st.log(f"bluetoothctl: {e}")
+            return
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for ln in self.p.stdout:
+            self.q.put(clean(ln))
+        self.q.put(None)
+
+    def send(self, line):
+        try:
+            self.p.stdin.write(line + "\n")
+            self.p.stdin.flush()
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def cmd(self, line, expect, timeout):
+        """send a command; the first output line matching expect (a regex), or None (timeout, exit).
+        A (yes/no) question meanwhile is about the device we are pairing: yes."""
+        if not self.p or not self.send(line):
+            return None
+        rx, end = re.compile(expect), time.time() + timeout
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return None
+            try:
+                ln = self.q.get(timeout=left)
+            except queue.Empty:
+                return None
+            if ln is None:
+                return None
+            if "(yes/no)" in ln:
+                self.send("yes")
+            elif rx.search(ln):
+                return ln
+
+    def close(self):
+        if not self.p:
+            return
+        self.send("quit")
+        try:
+            self.p.wait(5)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+
+
+def pair_connect(mac, info, tries=None):
+    """(ok, why): connect (the Pi 4's shared WiFi/BT radio often drops the first tries with 0x3e
+    "connection failed to be established", so retry), pair over that connection, trust"""
+    tries = CONNECT_TRIES if tries is None else tries
+    s = Session()
+    try:
+        if not s.cmd("agent NoInputNoOutput", r"Agent registered|already registered", 10):
+            return False, "the Bluetooth agent didn't start"
+        s.cmd("default-agent", r"Default agent request successful|No agent", 5)
+        connected, n = info.get("connected", False), 0
+        while not connected and n < tries:
+            n += 1
+            r = s.cmd(f"connect {mac}", r"Connection successful|Failed to connect", 20)
+            connected = bool(r) and "successful" in r
+        if not connected:
+            return False, f"no connection after {n} tries"
+        if not info.get("paired"):
+            r = s.cmd(f"pair {mac}", r"Pairing successful|Failed to pair", 40)
+            if not r or ("Failed" in r and "AlreadyExists" not in r):
+                return False, "pairing failed" + (": " + r.split("Failed to pair:", 1)[-1].strip() if r else "")
+        if not info.get("trusted"):
+            s.cmd(f"trust {mac}", r"trust succeeded|Failed", 10)
+        return True, ""
+    finally:
+        s.close()
+
+
 class Daemon:
     def __init__(self):
         self.last_try = {}          # mac -> time of the last pair/connect attempt
@@ -118,29 +210,24 @@ class Daemon:
         kind = wanted(name or info.get("name", ""), info)
         if not kind or info.get("blocked"):
             return False
-        if info["connected"]:
+        if info["connected"] and info["paired"]:
             self.failures.pop(mac, None)
             return True
-        wait = min(300, 20 * (2 ** min(self.failures.get(mac, 0), 4)))
+        # radio drops are common: retry soon (10, 20, 40, 80, then every 120 s)
+        wait = min(120, 10 * (2 ** min(self.failures.get(mac, 0), 4)))
         if now - self.last_try.get(mac, 0) < wait:
             return False
         self.last_try[mac] = now
         label = f"{name or mac} ({kind})"
         if not info["paired"]:
             st.log(f"pairing {label}")
-            r = btctl("pair", mac, timeout=40, agent=True)
-            if not r.ok and "AlreadyExists" not in (r.stdout + r.stderr):
-                self.failures[mac] = self.failures.get(mac, 0) + 1
-                st.log(f"pairing {label} failed")
-                return False
-        if not info["trusted"]:
-            btctl("trust", mac)
-        r = btctl("connect", mac, timeout=30)
-        if r.ok or "Connection successful" in r.stdout:
+        ok, why = pair_connect(mac, info)
+        if ok:
             st.log(f"connected {label}")
             self.failures.pop(mac, None)
             return True
         self.failures[mac] = self.failures.get(mac, 0) + 1
+        st.log(f"{label}: {why}")
         return False
 
     def tick(self):

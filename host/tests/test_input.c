@@ -640,11 +640,176 @@ static void test_takeover_scenario(void) {
   CHECK_INT(switched_at, 8000);
 }
 
+/* ------------------------------------------------------------------ stick_channels */
+static int chans(const char *s, uint8_t c[4]) {
+  memset(c, 0x77, 4);
+  return mix_parse_channels(s, c);
+}
+
+static void test_parse_channels(void) {
+  uint8_t c[4];
+  CHECK_INT(chans("1 2 3 4", c), 1);
+  CHECK(c[0] == 1 && c[1] == 2 && c[2] == 3 && c[3] == 4);
+  CHECK_INT(chans("16,15,14,13", c), 1);
+  CHECK(c[0] == 16 && c[1] == 15 && c[2] == 14 && c[3] == 13);
+  CHECK_INT(chans(" ch3, CH1 ,02\t4 ", c), 1);
+  CHECK(c[0] == 3 && c[1] == 1 && c[2] == 2 && c[3] == 4);
+  CHECK_INT(chans(",5,6,7,8,", c), 1);
+  CHECK(c[0] == 5 && c[3] == 8);
+  /* none: use channel_order */
+  static const char *none[] = { "", " ", ",", " , \t,", NULL };
+  for (int i = 0; none[i]; i++) {
+    CHECK_INT(chans(none[i], c), 0);
+    CHECK(c[0] == 0 && c[1] == 0 && c[2] == 0 && c[3] == 0);
+  }
+  CHECK_INT(chans(NULL, c), 0);
+  static const char *bad[] = { "1 2 3", "1 2 3 4 5", "1 1 2 3", "1 2 3 01", "0 1 2 3", "17 1 2 3", "1 2 3 x",
+                               "1-2-3-4", "1;2;3;4", "1234", "ch 1 2 3", "c1 2 3 4", "001 2 3 4", "1.0 2 3 4",
+                               "+1 2 3 4", "1 2 3 4x", "AETR", "1 2 3 99", "-1 2 3 4", NULL };
+  for (int i = 0; bad[i]; i++) {
+    if (chans(bad[i], c) != -1) fprintf(stderr, "stick_channels \"%s\" should be invalid\n", bad[i]);
+    CHECK_INT(chans(bad[i], c), -1);
+    CHECK(c[0] == 0 && c[1] == 0 && c[2] == 0 && c[3] == 0);
+  }
+}
+
+static mix_config_t cfg_chan(int a, int e, int t, int r) {
+  mix_config_t c = cfg_default();
+  c.chan[0] = (uint8_t)a; c.chan[1] = (uint8_t)e; c.chan[2] = (uint8_t)t; c.chan[3] = (uint8_t)r;
+  return c;
+}
+
+static void test_mix_channels(void) {
+  sticks_t o;
+  insrc_t s[3];
+  src_init(&s[0], INSRC_WIFI, 16);
+  for (int i = 0; i < 16; i++) s[0].ch[i] = (int16_t)((i + 1) * 10);     /* CHn = n * 10 */
+  src_at(&s[0], 10 * SEC, 0);
+
+  /* each stick reads its channel */
+  mix_config_t cfg = cfg_chan(6, 2, 7, 12);
+  mix_sticks(&cfg, s, 1, -1, 10 * SEC, &o);
+  CHECK(o.live);
+  CHECK_INT(o.ail, 60);
+  CHECK_INT(o.ele, 20);
+  CHECK_INT(o.thr, 70);
+  CHECK_INT(o.rud, 120);
+  CHECK_INT(o.pause, 50);                      /* the pause switch stays CH5 */
+
+  /* it overrides channel_order */
+  memcpy(cfg.order, "TAER", 5);
+  mix_sticks(&cfg, s, 1, 0, 10 * SEC, &o);
+  CHECK_INT(o.ail, 60);
+  CHECK_INT(o.thr, 70);
+  cfg = cfg_chan(1, 2, 3, 4);                  /* "1 2 3 4" with TAER: still AETR */
+  memcpy(cfg.order, "TAER", 5);
+  mix_sticks(&cfg, s, 1, 0, 10 * SEC, &o);
+  CHECK_INT(o.ail, 10);
+  CHECK_INT(o.ele, 20);
+  CHECK_INT(o.thr, 30);
+  CHECK_INT(o.rud, 40);
+  cfg = cfg_chan(3, 1, 2, 4);                  /* TAER as channels */
+  mix_sticks(&cfg, s, 1, 0, 10 * SEC, &o);
+  CHECK_INT(o.ail, 30);
+  CHECK_INT(o.ele, 10);
+  CHECK_INT(o.thr, 20);
+  CHECK_INT(o.rud, 40);
+
+  /* invert applies per stick, after the mapping */
+  cfg = cfg_chan(6, 2, 7, 12);
+  cfg.invert[0] = cfg.invert[2] = true;
+  mix_sticks(&cfg, s, 1, 0, 10 * SEC, &o);
+  CHECK_INT(o.ail, -60);
+  CHECK_INT(o.ele, 20);
+  CHECK_INT(o.thr, -70);
+  CHECK_INT(o.rud, 120);
+  CHECK_INT(o.pause, 50);
+
+  /* a channel the source doesn't have: centred, throttle low (and an inverted missing throttle too) */
+  src_init(&s[1], INSRC_USB, 8);
+  for (int i = 0; i < 16; i++) s[1].ch[i] = 500;
+  src_at(&s[1], 10 * SEC, 0);
+  cfg = cfg_chan(1, 9, 12, 8);
+  cfg.invert[2] = true;
+  mix_sticks(&cfg, s + 1, 1, -1, 10 * SEC, &o);
+  CHECK_INT(o.ail, 500);
+  CHECK_INT(o.ele, 0);
+  CHECK_INT(o.thr, -1024);
+  CHECK_INT(o.rud, 500);
+
+  /* gamepads and the keyboard keep their own layout */
+  cfg = cfg_chan(4, 3, 2, 1);
+  src_init(&s[2], INSRC_GAMEPAD, 7);
+  set4(s[2].ch, -10, -20, -30, -40);
+  src_at(&s[2], 10 * SEC, 0);
+  mix_sticks(&cfg, s + 2, 1, -1, 10 * SEC, &o);
+  CHECK_INT(o.ail, -10);
+  CHECK_INT(o.ele, -20);
+  CHECK_INT(o.thr, -30);
+  CHECK_INT(o.rud, -40);
+  src_init(&s[2], INSRC_KEYBOARD, 4);
+  set4(s[2].ch, 1, 2, 3, 4);
+  src_at(&s[2], 10 * SEC, 0);
+  cfg.invert[3] = true;
+  mix_sticks(&cfg, s + 2, 1, -1, 10 * SEC, &o);
+  CHECK_INT(o.ail, 1);
+  CHECK_INT(o.thr, 3);
+  CHECK_INT(o.rud, -4);                        /* invert still applies */
+
+  /* bad maps (a channel twice, out of range, partly set) fall back to channel_order */
+  static const uint8_t badmaps[][4] = { { 1, 1, 2, 3 }, { 0, 2, 3, 4 }, { 1, 2, 3, 17 }, { 5, 0, 0, 0 }, { 255, 2, 3, 4 } };
+  for (size_t i = 0; i < sizeof badmaps / sizeof badmaps[0]; i++) {
+    cfg = cfg_default();
+    memcpy(cfg.order, "TAER", 5);
+    memcpy(cfg.chan, badmaps[i], 4);
+    mix_sticks(&cfg, s, 1, 0, 10 * SEC, &o);
+    CHECK_INT(o.thr, 10);
+    CHECK_INT(o.ail, 20);
+    CHECK_INT(o.ele, 30);
+    CHECK_INT(o.rud, 40);
+  }
+
+  /* moves count on the mapped channels (a stick on CH6 moves the source; CH1 is now a switch) */
+  insrc_t r, pad;
+  memset(&r, 0, sizeof r);
+  r.kind = INSRC_WIFI;
+  r.present = true;
+  memset(&pad, 0, sizeof pad);
+  pad.kind = INSRC_GAMEPAD;
+  pad.present = true;
+  pad.fixed_aetr = true;
+  int16_t c[INPUT_CH] = { 0 };
+  cfg = cfg_chan(5, 6, 7, 8);
+  mix_sticks(&cfg, &r, 1, -1, 0, &o);
+  insrc_update(&r, c, 16, 1000);
+  insrc_update(&pad, c, 7, 1000);
+  c[0] = 1000;                                 /* CH1 */
+  insrc_update(&r, c, 16, 2000);
+  insrc_update(&pad, c, 7, 2000);
+  CHECK_INT(r.moved_us, 0);
+  CHECK_INT(pad.moved_us, 2000);               /* a gamepad's CH1 is its aileron */
+  c[5] = -600;                                 /* CH6 = elevator */
+  insrc_update(&r, c, 16, 3000);
+  insrc_update(&pad, c, 7, 3000);
+  CHECK_INT(r.moved_us, 3000);
+  CHECK_INT(pad.moved_us, 2000);               /* its CH6 is a trigger */
+  /* back to channel_order: CH1-4 again */
+  cfg = cfg_default();
+  mix_sticks(&cfg, &r, 1, -1, 3000, &o);
+  c[7] = 900;
+  insrc_update(&r, c, 16, 4000);
+  CHECK_INT(r.moved_us, 3000);
+  c[1] = 900;
+  insrc_update(&r, c, 16, 5000);
+  CHECK_INT(r.moved_us, 5000);
+}
+
 int main(void) {
   test_kind_names();
   test_parse_input();
   test_parse_order();
   test_parse_invert();
+  test_parse_channels();
   test_update();
   test_mix_basic();
   test_mix_missing_channels();
@@ -653,5 +818,7 @@ int main(void) {
   test_mix_auto();
   test_mix_fixed();
   test_takeover_scenario();
+  test_mix_channels();
+  test_takeover_scenario();                    /* again after a stick_channels map (back to CH1-4) */
   T_DONE();
 }

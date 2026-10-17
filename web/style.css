@@ -334,6 +334,28 @@ input[type="checkbox"][role="switch"]:checked::after { transform: translateX(20p
 .seg input:checked + span { background: var(--sel); color: var(--sel-fg); border-color: var(--sel-line); }
 .seg input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 2px; }
 
+/* stick mapping: a channel per stick (2 x 2 on a phone), and its Detect wizard */
+.chmap { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; max-width: 560px; }
+.chmap label { display: grid; gap: 4px; min-width: 0; font-size: 13.5px; font-weight: 650; color: var(--muted); }
+.chmap select { max-width: none; min-width: 0; }
+@media (max-width: 520px) { .chmap { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.field .warnline { color: var(--warn); font-weight: 600; }
+.input-warn .btn { margin-left: 4px; vertical-align: middle; }
+.detect-steps { list-style: none; padding: 0; margin: 4px 0 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.detect-steps li { display: grid; gap: 2px; min-width: 0; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line-2); font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.detect-steps li b { font: 650 14px var(--mono); color: var(--title); }
+.detect-steps li.now { border-color: var(--accent); color: var(--fg); }
+.detect-steps li.done b { color: var(--ok); }
+.detect-ask { font-size: 18px; font-weight: 700; color: var(--title); margin: 4px 0; }
+.dline { display: grid; grid-template-columns: 4.2em minmax(0, 1fr); gap: 10px; align-items: center; margin: 12px 0 4px; }
+.dchan { font: 650 15px var(--mono); color: var(--accent-text); }
+.dtrack { display: block; height: 14px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line-2); overflow: hidden; }
+.dfill { display: block; height: 100%; background: var(--accent); transform-origin: left center; transform: scaleX(0); transition: transform .08s linear; }
+.detect-msg { min-height: 3em; margin: 6px 0 0; font-weight: 600; font-size: 14px; color: var(--muted); }
+.detect-msg.ok { color: var(--ok); }
+.detect-msg.warn { color: var(--warn); }
+.detect-msg.bad { color: var(--bad); }
+
 .secret { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .secret .state { font-weight: 600; }
 .secret .state.set { color: var(--ok); }
@@ -502,8 +524,9 @@ progress { accent-color: var(--accent); height: 8px; }
 .tool input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; }
 .tool .tcol { display: grid; min-width: 0; }
 .tool .tpath { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.tool .tdesc { font-size: 13px; color: var(--muted); }
 .tool:has(input:checked) { border-color: var(--sel-line); background: var(--sel); color: var(--sel-fg); }
-.tool:has(input:checked) .tpath { color: var(--sel-muted); }
+.tool:has(input:checked) .tpath, .tool:has(input:checked) .tdesc { color: var(--sel-muted); }
 .tool:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- updates */

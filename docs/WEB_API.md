@@ -118,7 +118,10 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
 - `POST /api/key` body `enter|exit|next|prev|inc|dec|nextpage|prevpage|menu|up|down` → `{"ok":true}`
   (`up`/`down` use the editing-aware pitch mapping, like the sticks).
 - `GET /api/tools` → `{"current":"/SCRIPTS/TOOLS/StickTime.lua","tools":[{"path":"/SCRIPTS/TOOLS/StickTime.lua","name":"StickTime"},...]}`:
-  the color tool scripts in `/SCRIPTS/TOOLS/` (the emulator's "Open .lua"). Choose one with `POST /api/settings` `script = <path>`.
+  the color tool scripts in `/SCRIPTS/TOOLS/` (the emulator's "Open .lua"); `name` is the script's `TNS|...|TNE`
+  tool name (first KB), else its file name. The image has StickTime's three editions: `StickTime.lua` ("StickTime"),
+  `StickTimeBW.lua` ("StickTime BW") and `StickTimeLite.lua` ("StickTime Lite"); the page says which edition each is.
+  Choose one with `POST /api/settings` `script = <path>`.
 
 ## Audio
 

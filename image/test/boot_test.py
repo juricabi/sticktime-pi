@@ -736,6 +736,57 @@ class BootTest:
         rc, out = self.console.run(cmd, timeout)
         return rc, out
 
+    def app_version_seen(self, want, timeout=180):
+        """wait until the running host's /api/status reports version want; the last version seen"""
+        end, seen = time.time() + timeout, None
+        while time.time() < end:
+            try:
+                code, body = http_get(self.http_port, "/api/status")
+                if code == 200:
+                    seen = json.loads(body).get("version")
+                    if seen == want:
+                        return seen
+            except (OSError, ValueError, urllib.error.URLError):
+                pass
+            time.sleep(3)
+        return seen
+
+    def update_checks(self, n):
+        """the web page's Updates end to end, on the real OS (noexec /run, FAT, the service restart): a
+        newer app from a fake GitHub on this machine (10.0.2.2 from the guest), then a rollback"""
+        sys.path.insert(0, os.path.join(REPO, "image", "tests"))
+        sys.path.insert(0, os.path.join(REPO, "tools"))
+        import fake_github           # noqa: E402
+        import make_app_package      # noqa: E402
+        ver2 = self.a.update_ver
+        rc, out = self.sh("cat /boot/firmware/sticktime/VERSION")
+        ver1 = out.strip()
+        try:
+            data, _n = make_app_package.build(self.a.update_bin, ver2, 1700000000)
+        except Exception as e:                       # noqa: BLE001
+            self.check(f"boot {n}: app package {ver2} built", False, e)
+            return
+        gh = fake_github.FakeGitHub(advertise="10.0.2.2").start()
+        try:
+            gh.add_release("juricabi/sticktime-pi", "v" + ver2, f"sticktime-pi-app-{ver2}.tar.gz", data)
+            upd = ("env STICKTIME_GITHUB_API=%s STICKTIME_GITHUB_RAW=%s STICKTIME_PAGES=%s /usr/lib/sticktime/sticktime-update"
+                   " --base /boot/firmware/sticktime --settings /boot/firmware/sticktime.txt --state /run/sticktime"
+                   % (gh.api, gh.raw, gh.pages))
+            rc, out = self.console.sudo(upd + " apply app", self.password, timeout=600)
+            self.info(f"boot {n}: sticktime-update apply app", out[-1500:])
+            rc2, v = self.sh("cat /boot/firmware/sticktime/VERSION")
+            self.check(f"boot {n}: app update {ver1} -> {ver2} installed", v.strip() == ver2, f"VERSION {v.strip()!r}; {out[-600:]}")
+            seen = self.app_version_seen(ver2)
+            self.check(f"boot {n}: the updated app runs (status says {ver2})", seen == ver2, f"status version {seen!r}")
+            rc, out = self.console.sudo(upd + " rollback app", self.password, timeout=600)
+            self.info(f"boot {n}: sticktime-update rollback app", out[-1500:])
+            rc2, v = self.sh("cat /boot/firmware/sticktime/VERSION")
+            self.check(f"boot {n}: rollback to {ver1}", v.strip() == ver1, f"VERSION {v.strip()!r}; {out[-600:]}")
+            seen = self.app_version_seen(ver1)
+            self.check(f"boot {n}: the old app runs again (status says {ver1})", seen == ver1, f"status version {seen!r}")
+        finally:
+            gh.stop()
+
     def guest_checks_first(self):
         c, pw = self.console, self.password
         self.check("serial login as pi with the password from sticktime.txt", c.login("pi", pw))
@@ -751,6 +802,9 @@ class BootTest:
         rc, out = self.sh("systemctl is-active sticktime-setup.service sticktime.service sticktime-hotspot.service "
                           "sticktime-bt.service sticktime-update-repair.service")
         self.check("StickTime units active", out.split() == ["active"] * 5, out)
+        rc, out = self.sh("cd /boot/firmware/sticktime/sd/SCRIPTS/TOOLS && ls StickTime.lua StickTimeBW.lua StickTimeLite.lua "
+                          "StickTimeBW/core.lua StickTimeLite/core.lua 2>&1")
+        self.check("all three game editions on the card (color, BW, Lite)", rc == 0 and "No such" not in out, out)
         rc, out = self.sh("cat /run/sticktime/setup.json")
         try:
             rep = json.loads(out)
@@ -930,6 +984,8 @@ class BootTest:
                 self.check("boot 3: reboot guard cleared after the clean boot", '"last_ok"' in out and '"reboot": false' in out, out[:400])
                 rc, out = self.sh("systemctl --failed --plain --no-legend --no-pager")
                 self.check("boot 3: no failed units", out.strip() == "", out or "(none)")
+                if self.a.update_bin:
+                    self.update_checks(3)
                 self.check("settings edited for boot 4 (ssh = off)", self.edit_settings({"ssh": "off"}))
                 self.reboot_guest()
                 # ---- boot 4: ssh off
@@ -989,6 +1045,9 @@ def main():
     ap.add_argument("--retries", type=int, default=2, help="start boot 1 over this often after an SD emulation timeout")
     ap.add_argument("--icount", action="store_true", help="run QEMU with -icount from the start (else only after a timeout)")
     ap.add_argument("--quick", action="store_true", help="only the first boot and its checks")
+    ap.add_argument("--update-bin", help="a static aarch64 sticktime-pi built with VERSION=--update-ver: boot 3 updates "
+                    "the app to it from a fake GitHub, then rolls back (the Updates page, end to end)")
+    ap.add_argument("--update-ver", help="the version --update-bin was built with (higher than the image's)")
     a = ap.parse_args()
     if not os.path.exists(a.image):
         ap.error(f"{a.image} not found")

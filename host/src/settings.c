@@ -7,7 +7,8 @@
  *  - A lone CR also ends a line (old Mac files). Each line keeps its own line end; new lines use the
  *    file's first one. A BOM is kept. NUL bytes are dropped (a FAT power loss can leave zeros).
  *  - settings_get() returns the effective value of a known key: the file's value normalized
- *    (enums lower case, bools "on"/"off", ints canonical, wifi_country and channel_order upper case),
+ *    (enums lower case, bools "on"/"off", ints canonical, wifi_country and channel_order upper case,
+ *    stick_channels as "1 2 3 4" or "" when it has none),
  *    or the default when the value is empty or invalid (an invalid one also gives a warning).
  *    hotspot_password falls back to its default when empty while hotspot is not off.
  *  - settings_set() stores valid values of known keys normalized the same way, and refuses values
@@ -286,6 +287,11 @@ static const char *check(int ki, const char *v, char *buf, size_t bufsz) {
     char o[5];
     return mix_parse_order(v, o) ? NULL : "must be the letters A, E, T and R in any order";
   }
+  if (!strcmp(name, "stick_channels")) {
+    uint8_t c[4];
+    return mix_parse_channels(v, c) >= 0 ? NULL
+         : "must be four different channels from 1 to 16 for aileron, elevator, throttle, yaw (like 1 2 3 4), or empty";
+  }
   if (!strcmp(name, "invert")) return invert_ok(v) ? NULL : "must be a list of ail, ele, thr, rud";
   if (!strcmp(name, "hostname"))
     return hostname_ok(v) ? NULL : "must be 1-63 letters, digits or hyphens, not starting or ending with a hyphen";
@@ -358,6 +364,12 @@ static char *normalize(int ki, const char *v) {
     char buf[16];
     parse_int(v, &x);
     snprintf(buf, sizeof buf, "%d", x);
+    return dup(buf);
+  }
+  if (!strcmp(k->key, "stick_channels")) {       /* "1 2 3 4", or "" for none */
+    uint8_t c[4];
+    char buf[16] = "";
+    if (mix_parse_channels(v, c) > 0) snprintf(buf, sizeof buf, "%d %d %d %d", c[0], c[1], c[2], c[3]);
     return dup(buf);
   }
   char *d = dup(v);

@@ -1,18 +1,19 @@
 # StickTime Pi: user guide
 
-StickTime Pi turns a Raspberry Pi 4 into a "virtual quad": it runs the StickTime FPV simulator and sends
+StickTime Pi turns a Raspberry Pi into a "virtual quad": it runs the StickTime FPV simulator and sends
 the picture to your analog goggles through a 5.8 GHz VTX on the Pi's AV jack (or to an HDMI screen). You
 fly with your own radio.
 
-> **Beta (0.1.0):** tested in an emulator, not yet on a real Pi 4. The composite picture, WiFi joystick,
-> Bluetooth and sound on the jack may need fixes; please report what you see (web page → System → Log).
+> Something not working with your goggles, VTX or radio? Please report it with the log (web page → System →
+> Log) at https://github.com/juricabi/sticktime-pi/issues.
 
 > **Safety:** your radio keeps transmitting while you fly the sim. Take the props off or unplug the real
 > quad's battery, or switch the radio's RF off (WiFi joystick and BLE modes do that by themselves).
 
 ## What you need
 
-- Raspberry Pi 4 (any RAM size), a good 5 V / 3 A supply, a microSD card of 8 GB or more.
+- A Raspberry Pi that runs 64-bit Raspberry Pi OS (any RAM size; for composite video one with an AV jack, like the
+  Pi 4 or Pi 3), a good 5 V / 3 A supply, a microSD card of 8 GB or more.
 - For goggles: an analog 5.8 GHz VTX, a 3.5 mm TRRS plug or cable, and the VTX's own power (7-12 V or 5 V).
   Or an HDMI screen / HDMI-in goggles.
 - Optional, to set the VTX's channel and power from the Pi: a 1 kΩ resistor and a wire (a 4.7 kΩ one too for
@@ -61,6 +62,20 @@ pins if the VTX takes 5 V). **Attach the antenna before powering the VTX** and s
 goggles to the VTX channel. To set the VTX's channel and power from the Pi instead of its button, also wire its
 SmartAudio or Tramp pad: see [VTX control](#9-vtx-control-smartaudio--tramp).
 
+**Sound in the goggles.** A VTX has one audio input, usually a microphone pad (MIC, AUD, often with AGC).
+Set `audio_mono = on` (both channels carry the same mix, so either contact works) and wire:
+
+```
+Jack tip (left audio) ──[ 10 kΩ ]──[ 1 µF ]── VTX MIC / AUDIO pad      (a ceramic or film capacitor: no polarity)
+Jack ring 2 (ground) ─────────────────────────── VTX ground (the same ground as the video)
+```
+
+The resistor (10-47 kΩ, a typical start, not a measured value) brings the Pi's line level (about 1 V) down towards
+the millivolts a microphone gives; the capacitor keeps the small DC voltage that many mic pads carry for an electret
+microphone away from the Pi. Check your VTX's manual: a line-level audio input needs neither part.
+Start with `volume` at 30-40 % and raise it until the motor sound is clear without crackling; the VTX's AGC
+evens out the rest.
+
 ## 4. First boot
 
 Insert the card and power the Pi. The first boot takes a minute or two: the card is expanded and the settings
@@ -78,6 +93,21 @@ The main menu shows the web address at the bottom for a minute (`http://192.168.
   (change `pause_channel`). If the radio's signal stops in flight, the game pauses.
 - **Keyboard**: arrows, Enter, Esc; fly with arrows (pitch/roll), A/D (yaw), W/S (throttle), Shift = full.
 - **Gamepad**: mode 2 layout (change `stick_mode`), A = select, B/Start = back/pause.
+
+### The three editions
+
+The Pi has all three editions of StickTime, the same as on a radio:
+
+- **StickTime** (the color edition, `StickTime.lua`): the full game, made for color screens. It starts by default.
+- **StickTime BW** (`StickTimeBW.lua` + the `StickTimeBW` folder): the game of the black & white radios
+  (TX12 MkII, Zorro, Boxer...), drawn in a B&W radio's colors.
+- **StickTime Lite** (`StickTimeLite.lua` + the `StickTimeLite` folder): the smaller B&W game of older radios
+  (X7, X9D, T12...).
+
+To switch, open the web page → **Game** → **Script** and pick one; it starts at once. (In `sticktime.txt` it is
+`script = /SCRIPTS/TOOLS/StickTimeBW.lua`.) Each edition keeps its own bests and settings: `StickTime.dat`,
+`StickTimeBW.dat`, and the Lite's in `StickTimeLite/data.txt`. Updates and the editor's **Install** replace the
+game files of all three and never touch those, your tracks or your ghosts.
 
 ### ExpressLRS WiFi joystick
 1. Put the Pi and the TX module on the same **2.4 GHz** network (the module's "Home WiFi"), or join the
@@ -105,17 +135,36 @@ Plug the radio into a USB port, choose **USB Joystick (HID)**. Use a model with 
 
 ### Bluetooth
 ExpressLRS Lua → BLE Joystick (ESP32 modules). The Pi pairs automatically (`bluetooth = on`).
+ExpressLRS 4.x (it shows as "ELRS Joystick") and 3.x ("ExpressLRS Joystick") put the channels on different
+axes; the Pi knows both, so CH1-CH7 show as on the radio (CH8 usually doesn't come through: Linux drops the
+second slider; CH9-CH16 arrive as buttons, on or off).
+
+### Which channel is which stick
+The web page's **Sticks** tab shows every channel of every source live: move a stick and watch its bar.
+
+- `channel_order` (AETR, TAER, ... all 24 orders in a list) says what CH1-CH4 are. AETR fits ELRS and most radios.
+- For any other layout, **Stick mapping** (`stick_channels`) gives each stick its own channel, CH1-CH16:
+  aileron, elevator, throttle, yaw, e.g. `stick_channels = 1 2 3 4`. Its **Detect** button asks you to move
+  each stick in turn and picks the channel that moved most; then press **Save**. Empty (the default, "By order")
+  means `channel_order` decides. It works for the WiFi joystick, a USB radio and a Bluetooth radio; gamepads and
+  the keyboard keep their own layout.
+- `invert` reverses a stick after the mapping; the pause switch (`pause_channel`) stays the channel you set.
+- **Stick source** (`input`): `auto` takes the source that moved last. A fixed source ignores all the others:
+  if it is set to Bluetooth and only the WiFi joystick sends, the game gets no sticks. The page then says what is
+  ignored and offers **Use auto**.
 
 ## 6. The web page
 
 Open the address from the menu on a phone or PC on the same network:
 
 - **Status**: frame rate, frame and stick latency numbers, input source and packet rate, versions.
-- **Sticks**: live bars of every channel, input source, channel order, invert, pause switch, WiFi module.
+- **Sticks**: live bars of every channel, input source, channel order, stick mapping (with Detect), invert,
+  pause switch, WiFi module.
 - **Video** (and VTX control), **WiFi** (scan and join, hotspot), **Sound** (volume, music, your songs: upload MP3/OGG/WAV/FLAC),
 - **Tracks**: the StickTime track editor, your tracks c1-c8 on the Pi, the track gallery, and the emulator's
   **Install** to install or update the game on the Pi,
-- **Game**: a remote keypad, restart the game, choose another EdgeTX tool script, latency,
+- **Game**: a remote keypad, restart the game, switch between the three editions (or another EdgeTX tool
+  script, see [The three editions](#the-three-editions)), latency,
 - **Updates**: game and StickTime Pi updates with rollback, **System**: name, SSH, password, restart, log.
 
 ## 7. Sound
@@ -125,9 +174,12 @@ live, or your own songs from the `sticktime/music` folder (upload them on the we
 
 ## 8. Updates
 
-Web page → Updates → Check. Game updates come from the StickTime releases on GitHub and never touch your
-saves, tracks and ghosts. A bad update can be rolled back from the same page. `auto_update = on` installs
-updates at boot when the Pi is online.
+Web page → Updates → Check. Game updates come from the StickTime releases on GitHub and update all three
+editions together (color, B&W and Lite); they never touch your saves (including the Lite's
+`StickTimeLite/data.txt`), tracks and ghosts. A bad update can be rolled back from the same page, again all
+three together. `auto_update = on` installs updates at boot when the Pi is online. If you put files of your
+own in an edition (a test build from a PC), automatic updates leave that edition as it is; a manual update
+replaces them and keeps a copy in `sticktime/backup/`.
 
 ## 9. VTX control (SmartAudio / Tramp)
 
@@ -169,7 +221,7 @@ signal. Ground is already shared through the AV cable.
  Pi pin 6 (GND)   ──────────────────────────────── VTX ground (already joined by the AV cable's ground)
 ```
 
-| Pi 4 header pin | Through | To |
+| Pi header pin | Through | To |
 |---|---|---|
 | 7 (GPIO4) | 1 kΩ resistor | VTX SmartAudio / Tramp pad (`vtx_port = gpio4`, the default) |
 | 6, 9, 14, ... (GND) | - | VTX ground: the AV cable's ground (jack ring 2) already does this; add a wire if your VTX's video ground runs elsewhere |
@@ -193,7 +245,7 @@ the pad, and the software drops the echo of what it sent.
  Pi pin 6  (GND) ───────────────────────────────── VTX ground
 ```
 
-| Pi 4 header pin | Signal | Through | To |
+| Pi header pin | Signal | Through | To |
 |---|---|---|---|
 | 7 (GPIO4) | UART3 TX | 1 kΩ resistor | VTX SmartAudio / Tramp pad |
 | 29 (GPIO5) | UART3 RX | 4.7 kΩ resistor | the same pad (join the two resistors' far ends) |
@@ -271,6 +323,8 @@ more only overloads the goggles' receiver. Never run a VTX without its antenna.
 | WiFi joystick not found | Same 2.4 GHz network; some routers isolate clients (turn "AP isolation" off) or block broadcasts (set `wifi_module_ip`). One client per module. |
 | Sticks stop for a moment, then work again | A pause in the WiFi joystick's data: see the log (System → Log, "the stick data paused") and the tips under "ExpressLRS WiFi joystick" (the Pi's hotspot, a better signal, no WiFi scan while flying). |
 | Sticks move the wrong way | `invert = ele` etc., or `channel_order` (AETR, TAER, ...). |
+| A stick moves the wrong thing (yaw on throttle, ...) | Sticks → Stick mapping → **Detect**, then Save (see [Which channel is which stick](#which-channel-is-which-stick)). |
+| Sticks don't move in the game although the source streams | Sticks → Stick source: a fixed source ignores the others. Use `auto`. |
 | "The game stopped" | The message on screen says why; press ENTER (or roll right) to restart it. A track file that breaks the game is skipped. |
 | The card shows no drive on a Windows PC | Windows gives the `bootfs` partition no drive letter when it has seen that card reader slot before without one (flashing tools remove the letter while writing). Open **Disk Management** (right-click Start), right-click the 512 MB `bootfs` partition → **Change Drive Letter and Paths** → **Add**. Windows remembers it. The other, big partition is the Linux system (ext4): Windows can't read it, and you don't need it. |
 | Windows offers to "Scan and fix" the card | Harmless: the Pi was switched off by pulling the power while the card was in use. Let Windows fix it, or ignore it. |

@@ -170,8 +170,13 @@ mkdir -p "$PAY/sticktime"
 P=$PAY/sticktime
 
 say "game: $(basename "$GAME_ZIP")"
-# the zip's SCRIPTS/TOOLS/StickTime.lua (the only file the Pi runs) and the two data folders; the
-# version comes from the script's header, which must match GAME_VERSION when that was given
+# the zip's three editions, as the emulator's Install and the updater put them on a card: the color
+# SCRIPTS/TOOLS/StickTime.lua, and the B&W and Lite ones (StickTimeBW.lua + StickTimeBW/,
+# StickTimeLite.lua + StickTimeLite/: on a color screen they run their core.lua in B&W colors, the
+# web page's Game tab picks one); the tracks' and ghosts' folders with their READMEs. Never a save
+# (*.dat, StickTimeLite/data.txt) or a track. The version comes from StickTime.lua's header, which
+# must match GAME_VERSION when that was given; an edition whose loader says another version, or that
+# an older zip doesn't have, is left out with a warning.
 GAME_VERSION=$(python3 -I - "$GAME_ZIP" "$P/sd/SCRIPTS/TOOLS" "${GAME_VERSION:-}" <<'PY'
 import os, re, sys, zipfile
 src, dst, want = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -202,6 +207,39 @@ os.makedirs(os.path.join(dst, "StickTimeTracks"), exist_ok=True)
 os.makedirs(os.path.join(dst, "StickTimeGhosts"), exist_ok=True)
 with open(os.path.join(dst, "StickTime.lua"), "wb") as f:
     f.write(data)
+# the B&W and Lite editions: the loader and the game's files in its folder (the names the emulator's
+# Install and the updater accept: [A-Za-z0-9_-]+.lua|luac|txt, never the player's data.txt)
+KEEP = re.compile(r"(?i)c\d+\.txt|.*\.dat|data\.txt")
+for label, loader, folder in (("B&W", "StickTimeBW.lua", "StickTimeBW"), ("Lite", "StickTimeLite.lua", "StickTimeLite")):
+    li = names.get("SCRIPTS/TOOLS/" + loader)
+    if li is None or li.is_dir():
+        print(f"build.sh: warning: {src} has no {loader}: no {label} edition on the card", file=sys.stderr)
+        continue
+    ld = z.read(li)
+    lm = re.search(rb"StickTime(?: BW| Lite)? v(\d+(?:\.\d+){1,3})", ld[:600])
+    if not lm or key(lm.group(1).decode()) != key(ver):
+        print(f"build.sh: warning: {loader} isn't StickTime {ver}'s: no {label} edition on the card", file=sys.stderr)
+        continue
+    pre = "SCRIPTS/TOOLS/" + folder + "/"
+    files = {}
+    for n, i in names.items():
+        rest = n[len(pre):]
+        if not n.startswith(pre) or not rest or i.is_dir():
+            continue
+        if "/" in rest or not re.fullmatch(r"[A-Za-z0-9_-]+\.(lua|luac|txt)", rest) or KEEP.fullmatch(rest) or i.file_size > 1 << 20:
+            print(f"build.sh: warning: {n} left out (not one of the game's files)", file=sys.stderr)
+            continue
+        files[rest] = z.read(i)
+    if not files:
+        print(f"build.sh: warning: {src} has no {folder}/: no {label} edition on the card", file=sys.stderr)
+        continue
+    os.makedirs(os.path.join(dst, folder), exist_ok=True)
+    with open(os.path.join(dst, loader), "wb") as f:
+        f.write(ld)
+    for rest, b in sorted(files.items()):
+        with open(os.path.join(dst, folder, rest), "wb") as f:
+            f.write(b)
+    print(f"== {label} edition: {loader} + {folder}/ ({len(files)} files)", file=sys.stderr)
 for n, i in names.items():
     for d in ("StickTimeTracks/", "StickTimeGhosts/"):
         pre = "SCRIPTS/TOOLS/" + d
@@ -210,7 +248,7 @@ for n, i in names.items():
                 and not re.fullmatch(r"(?i)c\d+\.txt|.*\.dat", rest):
             with open(os.path.join(dst, d, rest), "wb") as f:   # READMEs; never tracks or saves
                 f.write(z.read(i))
-with open(os.path.join(dst, "GAME_VERSION"), "w") as f:
+with open(os.path.join(dst, "GAME_VERSION"), "w", newline="\n") as f:
     f.write(ver + "\n")
 print(ver)
 PY
@@ -436,6 +474,40 @@ mkdir -p "$R/etc/tmpfiles.d"
 # Pi OS tunes the ondemand governor, which we replace: its tmpfiles writes would fail
 ln -sfn /dev/null "$R/etc/tmpfiles.d/raspberrypi-sys-mods-ondemand-governor.conf"
 
+# Bluetooth joysticks: BlueZ's default LE connection interval is 30-50 ms, so an ELRS BLE joystick
+# could send a report only every ~49 ms; 7.5-11.25 ms (the ESP32 accepts it) cut that to ~11 ms on a
+# Pi 4. New pairings take these defaults (bluetoothd hands them to the kernel at start).
+if [ -f "$R/etc/bluetooth/main.conf" ]; then
+  python3 -I - "$R/etc/bluetooth/main.conf" <<'PY' || die "can't set the Bluetooth connection interval"
+import re, sys
+p = sys.argv[1]
+want = {"MinConnectionInterval": "6", "MaxConnectionInterval": "9", "ConnectionLatency": "0"}
+out, in_le, done = [], False, set()
+for ln in open(p, encoding="utf-8").read().split("\n"):
+    sec = re.match(r"^\s*\[(\w+)\]", ln)
+    if sec:
+        if in_le:
+            out += [f"{k}={v}" for k, v in want.items() if k not in done]
+            done.update(want)
+        in_le = sec.group(1) == "LE"
+    key = re.match(r"^\s*#?\s*(MinConnectionInterval|MaxConnectionInterval|ConnectionLatency)\s*=", ln)
+    if in_le and key:
+        out.append(f"{key.group(1)}={want[key.group(1)]}")
+        done.add(key.group(1))
+        continue
+    out.append(ln)
+if in_le:
+    out += [f"{k}={v}" for k, v in want.items() if k not in done]
+    done.update(want)
+if not done:
+    out += ["", "[LE]"] + [f"{k}={v}" for k, v in want.items()]
+open(p, "w", encoding="utf-8").write("\n".join(out))
+PY
+  grep -q '^MinConnectionInterval=6$' "$R/etc/bluetooth/main.conf" || die "Bluetooth connection interval not set"
+else
+  warn "no /etc/bluetooth/main.conf: Bluetooth joysticks keep BlueZ's 30-50 ms connection interval"
+fi
+
 # ---- 4. our files: units, helpers, configs (image/rootfs) -----------------------------------------
 say "rootfs: StickTime Pi system files"
 (cd "$IMG_DIR/rootfs" && find . -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.gitkeep' ! -name '.*.swp' -print0) |
@@ -521,6 +593,7 @@ mv -f "$OUT/$NAME.img.xz.part" "$OUT/$NAME.img.xz"
   echo "app version: $VER"
   echo "app binary: $BIN_DESC"
   echo "game: StickTime $GAME_VERSION ($(basename "$GAME_ZIP"), sha256 $(sha256sum "$GAME_ZIP" | cut -d' ' -f1))"
+  echo "game editions: color$([ -f "$P/sd/SCRIPTS/TOOLS/StickTimeBW.lua" ] && echo ", B&W")$([ -f "$P/sd/SCRIPTS/TOOLS/StickTimeLite.lua" ] && echo ", Lite")"
   echo "editor page: $([ -f "$P/editor/index.html" ] && echo "yes, $(sha256sum "$P/editor/index.html" | cut -d' ' -f1)" || echo no)"
   echo "base: $(basename "$BASE_URL") (sha256 $BASE_SHA256, kernel $BASE_KERNEL)"
   echo "image: $(stat -c %s "$IMG") bytes raw, $(stat -c %s "$OUT/$NAME.img.xz") bytes xz, sha256 $(cut -d' ' -f1 < "$OUT/$NAME.img.xz.sha256")"

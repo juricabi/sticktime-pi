@@ -309,17 +309,26 @@ class App:
         if b"--version" not in b:
             log("the new binary has no --version: preflight skipped")
             return
-        d = self.cfg.s("preflight")
+        # not in the state folder: Pi OS mounts /run noexec, and nothing could run there (0.1.0 did that)
+        d = os.path.join(self.cfg.var, "preflight")
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, "sticktime-pi")
         with open(p, "wb") as f:
             f.write(b)
-        os.chmod(p, 0o755)
+        try:
+            os.chmod(p, 0o755)
+        except OSError:
+            pass
         try:
             r = subprocess.run([p, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=5)
         except subprocess.TimeoutExpired:
             fail("bad_package", "The new StickTime Pi didn't answer --version within 5 s, so it wasn't installed.")
+        except PermissionError as e:
+            # the folder doesn't let programs run (a noexec mount): the test can't be done here, which
+            # says nothing about the new program, so don't refuse the update for it
+            log("preflight skipped: can't run programs from %s (%s)" % (d, e))
+            return
         except OSError as e:
             fail("bad_package", "The new StickTime Pi can't run on this Pi (%s), so it wasn't installed." % e)
         finally:

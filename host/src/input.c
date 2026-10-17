@@ -44,6 +44,38 @@ bool mix_parse_order(const char *s, char out[5]) {
   return true;
 }
 
+static bool is_sep(char c) { return c == ' ' || c == '\t' || c == ','; }
+
+int mix_parse_channels(const char *s, uint8_t out[4]) {
+  uint8_t c[4] = { 0, 0, 0, 0 };
+  int n = 0;
+  memset(out, 0, 4);
+  for (const char *p = s; p && *p; ) {
+    if (is_sep(*p)) { p++; continue; }
+    const char *q = p;
+    if (lower(q[0]) == 'c' && lower(q[1]) == 'h') q += 2;
+    int v = 0, nd = 0;
+    while (*q >= '0' && *q <= '9' && nd < 3) v = v * 10 + (*q++ - '0'), nd++;
+    if (nd < 1 || nd > 2 || (*q && !is_sep(*q)) || v < 1 || v > INPUT_CH || n == 4) return -1;
+    for (int i = 0; i < n; i++) if (c[i] == v) return -1;
+    c[n++] = (uint8_t)v;
+    p = q;
+  }
+  if (n == 0) return 0;
+  if (n != 4) return -1;
+  memcpy(out, c, 4);
+  return 1;
+}
+
+/* the four channels of cfg->chan, when they are usable (1..16, all different) */
+static bool chan_ok(const mix_config_t *cfg) {
+  for (int i = 0; i < 4; i++) {
+    if (cfg->chan[i] < 1 || cfg->chan[i] > INPUT_CH) return false;
+    for (int j = 0; j < i; j++) if (cfg->chan[j] == cfg->chan[i]) return false;
+  }
+  return true;
+}
+
 /* Words of letters, anything else separates them. A word that isn't a stick's name but is up to
  * four of the letters a, e, t, r ("at", "ET") names those sticks; other words are ignored
  * (settings_validate refuses them). */
@@ -81,12 +113,15 @@ insrc_kind_t mix_parse_input(const char *s) {
   return INSRC_NONE;
 }
 
-/* insrc_t has no room for the stick positions at the last "moved" stamp, so they live here, keyed
+/* insrc_t has no room for the channel values at the last "moved" stamp, so they live here, keyed
  * by the slot's address (the input modules keep their slots in the host's array). Comparing with
  * the previous sample instead would miss slow moves at 250-1000 updates a second. Frame loop only. */
 #define NREF 32
-static struct { const insrc_t *src; int16_t ref[4]; uint32_t used; } refs[NREF];
+static struct { const insrc_t *src; int16_t ref[INPUT_CH]; uint32_t used; } refs[NREF];
 static uint32_t ref_clock;
+/* the channels that are sticks for sources that aren't fixed_aetr: CH1-4, or stick_channels as the
+ * last mix_sticks call had it (switches on the other channels are no move) */
+static uint16_t stick_mask = 0x000F;
 
 static int16_t *ref_of(const insrc_t *s, bool *fresh) {
   int pick = 0;
@@ -108,9 +143,11 @@ void insrc_update(insrc_t *s, const int16_t *ch, int nch, int64_t now_us) {
   bool fresh;
   int16_t *ref = ref_of(s, &fresh);
   bool moved = false;
+  uint16_t mask = s->fixed_aetr ? 0x000F : stick_mask;
   if (!fresh && s->updates)
-    for (int i = 0; i < 4; i++) moved = moved || s->ch[i] - ref[i] > MOVED_DELTA || ref[i] - s->ch[i] > MOVED_DELTA;
-  if (fresh || !s->updates || moved) memcpy(ref, s->ch, sizeof(int16_t) * 4);
+    for (int i = 0; i < INPUT_CH; i++)
+      moved = moved || ((mask >> i & 1) && (s->ch[i] - ref[i] > MOVED_DELTA || ref[i] - s->ch[i] > MOVED_DELTA));
+  if (fresh || !s->updates || moved) memcpy(ref, s->ch, sizeof(int16_t) * INPUT_CH);
   if (moved) s->moved_us = now_us;
   s->last_us = now_us;
   s->updates++;
@@ -148,6 +185,12 @@ static int pick_source(const mix_config_t *cfg, const insrc_t *src, int n, int c
 void mix_sticks(const mix_config_t *cfg, const insrc_t *src, int n, int cur, int64_t now_us, sticks_t *out) {
   if (n > INPUT_MAX_SOURCES) n = INPUT_MAX_SOURCES;
   if (n < 0) n = 0;
+  bool by_chan = chan_ok(cfg);
+  stick_mask = 0x000F;
+  if (by_chan) {
+    stick_mask = 0;
+    for (int i = 0; i < 4; i++) stick_mask |= (uint16_t)(1u << (cfg->chan[i] - 1));
+  }
   out->ail = out->ele = out->rud = 0;
   out->thr = -1024;
   out->pause = INT32_MIN;
@@ -163,13 +206,21 @@ void mix_sticks(const mix_config_t *cfg, const insrc_t *src, int n, int cur, int
     return;
   }
   const insrc_t *s = &src[p];
-  char order[5];
-  if (s->fixed_aetr || !mix_parse_order(cfg->order, order)) memcpy(order, "AETR", 5);
   int v[4] = { 0, 0, -1024, 0 };    /* ail, ele, thr, rud; a missing throttle channel stays low */
   bool have[4] = { false, false, false, false };
-  for (int i = 0; i < 4; i++) {
-    int stick = order[i] == 'A' ? 0 : order[i] == 'E' ? 1 : order[i] == 'T' ? 2 : 3;
-    if (i < s->nch) { v[stick] = clamp_ch(s->ch[i]); have[stick] = true; }
+  if (by_chan && !s->fixed_aetr) {
+    /* stick_channels: each stick reads its own channel */
+    for (int stick = 0; stick < 4; stick++) {
+      int c = cfg->chan[stick] - 1;
+      if (c < s->nch) { v[stick] = clamp_ch(s->ch[c]); have[stick] = true; }
+    }
+  } else {
+    char order[5];
+    if (s->fixed_aetr || !mix_parse_order(cfg->order, order)) memcpy(order, "AETR", 5);
+    for (int i = 0; i < 4; i++) {
+      int stick = order[i] == 'A' ? 0 : order[i] == 'E' ? 1 : order[i] == 'T' ? 2 : 3;
+      if (i < s->nch) { v[stick] = clamp_ch(s->ch[i]); have[stick] = true; }
+    }
   }
   /* inverting a missing throttle would give full throttle */
   for (int i = 0; i < 4; i++) if (cfg->invert[i] && have[i]) v[i] = -v[i];

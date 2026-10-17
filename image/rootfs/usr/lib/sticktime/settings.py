@@ -62,6 +62,7 @@ KEYS = (
     Key("hotspot_password", SECRET, "sticktime", "", False, False, "Hotspot password (8-63 characters)"),
     Key("input", ENUM, "auto", "auto|wifi|usb|bluetooth|gamepad|joystick|keyboard", True, False, "Stick source: auto (the last one that moved) or a fixed one"),
     Key("channel_order", STRING, "AETR", "", True, False, "Which channels are aileron, elevator, throttle, rudder"),
+    Key("stick_channels", STRING, "", "", True, False, "Channel of each stick: aileron, elevator, throttle, yaw, e.g. 1 2 3 4 (empty: the channel order)"),
     Key("invert", STRING, "", "", True, False, "Sticks to invert, e.g. ail, thr"),
     Key("pause_channel", INT, "5", "0|16", True, False, "Switch channel that pauses the game in flight (0 = off)"),
     Key("stick_menus", BOOL, "on", "", True, False, "Fly the menus with the sticks"),
@@ -139,6 +140,9 @@ TEMPLATE = (
     "input = auto\n"
     "# which channels are aileron, elevator, throttle, rudder: AETR, TAER, ...\n"
     "channel_order = AETR\n"
+    "# or the channel of each stick (CH1-CH16): aileron elevator throttle yaw, e.g. 1 2 3 4\n"
+    "# (empty: channel_order decides; gamepads and the keyboard keep their own layout)\n"
+    "stick_channels =\n"
     "# sticks to invert, e.g.: ail, thr\n"
     "invert =\n"
     "# switch channel that pauses the game in flight (0 = off)\n"
@@ -222,6 +226,8 @@ _NUM_RE = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)
 _IP_RE = re.compile(rb"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})")
 _HDMI_RE = re.compile(rb"[1-9][0-9]{0,3}[xX][1-9][0-9]{0,3}(?:@([0-9]{1,3}(?:\.[0-9]{1,3})?))?")
 _WORD_RE = re.compile(rb"[A-Za-z]+")
+_CH_SEP_RE = re.compile(rb"[ \t,]+")
+_CH_RE = re.compile(rb"(?:[cC][hH])?([0-9]{1,2})")
 _INVERT_NAMES = (b"ail", b"aileron", b"ailerons", b"roll", b"ele", b"elevator", b"pitch",
                  b"thr", b"throttle", b"rud", b"rudder", b"yaw")
 
@@ -316,6 +322,20 @@ def _order_ok(v):
     return len(v) == 4 and sorted(v.upper()) == sorted(b"AETR")
 
 
+def _stick_channels(v):
+    """stick_channels as input.c mix_parse_channels: [ail, ele, thr, rud], [] for none, None if invalid"""
+    out = []
+    for t in _CH_SEP_RE.split(v):
+        if not t:
+            continue
+        m = _CH_RE.fullmatch(t)
+        c = int(m.group(1)) if m else 0
+        if not 1 <= c <= 16 or c in out or len(out) == 4:
+            return None
+        out.append(c)
+    return out if len(out) in (0, 4) else None
+
+
 def _hostname_ok(v):
     if not 1 <= len(v) <= 63:
         return False
@@ -356,6 +376,10 @@ def _check(ki, v):
         return "must not contain line breaks"
     if name == "channel_order":
         return None if _order_ok(v) else "must be the letters A, E, T and R in any order"
+    if name == "stick_channels":
+        if _stick_channels(v) is not None:
+            return None
+        return "must be four different channels from 1 to 16 for aileron, elevator, throttle, yaw (like 1 2 3 4), or empty"
     if name == "invert":
         return None if _invert_ok(v) else "must be a list of ail, ele, thr, rud"
     if name == "hostname":
@@ -411,6 +435,8 @@ def _normalize(ki, v):
         return b"on" if _parse_bool(v) else b"off"
     if k.kind == INT:
         return str(_parse_int(v) or 0).encode()
+    if k.key == "stick_channels":
+        return b" ".join(str(c).encode() for c in _stick_channels(v) or [])
     if k.kind == ENUM or k.key in ("hdmi_mode", "latency"):
         return v.lower()
     if k.key in ("wifi_country", "channel_order", "vtx_band"):

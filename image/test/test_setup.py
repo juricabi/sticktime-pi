@@ -175,6 +175,27 @@ elif name == "iw":
             out = "".join(f"Station 00:11:22:33:44:{i:02x} (on wlan0)\n\tinactive time: 10 ms\n" for i in range(state["stations"]))
 elif name == "bluetoothctl":
     b = state.get("bt", {})
+    if not args:
+        # an interactive session: one command per stdin line, each logged as "session <command>";
+        # answers from state["bt"]["session"] (a list: one answer per call, the last one repeats)
+        sess, used = b.get("session", {}), {}
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
+                f.write(json.dumps({"cmd": name, "argv": ["session"] + line.split()}) + "\n")
+            if line == "quit":
+                break
+            dflt = {"agent NoInputNoOutput": "Agent registered", "default-agent": "Default agent request successful"}
+            r = sess.get(line, dflt.get(line, ""))
+            if isinstance(r, list):
+                i = used.get(line, 0)
+                used[line] = i + 1
+                r = r[min(i, len(r) - 1)] if r else ""
+            sys.stdout.write(r + "\n")
+            sys.stdout.flush()
+        sys.exit(0)
     a = [x for x in a if not x.startswith("--agent") and x != "NoInputNoOutput"]
     if a[:1] == ["--timeout"]:
         a = a[2:]
@@ -644,6 +665,14 @@ class TestBootFiles(unittest.TestCase):
         self.assertNotIn("\r", new)
 
     def test_cmdline_unusable_left_alone(self):
+        # the jack: the firmware's snd_bcm2835.enable_headphones=0 (composite on) is overridden by ours,
+        # which comes later in the line; HDMI-only sound drops it again
+        j = stboot.cmdline_txt(STOCK_CMDLINE, "ntsc", "US", jack=True)
+        self.assertEqual(j.split().count("snd_bcm2835.enable_headphones=1"), 1)
+        self.assertEqual(stboot.cmdline_txt(j, "ntsc", "US", jack=True), j)
+        self.assertNotIn("snd_bcm2835", stboot.cmdline_txt(j, "ntsc", "US", jack=False))
+        self.assertTrue(stboot.jack_audio("av", "auto") and stboot.jack_audio("av", "hdmi") and stboot.jack_audio("hdmi", "both"))
+        self.assertFalse(stboot.jack_audio("hdmi", "hdmi"))
         self.assertIsNone(stboot.cmdline_txt("", "ntsc", "US"))
         self.assertIsNone(stboot.cmdline_txt("console=tty1 quiet\n", "ntsc", "US"))
         self.assertEqual(stboot.cmdline_txt("root=/dev/mmcblk0p2\nrootwait\n", "ntsc", "").count("\n"), 1)
@@ -1477,36 +1506,215 @@ class TestBluetooth(Env):
         os.makedirs(os.path.join(self.root, "sys/class/bluetooth/hci0"))
         self.assertEqual(bt.adapters(), ["hci0"])
 
+    def session(self):
+        return [x[len("session "):] for x in self.argvs("bluetoothctl") if x.startswith("session ")]
+
     def test_pair_trust_connect(self):
         mac = "AA:BB:CC:DD:EE:01"
         self.state["bt"] = {"devices": f"Device {mac} ELRS Joystick\nDevice 11:22:33:44:55:66 Phone\n",
                             "devices Paired": "", f"info {mac}": "\tName: ELRS Joystick\n\tPaired: no\n\tConnected: no\n",
-                            f"connect {mac}": "Connection successful\n"}
+                            "session": {f"connect {mac}": "Connection successful", f"pair {mac}": "Pairing successful",
+                                        f"trust {mac}": f"Changing {mac} trust succeeded"}}
         self.save_state()
         d = bt.Daemon()
         bt.wifi_joystick_live = lambda: False
         with redirect_stderr(io.StringIO()):
             self.assertTrue(d.tick())
+        # the agent is registered (and made the default) before anything else: BlueZ 5.82 refuses a Just
+        # Works pairing with "No agent available" when the pair command comes first
+        self.assertEqual(self.session(), ["agent NoInputNoOutput", "default-agent", f"connect {mac}", f"pair {mac}",
+                                          f"trust {mac}", "quit"])
         a = self.argvs("bluetoothctl")
-        self.assertIn(f"pair {mac}", " | ".join(a).replace("--agent NoInputNoOutput ", ""))
-        self.assertTrue(any(x.endswith(f"trust {mac}") for x in a))
-        self.assertTrue(any(x.endswith(f"connect {mac}") for x in a))
         self.assertFalse(any("11:22:33:44:55:66" in x for x in a))    # a phone is not even looked at
         self.assertFalse(any("scan" in x for x in a))                 # connected: no scanning
+
+    def test_connect_retries_after_radio_drops(self):
+        # the Pi 4's shared WiFi/BT radio: "Connection Failed to be Established" (0x3e) on the first tries
+        mac = "AA:BB:CC:DD:EE:01"
+        drop = "Failed to connect: org.bluez.Error.Failed le-connection-abort-by-local"
+        self.state["bt"] = {"devices": f"Device {mac} ELRS Joystick\n", f"info {mac}": "\tPaired: no\n\tConnected: no\n",
+                            "session": {f"connect {mac}": [drop, drop, "Connection successful"],
+                                        f"pair {mac}": "Pairing successful"}}
+        self.save_state()
+        bt.wifi_joystick_live = lambda: True
+        with redirect_stderr(io.StringIO()):
+            self.assertTrue(bt.Daemon().tick())
+        self.assertEqual(self.session().count(f"connect {mac}"), 3)
+        self.assertIn(f"pair {mac}", self.session())
+
+    def test_already_paired_only_connects(self):
+        mac = "AA:BB:CC:DD:EE:01"
+        self.state["bt"] = {"devices": f"Device {mac} ELRS Joystick\n", "devices Paired": f"Device {mac} ELRS Joystick\n",
+                            f"info {mac}": "\tPaired: yes\n\tTrusted: yes\n\tConnected: no\n",
+                            "session": {f"connect {mac}": "Connection successful"}}
+        self.save_state()
+        bt.wifi_joystick_live = lambda: True
+        with redirect_stderr(io.StringIO()):
+            self.assertTrue(bt.Daemon().tick())
+        self.assertNotIn(f"pair {mac}", self.session())
+        self.assertNotIn(f"trust {mac}", self.session())
 
     def test_pair_failure_backoff(self):
         mac = "AA:BB:CC:DD:EE:01"
         self.state["bt"] = {"devices": f"Device {mac} ELRS Joystick\n", f"info {mac}": "\tPaired: no\n",
-                            f"rc pair {mac}": 1}
+                            "session": {f"connect {mac}": "Connection successful",
+                                        f"pair {mac}": "Failed to pair: org.bluez.Error.AuthenticationFailed"}}
         self.save_state()
         d = bt.Daemon()
         bt.wifi_joystick_live = lambda: True                           # streaming: no scans either
-        with redirect_stderr(io.StringIO()):
+        log = io.StringIO()
+        with redirect_stderr(log):
             d.tick()
-            d.tick()
-        self.assertEqual(sum(1 for x in self.argvs("bluetoothctl") if x.endswith(f"pair {mac}")), 1)
+            d.tick()                                                   # within the 10 s back-off: no new try
+        self.assertEqual(self.session().count(f"pair {mac}"), 1)
         self.assertEqual(d.failures[mac], 1)
+        self.assertIn("AuthenticationFailed", log.getvalue())
         self.assertFalse(any("scan" in x for x in self.argvs("bluetoothctl")))
+
+    def test_radio_gives_up_after_tries(self):
+        mac = "AA:BB:CC:DD:EE:01"
+        self.state["bt"] = {"devices": f"Device {mac} ELRS Joystick\n", f"info {mac}": "\tPaired: no\n",
+                            "session": {f"connect {mac}": "Failed to connect: org.bluez.Error.Failed"}}
+        self.save_state()
+        bt.wifi_joystick_live = lambda: True
+        log = io.StringIO()
+        with redirect_stderr(log):
+            self.assertFalse(bt.Daemon().tick())
+        self.assertEqual(self.session().count(f"connect {mac}"), bt.CONNECT_TRIES)
+        self.assertNotIn(f"pair {mac}", self.session())
+        self.assertIn("no connection after", log.getvalue())
+
+
+# ================================================================ the image build: the game
+class TestBuildGame(unittest.TestCase):
+    """image/build.sh's step that puts StickTime from its release zip on the card: its Python, taken
+    out of build.sh and run as the build runs it (python3 -I - ZIP SD/SCRIPTS/TOOLS VERSION)"""
+    FIXTURE = os.path.join(REPO, "build", "agent-updater", "fixture", "StickTime-1.7.2-sdcard.zip")
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(REPO, "image", "build.sh"), encoding="utf-8") as f:
+            text = f.read().replace("\r\n", "\n")
+        m = re.search(r'GAME_VERSION=\$\(python3 -I - "\$GAME_ZIP" "\$P/sd/SCRIPTS/TOOLS" "\$\{GAME_VERSION:-\}" '
+                      r"<<'PY'\n(.*?)\nPY\n", text, re.S)
+        assert m, "build.sh's game step not found"
+        cls.code = m.group(1)
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="stbuild-game-")
+        self.dst = os.path.join(self.tmp, "sd", "SCRIPTS", "TOOLS")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def entries(version="1.7.2"):
+        pad = ("-- " + "x" * 70 + "\n") * 200
+        e = {"SCRIPTS/": None, "SCRIPTS/TOOLS/": None,
+             "SCRIPTS/TOOLS/StickTime.lua": f'local toolName = "TNS|StickTime|TNE"\n--[[\n  StickTime v{version}  -  sim\n]]\n{pad}'.encode(),
+             "SCRIPTS/TOOLS/StickTimeTracks/README.txt": b"Your tracks: c1.txt to c8.txt\n",
+             "SCRIPTS/TOOLS/StickTimeGhosts/README.txt": b"Ghosts.\n"}
+        for ed, name, files in (("BW", "StickTimeBW", ("core.lua", "color.lua", "game.luac", "why.lua")),
+                                ("Lite", "StickTimeLite", ("core.lua", "color.lua", "game.luac", "why.lua", "q1.txt", "t1.txt"))):
+            e[f"SCRIPTS/TOOLS/{name}.lua"] = f'local toolName = "TNS|StickTime {ed}|TNE"\n--[[\n  StickTime {ed} v{version}  -  loader\n]]\n'.encode()
+            e[f"SCRIPTS/TOOLS/{name}/"] = None
+            for n in files:
+                e[f"SCRIPTS/TOOLS/{name}/{n}"] = f"-- {name}/{n}\n".encode() * 3
+        return e
+
+    def zip(self, entries):
+        import zipfile
+        p = os.path.join(self.tmp, "game.zip")
+        with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+            for n, b in entries.items():
+                z.writestr(n, b"" if b is None else b)
+        return p
+
+    def build(self, zpath, want=""):
+        r = subprocess.run([sys.executable, "-I", "-", zpath, self.dst, want], input=self.code.encode(),
+                           capture_output=True, timeout=60)
+        return r.returncode, r.stdout.decode().strip(), r.stderr.decode()
+
+    def tree(self):
+        out = {}
+        for root, _, names in os.walk(self.dst):
+            for n in names:
+                p = os.path.join(root, n)
+                with open(p, "rb") as f:
+                    out[os.path.relpath(p, self.dst).replace(os.sep, "/")] = f.read()
+        return out
+
+    def test_all_three_editions(self):
+        e = self.entries()
+        rc, out, err = self.build(self.zip(e), "1.7.2")
+        self.assertEqual((rc, out), (0, "1.7.2"), err)
+        want = {n[len("SCRIPTS/TOOLS/"):]: b for n, b in e.items() if b is not None}
+        want["GAME_VERSION"] = b"1.7.2\n"
+        self.assertEqual(self.tree(), want)
+        self.assertIn("B&W edition: StickTimeBW.lua + StickTimeBW/ (4 files)", err)
+        self.assertIn("Lite edition: StickTimeLite.lua + StickTimeLite/ (6 files)", err)
+        self.assertNotIn("warning", err)
+
+    def test_the_real_release_zip(self):
+        if not os.path.isfile(self.FIXTURE):
+            self.skipTest("no StickTime-1.7.2-sdcard.zip in build/agent-updater/fixture/")
+        import zipfile
+        rc, out, err = self.build(self.FIXTURE)
+        self.assertEqual((rc, out), (0, "1.7.2"), err)
+        t = self.tree()
+        with zipfile.ZipFile(self.FIXTURE) as z:
+            for i in z.infolist():
+                if not i.is_dir():
+                    self.assertEqual(t.pop(i.filename[len("SCRIPTS/TOOLS/"):]), z.read(i), i.filename)
+        self.assertEqual(t, {"GAME_VERSION": b"1.7.2\n"}, "everything the zip has, nothing else")
+        self.assertEqual(len(os.listdir(os.path.join(self.dst, "StickTimeBW"))), 4)
+        self.assertEqual(len(os.listdir(os.path.join(self.dst, "StickTimeLite"))), 17)
+
+    def test_an_older_zip_without_the_editions(self):
+        e = {n: b for n, b in self.entries().items() if "StickTimeBW" not in n and "StickTimeLite" not in n}
+        rc, out, err = self.build(self.zip(e))
+        self.assertEqual((rc, out), (0, "1.7.2"), err)
+        self.assertEqual(sorted(self.tree()), ["GAME_VERSION", "StickTime.lua", "StickTimeGhosts/README.txt",
+                                               "StickTimeTracks/README.txt"])
+        self.assertIn("warning", err)
+        self.assertIn("no StickTimeBW.lua: no B&W edition", err)
+        self.assertIn("no StickTimeLite.lua: no Lite edition", err)
+
+    def test_an_edition_of_another_version_or_without_its_folder(self):
+        e = self.entries()
+        e["SCRIPTS/TOOLS/StickTimeBW.lua"] = e["SCRIPTS/TOOLS/StickTimeBW.lua"].replace(b"BW v1.7.2", b"BW v1.7.1")
+        e = {n: b for n, b in e.items() if not n.startswith("SCRIPTS/TOOLS/StickTimeLite/")}
+        rc, out, err = self.build(self.zip(e))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("StickTimeBW.lua isn't StickTime 1.7.2's: no B&W edition", err)
+        self.assertIn("no StickTimeLite/: no Lite edition", err)
+        self.assertFalse([n for n in self.tree() if n.startswith(("StickTimeBW", "StickTimeLite"))])
+
+    def test_never_a_save_or_odd_files(self):
+        e = self.entries()
+        e.update({"SCRIPTS/TOOLS/StickTimeLite/data.txt": b"a save shipped by mistake",
+                  "SCRIPTS/TOOLS/StickTimeLite/DATA.TXT": b"again",
+                  "SCRIPTS/TOOLS/StickTimeBW/x.dat": b"save", "SCRIPTS/TOOLS/StickTimeBW/c1.txt": b"a track",
+                  "SCRIPTS/TOOLS/StickTimeLite/sub/x.lua": b"deeper", "SCRIPTS/TOOLS/StickTimeLite/x.png": b"png",
+                  "SCRIPTS/TOOLS/StickTimeLite/a.b.lua": b"dots"})
+        rc, out, err = self.build(self.zip(e))
+        self.assertEqual(rc, 0, err)
+        t = self.tree()
+        for n in ("StickTimeLite/data.txt", "StickTimeLite/DATA.TXT", "StickTimeBW/x.dat", "StickTimeBW/c1.txt",
+                  "StickTimeLite/sub/x.lua", "StickTimeLite/x.png", "StickTimeLite/a.b.lua"):
+            self.assertNotIn(n, t)
+            self.assertIn(f"SCRIPTS/TOOLS/{n} left out", err)
+        self.assertIn("StickTimeLite/core.lua", t)
+
+    def test_the_wrong_version_or_no_game(self):
+        rc, _, err = self.build(self.zip(self.entries("1.7.3")), "1.7.2")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("the script says v1.7.3, not 1.7.2", err)
+        e = self.entries()
+        del e["SCRIPTS/TOOLS/StickTime.lua"]
+        rc, _, err = self.build(self.zip(e))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("no usable SCRIPTS/TOOLS/StickTime.lua", err)
 
 
 # ================================================================ the files in image/rootfs

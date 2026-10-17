@@ -35,7 +35,16 @@ _UART_RE = re.compile(r"^dtoverlay\s*=\s*uart[2-5]\b")
 # (root=PARTUUID changes on the first boot, 'resize' belongs to the initramfs, Imager adds systemd.run=)
 OWNED_FLAGS = ("quiet", "logo.nologo")
 OWNED_KEYS = ("loglevel", "vt.global_cursor_default", "consoleblank", "cpufreq.default_governor",
-              "vc4.tv_norm", "cfg80211.ieee80211_regdom")
+              "vc4.tv_norm", "cfg80211.ieee80211_regdom", "snd_bcm2835.enable_headphones")
+
+
+def jack_audio(video, audio_out):
+    """does sound go to the 3.5 mm jack (the same rule as block_lines)"""
+    if audio_out == "hdmi" and video == "av":
+        audio_out = "jack"
+    if audio_out == "auto":
+        audio_out = "jack" if video == "av" else "both"
+    return audio_out in ("jack", "both")
 
 
 def block_lines(video, tv, audio_out, vtx_uart=None):
@@ -96,9 +105,11 @@ def config_txt(old, video, tv, audio_out, vtx_uart=None):
     return nl.join(out) + nl, warn
 
 
-def cmdline_txt(old, tv, country):
+def cmdline_txt(old, tv, country, jack=False):
     """new cmdline.txt (one line, LF), or None when the old one is unusable (no root=): then we must
-    not touch it, the Pi would not boot"""
+    not touch it, the Pi would not boot. jack: sound on the 3.5 mm jack. With composite on, the Pi 4
+    firmware puts snd_bcm2835.enable_headphones=0 on the command line, so there is no Headphones sound
+    card at all; our =1 comes after it in the line and wins (checked on a Pi 4 with Pi OS trixie)."""
     toks = old.split()
     if not any(t.startswith("root=") for t in toks):
         return None
@@ -106,6 +117,8 @@ def cmdline_txt(old, tv, country):
             "cpufreq.default_governor": "performance", "vc4.tv_norm": TV_NORMS.get(tv, "NTSC")}
     if country:
         want["cfg80211.ieee80211_regdom"] = country
+    if jack:
+        want["snd_bcm2835.enable_headphones"] = "1"
     out, seen = [], set()
     for t in toks:
         k = t.split("=", 1)[0]
@@ -125,7 +138,7 @@ def cmdline_txt(old, tv, country):
         if f not in seen:
             out.append(f)
     for k in ("loglevel", "logo.nologo", "vt.global_cursor_default", "consoleblank", "cpufreq.default_governor",
-              "vc4.tv_norm", "cfg80211.ieee80211_regdom"):
+              "vc4.tv_norm", "cfg80211.ieee80211_regdom", "snd_bcm2835.enable_headphones"):
         if k in want and k not in seen:
             out.append(f"{k}={want[k]}")
     return " ".join(out) + "\n"

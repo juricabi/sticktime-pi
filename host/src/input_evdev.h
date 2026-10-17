@@ -3,8 +3,10 @@
  * Classification (first match):
  *   name contains "EdgeTX" or "OpenTX"                 -> INSRC_USB: ABS codes 0..7 = CH1..CH8
  *   name "ELRS Joystick" / "ExpressLRS Joystick", or
- *   a Bluetooth joystick (bus BUS_BLUETOOTH)           -> INSRC_BLUETOOTH: X=CH1 Y=CH2 RX=CH3 RY=CH4 Z=CH5 RZ=CH6
- *                                                         (ELRS BLE; buttons 1-8 = CH9-CH16: pressed = +1024)
+ *   a Bluetooth joystick (bus BUS_BLUETOOTH)           -> INSRC_BLUETOOTH: X=CH1 Y=CH2 RY=CH3 RZ=CH4 Z=CH5 RX=CH6
+ *                                                         THROTTLE=CH7 RUDDER (or WHEEL)=CH8 (ELRS 4.x BLE);
+ *                                                         a name with "ExpressLRS" (ELRS 3.x): RX=CH3 RY=CH4
+ *                                                         RZ=CH6; buttons 1-8 = CH9-CH16: pressed = +1024
  *   has BTN_GAMEPAD                                     -> INSRC_GAMEPAD (fixed AETR, mode 2): thr = -ABS_Y,
  *                                                         rud = ABS_X, ele = -ABS_RY, ail = ABS_RX; CH5 = BTN_TL/TR toggles...
  *                                                         Start/Select -> EXIT (pause / back), A -> ENTER, B -> EXIT,

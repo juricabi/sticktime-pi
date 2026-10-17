@@ -1,13 +1,19 @@
 # StickTime Pi
 
-Turn a Raspberry Pi 4 into a "virtual quad". StickTime Pi runs the [StickTime](https://github.com/juricabi/sticktime)
+Turn a Raspberry Pi into a "virtual quad". StickTime Pi runs the [StickTime](https://github.com/juricabi/sticktime)
 FPV simulator and sends the picture to your **analog FPV goggles** through a 5.8 GHz VTX wired to the
 Pi's AV jack, or over HDMI to goggles with an HDMI input or to any screen. You fly it with your own radio.
 
-![The StickTime main menu, drawn by StickTime Pi](docs/images/menu.png)
+![StickTime Pi in a real setup: a Raspberry Pi with a 5.8 GHz VTX, the picture on an analog FPV monitor, an EdgeTX radio](docs/images/real-setup.jpg)
+
+*A real setup: the Raspberry Pi (left) sends the picture through a 5.8 GHz VTX to an analog FPV monitor, and an EdgeTX radio flies it.*
 
 > **Safety:** your radio keeps transmitting while you fly the sim. Take the props off the real quad or
 > unplug its battery.
+
+![The web page: status with the live game screen, frame rate and stick latency](docs/images/web-status.png)
+
+<img src="docs/images/web-vtx.png" alt="VTX control on the web page: SmartAudio, band, channel and power" width="300" align="right">
 
 ## Features
 
@@ -25,12 +31,14 @@ Pi's AV jack, or over HDMI to goggles with an HDMI input or to any screen. You f
   `sticktime.txt` over its **SmartAudio** (1.0, 2.0, 2.1) or **Tramp** pad, with Betaflight-style VTX tables
   (load your VTX maker's file). One wire and a resistor to a GPIO pin, like a flight controller; the Pi finds
   the protocol by itself.
+- **All three StickTime editions**: color, B&W and Lite, as on a radio; pick one on the web page's Game tab.
 - **Tracks like the browser emulator**: custom tracks c1-c8, the track editor, the track gallery, and the
   emulator's **Install** button to put the game on the Pi.
 - **Web page** at `http://sticktime.local`: WiFi (scan, join, hotspot), sticks (live bars, channel order,
-  invert, pause switch), video, sound, tracks, a remote keypad, updates, system and log.
-- **Updates** of the game and of StickTime Pi itself from GitHub releases, with rollback. Saves, tracks
-  and ghosts are never touched.
+  stick mapping with a Detect wizard, invert, pause switch), video, sound, tracks, a remote keypad, updates,
+  system and log.
+- **Updates** of the game (all three editions together) and of StickTime Pi itself from GitHub releases,
+  with rollback. Saves, tracks and ghosts are never touched.
 - **Everything on the SD card's FAT partition** (`sticktime.txt`, tracks, saves, songs), so you can edit
   it from a PC.
 
@@ -49,16 +57,16 @@ updates, troubleshooting).
 
 ## What you need
 
-- Raspberry Pi 4 (any RAM size), a 5 V / 3 A power supply, a microSD card of 8 GB or more.
+- A Raspberry Pi (any RAM size; see the models below), a 5 V / 3 A power supply, a microSD card of 8 GB or more.
 - For analog goggles: a 5.8 GHz VTX with its own power, and a 3.5 mm TRRS plug or cable. For goggles
   with an HDMI input, or a screen: a micro-HDMI cable (set `video = hdmi`).
 - Your radio (see Features), or a gamepad.
 
-**Other Raspberry Pi models:** StickTime Pi is made and tested for the **Pi 4**. It needs a Pi that runs
-64-bit Raspberry Pi OS, so it can't work on a Pi 1, Zero, Zero W or early Pi 2. Untested so far:
-the Pi 3 / 3B+ has the same AV jack but about half the CPU speed; the Zero 2 W is slower still and has
-composite only on solder pads and no audio jack; the Pi 5 has composite only on solder pads and no audio
-jack; the Pi 400 has no composite output. Reports are welcome.
+**Raspberry Pi models:** StickTime Pi runs on Raspberry Pis that run 64-bit Raspberry Pi OS (so not on a
+Pi 1, Zero, Zero W or early Pi 2). It is developed and tested on a Pi 4, which has the AV jack for the VTX.
+On other models: the Pi 3 / 3B+ has the same AV jack, with about half the CPU speed; the Zero 2 W is slower
+still and has composite only on solder pads and no audio jack; the Pi 5 has composite only on solder pads
+and no audio jack; the Pi 400 has no composite output (HDMI only). Reports from other models are welcome.
 
 ## Wiring the VTX
 
@@ -80,12 +88,13 @@ pad, then `vtx = auto` (for the most reliable link add pin 29 through 4.7 kΩ an
 
 ## Status
 
-Version 0.1.0 runs on a real Raspberry Pi 4. Please [open an issue](https://github.com/juricabi/sticktime-pi/issues)
+StickTime Pi runs on real Raspberry Pis. Please [open an issue](https://github.com/juricabi/sticktime-pi/issues)
 with your setup (goggles, VTX, radio, TV standard) when something doesn't work, and also when it does.
 
 ## How it works
 
-The game itself, `StickTime.lua`, runs **unchanged**: StickTime Pi is a native C host that implements the
+The game itself runs **unchanged** (`StickTime.lua`, and the B&W editions' loaders and `core.lua`, which they
+run on a color screen): StickTime Pi is a native C host that implements the
 EdgeTX Lua API, a port of the color radio drawing in StickTime's browser emulator (`engine.js`), with
 Lua 5.3 using EdgeTX's number settings. It draws into RGB565 buffers and shows them with DRM/KMS page flips
 (no X, Wayland or browser), reads the sticks from evdev and UDP, and mixes the sound itself. It is one

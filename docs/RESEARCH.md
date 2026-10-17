@@ -73,12 +73,35 @@ From `src/lib/BLE/devBLE.cpp` and https://oscarliang.com/expresslrs-bluetooth-jo
 
 - ESP32-based TX modules only. Start it from the ExpressLRS Lua script → "BLE Joystick". RF is
   turned off while it runs. Exiting the Lua script turns Bluetooth off. Range is about 3 m.
-- Advertised name: **`ELRS Joystick`** in current source (older firmware/articles: "ExpressLRS Joystick").
+- Advertised name: **`ELRS Joystick`** in 4.x (`new BleGamepad("ELRS Joystick", "ELRS", 100)`),
+  **`ExpressLRS Joystick`** in 3.x (`ELRSGamepad() : BleGamepad("ExpressLRS Joystick", "ELRS", 100)`).
   Pairs without a PIN (Just Works).
-- HID joystick, 8 axes, 8 buttons. Axis assignment:
-  `setAxes(x=CH1, y=CH2, z=CH5, rZ=CH6, rX=CH3, rY=CH4, slider1=CH7, slider2=CH8)`
-  → on Linux: ABS_X=CH1, ABS_Y=CH2, ABS_RX=CH3, ABS_RY=CH4, ABS_Z=CH5, ABS_RZ=CH6.
-  Buttons 1–8 = CH9–CH16, pressed when ≥ 2000 µs.
+- HID joystick, 8 axes (each 0..32767: 3.x maps to that, 4.x to the library's default axes range 0..0x7FFF),
+  buttons 1–8 = CH9–CH16 (pressed when ≥ 2000 µs).
+  3.x keeps the library's defaults (16 buttons, 1 hat), 4.x sets 8 buttons and no hat.
+- Axes: ELRS calls, in 3.3 through 4.x alike,
+  `bleGamepad->setAxes(data[0], data[1], data[4], data[5], data[2], data[3], data[6], data[7])`
+  (`src/lib/BLE/devBLE.cpp`, line 38 at tag 3.5.3, line 26 at 4.1.0; `data[i]` = CH(i+1)). What that means
+  depends on the version of lemmingDev's ESP32-BLE-Gamepad it is built with:
+  - **ELRS 3.x** (`src/targets/common.ini` 3.3.0–3.6.x: `lemmingdev/ESP32-BLE-Gamepad @ 0.5.2`): `BleGamepad.h` 0.5.2
+    (GitHub tag `v0.5.2` and the PlatformIO registry package alike) is `setAxes(x, y, z, rZ, rX, rY, slider1, slider2)`
+    → x=CH1, y=CH2, z=CH5, rZ=CH6, rX=CH3, rY=CH4: **ABS_X=CH1, ABS_Y=CH2, ABS_RX=CH3, ABS_RY=CH4, ABS_Z=CH5, ABS_RZ=CH6**.
+    The library kept that order up to v0.7.1.
+  - **ELRS 4.x** (4.0.x `common.ini`, 4.1.0 `esp32-tx.ini`: `@ 0.7.4`; master: `@ 0.7.5`): from v0.7.2 on the library
+    has `setAxes(x, y, z, rX, rY, rZ, slider1, slider2)` → x=CH1, y=CH2, z=CH5, rX=CH6, rY=CH3, rZ=CH4:
+    **ABS_X=CH1, ABS_Y=CH2, ABS_RY=CH3 (throttle), ABS_RZ=CH4 (yaw), ABS_Z=CH5, ABS_RX=CH6**.
+    Verified on a real Pi with an ELRS 4.x module ("ELRS Joystick"): at rest X, Y centred, Z = 0, RX = 32767,
+    RY = 19 (throttle low), RZ centred; with the 3.x table its yaw showed on CH6.
+  - In both, the report descriptor declares X, Y, Z, Rz, Rx, Ry, Slider, Slider in that order and the report
+    carries `_x, _y, _z, _rZ, _rX, _rY, _slider1, _slider2` in the same order; only the setter's argument
+    order changed. So the device name tells the two apart, not the descriptor.
+  - The two sliders are both HID usage Slider (0x36). Linux maps Slider to ABS_THROTTLE (`hidinput_configure_usage`:
+    `HID_GD_SLIDER` → `map_abs(usage & 0xf)`); the second one is a duplicate, which kernels with
+    `HID_QUIRK_INCREMENT_USAGE_ON_DUPLICATE` handling (6.12 here) **drop** ("Some usages could not be mapped") unless
+    the device has that quirk; older kernels moved it to the next free code (ABS_RUDDER, else ABS_WHEEL). So CH7 is
+    ABS_THROTTLE and CH8 usually doesn't reach Linux at all.
+  - StickTime Pi: CH1..CH8 = X, Y, RY, RZ, Z, RX, THROTTLE, RUDDER (or WHEEL), and X, Y, RX, RY, Z, RZ, ... for a
+    device named "ExpressLRS ..." (3.x). Any other layout: the `stick_channels` setting (a channel per stick).
 - On Linux, BLE HID goes through BlueZ (HOGP) → uhid → a normal `/dev/input/event*` device.
 
 ## 4. EdgeTX USB joystick (radio plugged in, "USB Joystick (HID)")

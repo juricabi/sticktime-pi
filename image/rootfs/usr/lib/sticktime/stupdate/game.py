@@ -2,11 +2,14 @@
 
 Every installed release is a slot, game/<gen>-<version>-<sha8>/, written once and complete when its
 SLOT.json exists: a power cut before that leaves an invisible folder that repair deletes. The
-active slot is the highest gen with SLOT.json and no DISABLED marker. The files the host and the
-web server use (sd/.../StickTime.lua, editor/index.html, editor/tracks/index.json) are copies,
-and reconcile() makes them follow the active slot, at the end of every change and at every boot,
-which also finishes an update the power cut interrupted. The player's saves, tracks and ghosts
-are only ever read (for the backup before a version change)."""
+active slot is the highest gen with SLOT.json and no DISABLED marker. A slot holds the whole game:
+StickTime.lua (the color edition) and the B&W and Lite editions (StickTimeBW.lua + StickTimeBW/,
+StickTimeLite.lua + StickTimeLite/), so all three always come from the same release. The files the
+host and the web server use (sd/.../StickTime.lua and the editions' files, editor/index.html,
+editor/tracks/index.json) are copies, and reconcile() makes them follow the active slot, at the
+end of every change and at every boot, which also finishes an update the power cut interrupted.
+The player's saves (*.dat, StickTimeLite/data.txt inside the Lite's folder), tracks and ghosts are
+only ever read (for the backup before a version change)."""
 import importlib.util
 import io
 import json
@@ -20,17 +23,20 @@ import zipfile
 from .common import (LUA_MAX, MIB, TMP, UpdateError, VER_RE, create_marker, fail, free_bytes, fs_error,
                      header_version, json_bytes, log, make_dirs, need_space, now_iso, point, read_file,
                      read_json, remove, sha256, git_blob_sha1, vkey, write_file, write_state)
-from .gamezip import (KEEP_NAME, MIN_LUA, SHARED, ZIP_ERRORS, gallery_ok, man_problem, manifest, manifest_bytes,
-                      page_problem, validate_game_zip)
+from .gamezip import (EDITIONS, KEEP_NAME, MAX_FILE, MIN_LUA, SHARED, ZIP_ERRORS, edition_of, gallery_ok,
+                      game_file, is_keep, man_problem, manifest, manifest_bytes, page_problem, validate_game_zip)
 from .net import Release, iso_time, pick_release
 
 SLOT_RE = re.compile(r"(\d{4,})-(\d+(?:\.\d+){1,3})-([0-9a-f]{8})")
 LUA = "StickTime.lua"
+ED_KINDS = ("bw", "lite")         # the editions beside StickTime.lua: a loader and a folder each
+MAX_ED_FILES = 256                # files per edition, as many as a release zip may hold (1.7.2's Lite has 18)
 ASSET = "StickTime-{ver}-sdcard.zip"
 MAX_ZIP = 8 * MIB
 MAX_PAGE = 8 * MIB
 BACKUPS_KEPT = 5
 STAGED_KEPT = 20
+STAGED_FILES_KEPT = 400           # the editions' files staged so far (sha256s), for the page's Install
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -41,6 +47,7 @@ class Slot:
         self.dir = os.path.join(root, name)
         self.gen = int(m.group(1))
         self.version = m.group(2)
+        self._lower = None
         self.meta = self._load()
 
     def _load(self):
@@ -58,11 +65,40 @@ class Slot:
             if (not isinstance(e, dict) or not isinstance(e.get("size"), int) or not isinstance(e.get("sha256"), str)
                     or not _safe_rel(rel)):
                 return None
+        # "editions": {"bw": [loader, folder files...], "lite": [...]}, what goes into sd/ beside
+        # StickTime.lua; missing in a slot from before the editions were kept (they're left alone then)
+        eds = m.get("editions")
+        if eds is not None:
+            if not isinstance(eds, dict):
+                return None
+            for e, rels in eds.items():
+                if (e not in ED_KINDS or not isinstance(rels, list) or EDITIONS[e]["loader"] not in rels
+                        or len(rels) > MAX_ED_FILES):
+                    return None
+                for rel in rels:
+                    if not isinstance(rel, str) or rel not in m["files"] or is_keep(rel) or not game_file(rel, e):
+                        return None
         return m if LUA in m["files"] else None
 
     @property
     def valid(self):
         return self.meta is not None
+
+    @property
+    def editions(self):
+        """{"bw": [rel...], "lite": [rel...]} (paths as under SCRIPTS/TOOLS), or None for an older slot"""
+        return self.meta.get("editions")
+
+    def sd_files(self):
+        """everything this slot puts into sd/SCRIPTS/TOOLS: StickTime.lua and the editions' files"""
+        return [LUA] + [rel for e in ED_KINDS for rel in (self.editions or {}).get(e, [])]
+
+    def entry(self, rel):
+        """(path in the slot, its SLOT.json entry) for rel in any case (FAT), or (None, None)"""
+        if self._lower is None:
+            self._lower = {k.lower(): k for k in self.meta["files"]}
+        k = self._lower.get(rel.lower())
+        return (k, self.meta["files"][k]) if k is not None else (None, None)
 
     @property
     def disabled(self):
@@ -120,6 +156,7 @@ class Game:
         self.st = status
         self.repo = cfg.game_repo
         self._patcher = None
+        self.kept_editions = []   # editions the last reconcile left as they were
 
     # ---------------------------------------------------------------- paths
     @property
@@ -316,12 +353,19 @@ class Game:
                     return True
         return False
 
-    def reconcile(self, force=False, slots=None):
-        """make sd/StickTime.lua, editor/ and GAME_VERSION follow the active slot: none | copied | custom"""
+    def reconcile(self, force=False, slots=None, ed_force=None):
+        """make sd/ (StickTime.lua and the editions), editor/ and GAME_VERSION follow the active slot:
+        none | copied | custom. ed_force for the editions (default: force), see _ed_plan."""
         slots = self.slots() if slots is None else slots
         act = self.active(slots)
         res = "none"
+        self.kept_editions = []
         if act is not None:
+            # the editions first: StickTime.lua is what says which release is installed, so a cut
+            # before it is written still counts as the old release, and the next reconcile finishes
+            ed_changed = self._editions(act, slots, force if ed_force is None else ed_force)
+            if ed_changed:
+                res = "copied"
             want = act.read(LUA)
             cur = self.sd_lua()
             if want is not None:
@@ -451,6 +495,222 @@ class Game:
         if read_file(p, 256) != want:
             write_file(p, want)
 
+    # ---------------------------------------------------------------- the B&W and Lite editions
+    # update/editions.json says which of the editions' files in sd/ are ours: {"files": {rel:
+    # {"sha256": what we wrote (null: removed), "prev": what was there when we began}}}, written
+    # before the files (as sd.json for StickTime.lua). An edition (loader + folder) changes as a
+    # whole or not at all: a file of someone else's there (a dev build copied from a PC, the
+    # page's Install of another release) keeps the whole edition as it is, unless forced. The
+    # player's own files (StickTimeLite/data.txt, *.dat, c*.txt) are never written or removed, and
+    # neither is anything in the folders that isn't a game file of a release we know.
+
+    def _ed_record_raw(self):
+        rec = read_json(os.path.join(self.cfg.upd, "editions.json"))
+        return rec["files"] if isinstance(rec, dict) and isinstance(rec.get("files"), dict) else None
+
+    def _ed_record(self):
+        """{rel.lower(): {"rel", "sha256", "prev"}}, None when there is no record"""
+        raw = self._ed_record_raw()
+        if raw is None:
+            return None
+        out = {}
+        for rel, e in raw.items():
+            if _safe_rel(rel) and isinstance(e, dict):
+                out[rel.lower()] = dict({k: e.get(k) if isinstance(e.get(k), str) else None for k in ("sha256", "prev")}, rel=rel)
+        return out
+
+    def _remember_eds(self, files):
+        if self._ed_record_raw() != files:
+            make_dirs(self.cfg.upd)
+            write_file(os.path.join(self.cfg.upd, "editions.json"), json_bytes({"files": files}))
+
+    def _ed_present(self):
+        """the editions' files in sd/ now, {rel.lower(): (rel, bytes or None)}: the loaders and the game
+        files in their folders (None: a folder or a file too big to be one of ours, in the way)"""
+        out = {}
+        tools = self.cfg.sd_tools
+        for e in ED_KINDS:
+            info = EDITIONS[e]
+            cands = [info["loader"]]
+            try:
+                cands += [info["folder"] + "/" + n for n in sorted(os.listdir(os.path.join(tools, info["folder"])))]
+            except OSError:
+                pass
+            for rel in cands:
+                n = rel.rsplit("/", 1)[-1]
+                if n.endswith(TMP) or is_keep(rel) or not game_file(rel, e):
+                    continue
+                p = os.path.join(tools, *rel.split("/"))
+                if not os.path.lexists(p):
+                    continue
+                data = None if os.path.isdir(p) or os.path.islink(p) else read_file(p, LUA_MAX)
+                out[rel.lower()] = (rel, data)
+        return out
+
+    def _ed_known(self, slots):
+        """sha256 of every edition file of a release this Pi knows: the slots and the staged ones"""
+        out = set()
+        for s in slots:
+            if s.valid:
+                for rel in s.sd_files():
+                    out.add(s.meta["files"][rel]["sha256"])
+        stg = self.staged()
+        if stg:
+            out.update(f["sha256"] for f in stg["manifest"]["files"])
+        out.update(self._staged_files())
+        return out
+
+    def _ed_mine(self, rel, data, slots, rec):
+        """we wrote it: as the record says, else (no record of it) any kept release has it there"""
+        h = sha256(data)
+        r = rec.get(rel.lower()) if rec is not None else None
+        if r is not None:
+            return h in (r["sha256"], r["prev"])
+        return any(s.valid and s.entry(rel)[1] is not None and s.entry(rel)[1]["sha256"] == h for s in slots)
+
+    @staticmethod
+    def _ed_damaged(rel, data, act, known):
+        """what a power cut and fsck leave of our copy: empty, the slot's size with other bytes, or cut
+        short. A release's exact file (known) or another version's (its header says so) never is."""
+        k, e = act.entry(rel)
+        if e is None or sha256(data) in known:
+            return False
+        if not data:
+            return True
+        hv = header_version(data)
+        if hv is not None and vkey(hv) != vkey(act.version):
+            return False
+        if len(data) == e["size"]:
+            return True
+        if len(data) < e["size"]:
+            full = act.read(k)
+            return full is not None and full.startswith(data)
+        return False
+
+    def _ed_plan(self, act, slots, force):
+        """what makes the editions in sd/ follow slot act: (writes {rel: bytes}, removes [rel], kept
+        [edition left as it is], custom {rel: bytes}). force: False (the boot: only our own files are
+        replaced), "release" (an automatic update: also any release's file, as the page's Install
+        puts there), True (a manual install or rollback: everything; custom = the files that aren't a
+        release's, for the backup)"""
+        eds = act.editions
+        if eds is None:
+            return {}, [], [], {}
+        rec = self._ed_record()
+        present = self._ed_present()
+        known = self._ed_known(slots)
+        writes, removes, kept, custom = {}, [], [], {}
+        for e in ED_KINDS:
+            want = {}
+            for rel in eds.get(e, []):
+                data = act.read(rel)
+                if data is None:
+                    want = None
+                    break
+                want[rel.lower()] = (rel, data)
+            if want is None:
+                log("%s: the %s edition is damaged in the slot; left as it is" % (act.name, EDITIONS[e]["label"]))
+                kept.append(e)
+                continue
+            mine = {k: v for k, v in present.items() if edition_of(v[0]) == e}
+            w, rm, c, blocked = {}, [], {}, False
+            for k, (rel, data) in want.items():
+                cur = mine.get(k)
+                if cur is not None and cur[1] == data:
+                    continue
+                if cur is not None:
+                    have = cur[1]
+                    if have is None:
+                        blocked = True          # a folder in its place: never removed
+                        break
+                    ours = self._ed_mine(rel, have, slots, rec) or self._ed_damaged(rel, have, act, known)
+                    if not ours and force:
+                        if sha256(have) not in known:
+                            if force is not True:
+                                blocked = True  # someone's own file: only a manual install replaces it
+                                break
+                            c[cur[0]] = have
+                        ours = True
+                    if not ours:
+                        blocked = True
+                        break
+                w[rel] = data
+            if not blocked:
+                for k, (rel, have) in mine.items():
+                    if k not in want and have is not None and self._ed_mine(rel, have, slots, rec):
+                        rm.append(rel)          # ours, and not in this release: as replacing the folder would
+            if blocked:
+                kept.append(e)
+                continue
+            writes.update(w)
+            removes += rm
+            custom.update(c)
+        return writes, removes, kept, custom
+
+    def _editions(self, act, slots, force):
+        """make the editions in sd/ follow slot act; True when something was written or removed"""
+        writes, removes, kept, _ = self._ed_plan(act, slots, force)
+        self.kept_editions = kept
+        if act.editions is None:
+            return False
+        rec = self._ed_record() or {}
+        present = self._ed_present()
+        cur = lambda rel: present.get(rel.lower(), (None, None))[1]  # noqa: E731
+        files = {}
+        for e in ED_KINDS:
+            if e in kept:
+                # what we know of an edition left as it is stays known
+                for r in rec.values():
+                    if edition_of(r["rel"]) == e and r["sha256"] is not None:
+                        files[r["rel"]] = {"sha256": r["sha256"], "prev": None}
+                continue
+            for rel in act.editions.get(e, []):
+                files[rel] = {"sha256": act.meta["files"][rel]["sha256"], "prev": None}
+        if writes or removes:
+            begin = dict(files)
+            for rel in writes:
+                have = cur(rel)
+                begin[rel] = {"sha256": act.meta["files"][rel]["sha256"], "prev": sha256(have) if have else None}
+            for rel in removes:
+                begin[rel] = {"sha256": None, "prev": sha256(cur(rel))}
+            self._remember_eds(begin)
+            first = True
+            for rel, data in writes.items():
+                p = os.path.join(self.cfg.sd_tools, *rel.split("/"))
+                make_dirs(os.path.dirname(p))
+                write_file(p, data)
+                if first:
+                    point("reconcile_editions")
+                    first = False
+            for rel in removes:
+                remove(os.path.join(self.cfg.sd_tools, *rel.split("/")))
+            for e in ED_KINDS:
+                # an edition this release doesn't have: its folder goes once it is empty (not with data.txt in it)
+                d = os.path.join(self.cfg.sd_tools, EDITIONS[e]["folder"])
+                if e not in act.editions and e not in kept and os.path.isdir(d) and not os.listdir(d):
+                    remove(d)
+        self._remember_eds(files)
+        return bool(writes or removes)
+
+    def _ed_snapshot(self, version):
+        """the editions on the card that go with StickTime.lua version (their loader says so), as a
+        slot keeps them: ({edition: [rel...]}, {rel: bytes})"""
+        eds, files = {}, {}
+        present = self._ed_present()
+        for e in ED_KINDS:
+            info = EDITIONS[e]
+            mine = sorted((v for v in present.values() if edition_of(v[0]) == e), key=lambda v: v[0].split("/"))
+            loader = next((v[1] for v in mine if v[0] == info["loader"]), None)
+            hv = header_version(loader) if loader else None
+            if not hv or vkey(hv) != vkey(version):
+                continue
+            if len(mine) > MAX_ED_FILES or any(v[1] is None or len(v[1]) > MAX_FILE for v in mine):
+                log("the %s edition on the card isn't kept for a rollback (odd files in it)" % info["label"])
+                continue
+            eds[e] = [v[0] for v in mine]
+            files.update({v[0]: v[1] for v in mine})
+        return eds, files
+
     # ---------------------------------------------------------------- the staged release
     def stage(self, rel, zipdata=None, gz=None, progress=None):
         """the release into editor/sdcard/ for the page's Install; False when it is staged already"""
@@ -513,13 +773,22 @@ class Game:
         lua = next((f["sha256"] for f in m["files"] if f["path"] == LUA), None)
         # every StickTime.lua staged so far: a copy the page installed stays "a release" after the next one
         hist = [h for h in self._staged_history() if h != lua][-(STAGED_KEPT - 1):] + ([lua] if lua else [])
+        # and the editions' files: what the page's Install put there is a release's, not the player's own
+        eds = [f["sha256"] for f in m["files"] if f["edition"] in ED_KINDS]
+        fhist = [h for h in self._staged_files() if h not in eds] + list(dict.fromkeys(eds))
         make_dirs(self.cfg.upd)
         write_file(os.path.join(self.cfg.upd, "staged.json"),
-                   json_bytes({"version": m["version"], "digest": digest, "manifest_sha256": sha256(mb), "lua": hist}))
+                   json_bytes({"version": m["version"], "digest": digest, "manifest_sha256": sha256(mb), "lua": hist,
+                               "files": fhist[-STAGED_FILES_KEPT:]}))
 
     def _staged_history(self):
         rec = read_json(os.path.join(self.cfg.upd, "staged.json"))
         h = rec.get("lua") if isinstance(rec, dict) else None
+        return [x for x in h if isinstance(x, str)] if isinstance(h, list) else []
+
+    def _staged_files(self):
+        rec = read_json(os.path.join(self.cfg.upd, "staged.json"))
+        h = rec.get("files") if isinstance(rec, dict) else None
         return [x for x in h if isinstance(x, str)] if isinstance(h, list) else []
 
     def staged_ok(self):
@@ -696,7 +965,8 @@ class Game:
 
     # ---------------------------------------------------------------- backup
     def backup(self, frm, to, extra=None):
-        """copies of the saves, tracks and ghosts (and a replaced custom StickTime.lua) into backup/"""
+        """copies of the saves, tracks and ghosts (and the player's own StickTime.lua or edition files a
+        forced change replaces) into backup/"""
         src = self.cfg.sd_tools
         items = {}
         try:
@@ -844,8 +1114,9 @@ class Game:
         if same and not auto:
             # the release is kept already: put it back over a copy from a PC or the page
             try:
-                if inst.state == "custom":
-                    self.backup(inst.version, best.version, {"StickTime.lua": inst.lua})
+                extra = self._replaced_own(act, slots, inst.lua if inst.state == "custom" else None)
+                if extra:
+                    self.backup(inst.version, best.version, extra)
                 self.reconcile(force=True, slots=slots)
             except OSError as e:
                 err = fs_error(e)
@@ -922,12 +1193,21 @@ class Game:
 
         st.set("installing", "Installing StickTime %s…" % best.version, 0.8)
         files = {"release.zip": zipdata, LUA: gz.lua}
+        # the B&W and Lite editions the release has (as the page's Install would write them)
+        m, mfiles = manifest(gz)
+        eds = {e: [f["path"] for f in m["files"] if f["edition"] == e] for e in ED_KINDS if e in m["editions"]}
+        ed_size = 0
+        for rels in eds.values():
+            for rel in rels:
+                files[rel] = mfiles[rel]
+                ed_size += len(mfiles[rel]) + 4096
         if page is not None:
             files["simulator.html"] = page
         if gallery is not None:
             files["tracks/index.json"] = gallery
         custom = inst.lua if inst.state == "custom" else None
-        need = (sum(len(b) for b in files.values()) + 4096 * (len(files) + 2) + len(gz.lua)
+        # (the slot, the copies in sd/, a backup of someone's own edition files at most as big)
+        need = (sum(len(b) for b in files.values()) + 4096 * (len(files) + 2) + len(gz.lua) + 2 * ed_size
                 + (len(page) + 65536 if page else 0) + self._backup_size() + len(custom or b""))
         need_space(self.cfg.base, need)
         slot = None
@@ -939,14 +1219,20 @@ class Game:
                     "release_id": best.release_id, "asset_id": best.asset_id, "asset_name": best.asset_name,
                     "asset_size": best.size, "asset_sha256": sha256(zipdata), "asset_digest": best.digest,
                     "asset_updated_at": best.updated_at, "published_at": best.published_at,
-                    "installed_at": now_iso(), "source": "github", "lua": LUA, "notes": best.notes}
+                    "installed_at": now_iso(), "source": "github", "lua": LUA, "notes": best.notes,
+                    "editions": eds}
             slot = self.make_slot(best.version, sha256(zipdata)[:8], files, meta)
-            if inst.version != gz.version or custom is not None:
-                self.backup(inst.version, gz.version, {"StickTime.lua": custom} if custom is not None else None)
+            # someone's own edition files a manual install replaces (an automatic one leaves them)
+            extra = self._replaced_own(slot, self.slots(), custom) if not auto else (
+                {"StickTime.lua": custom} if custom is not None else {})
+            if inst.version != gz.version or extra:
+                self.backup(inst.version, gz.version, extra or None)
             point("after_backup")
             # only a custom copy is protected (auto mode skipped it above); a release the page's Install
-            # put there is replaced like ours
-            self.reconcile(force=not auto or inst.state != "custom")
+            # put there is replaced like ours, the editions' too; an automatic update leaves an edition
+            # with someone's own files in it as it is
+            self.reconcile(force=not auto or inst.state != "custom", ed_force="release" if auto else True)
+            kept = self.kept_editions
             point("after_reconcile")
         except (UpdateError, OSError) as e:
             if slot is not None:
@@ -974,8 +1260,28 @@ class Game:
         self.retention()
         stg = self.staged()
         st.part("game", installed=self.installed().version, staged=stg["version"] if stg else "")
-        st.set("done", "StickTime %s is installed.%s" % (gz.version, note), 1)
+        st.set("done", "StickTime %s is installed.%s%s" % (gz.version, note, self._kept_note(kept, auto)), 1)
         return "installed"
+
+    def _replaced_own(self, target, slots, custom_lua=None):
+        """for the backup before a forced change to slot target: someone's own StickTime.lua and
+        edition files it replaces, {rel: bytes}"""
+        extra = {"StickTime.lua": custom_lua} if custom_lua is not None else {}
+        extra.update(self._ed_plan(target, slots, True)[3])
+        return extra
+
+    @staticmethod
+    def _kept_note(kept, auto):
+        if not kept:
+            return ""
+        names = " and ".join(EDITIONS[e]["label"] for e in kept)
+        if len(kept) == 1:
+            what, verb = "The %s edition" % names, ("stays as it is: it holds", "couldn't be updated")
+        else:
+            what, verb = "The %s editions" % names, ("stay as they are: they hold", "couldn't be updated")
+        if auto:
+            return " %s %s files of your own (automatic updates never replace them)." % (what, verb[0])
+        return " %s %s (a folder or a file that can't be read is in the way)." % (what, verb[1])
 
     def game_min(self):
         c = read_json(self.cfg.p("compat.json"), 64 * 1024)
@@ -1005,9 +1311,14 @@ class Game:
         g = read_file(os.path.join(self.cfg.editor, "tracks", "index.json"), 1 * MIB)
         if g is not None and not gallery_ok(g):
             files["tracks/index.json"] = g
-        meta = {"format": 1, "kind": "game", "version": hv, "source": "snapshot", "installed_at": now_iso(), "lua": LUA}
+        # the B&W and Lite editions the card has with it (older images had none)
+        eds, efiles = self._ed_snapshot(hv)
+        files.update(efiles)
+        meta = {"format": 1, "kind": "game", "version": hv, "source": "snapshot", "installed_at": now_iso(), "lua": LUA,
+                "editions": eds}
         slot = self.make_slot(hv, sha256(cur)[:8], files, meta)
         self._remember_sd(sha256(cur))
+        self._remember_eds({rel: {"sha256": sha256(b), "prev": None} for rel, b in efiles.items()})
         return slot
 
     def rollback(self):
@@ -1022,18 +1333,19 @@ class Game:
             if inst.state in ("custom", "staged"):
                 # back to the release the updater installed
                 target = act
-                self.backup(inst.version, act.version, {"StickTime.lua": inst.lua})
+                self.backup(inst.version, act.version, self._replaced_own(act, slots, inst.lua))
                 self.reconcile(force=True, slots=slots)
             else:
                 target = self.previous(slots, act)
                 if target is None:
                     fail("nothing_to_rollback", "StickTime %s is the oldest version kept on this Pi, so there is "
                          "nothing to go back to." % act.version)
+                extra = self._replaced_own(target, slots)
                 create_marker(os.path.join(act.dir, "DISABLED"), json.dumps(
                     {"reason": "rolled back", "at": now_iso(), "digest": act.meta.get("asset_sha256")}) + "\n")
                 point("rollback_marked")
-                if inst.version != target.version:
-                    self.backup(inst.version, target.version)
+                if inst.version != target.version or extra:
+                    self.backup(inst.version, target.version, extra or None)
                 self.reconcile(force=True)
         except OSError as e:
             err = fs_error(e)
@@ -1068,15 +1380,20 @@ class Game:
             act = self.active(slots)
             if act is None or act.disabled:
                 break
-            if act.read(LUA) is not None and (not act.has("release.zip") or act.read("release.zip") is not None):
+            # the whole game: StickTime.lua and the editions' files
+            bad = [rel for rel in act.sd_files() if act.read(rel) is None]
+            if not bad and (not act.has("release.zip") or act.read("release.zip") is not None):
                 break
             zipdata = act.read("release.zip") if act.has("release.zip") else None
             fixed = False
             if zipdata is not None:
                 try:
                     gz = validate_game_zip(zipdata, act.version)
-                    if sha256(gz.lua) == act.lua_sha:
-                        write_file(act.path(LUA), gz.lua)
+                    good = {rel: gz.files.get(rel) for rel in bad}
+                    if all(b is not None and sha256(b) == act.meta["files"][rel]["sha256"] for rel, b in good.items()):
+                        for rel, b in good.items():
+                            make_dirs(os.path.dirname(act.path(rel)))
+                            write_file(act.path(rel), b)
                         fixed = True
                         notes.append("repaired StickTime %s from its release zip" % act.version)
                 except UpdateError as e:

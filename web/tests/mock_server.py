@@ -141,6 +141,8 @@ def validate(k, v):
         return "a two-letter country code, like US or DE"
     if key == "channel_order" and sorted(v.upper()) != sorted("AETR"):
         return "the four letters A, E, T and R in any order, like AETR or TAER"
+    if key == "stick_channels" and stick_channels(v) is None:
+        return "four different channels 1 to 16 (aileron elevator throttle yaw), like 1 2 3 4, or empty"
     if key == "invert" and v and not all(p.strip().lower() in ("ail", "ele", "thr", "rud") for p in v.split(",")):
         return "a list of ail, ele, thr, rud"
     if key == "wifi_module_ip" and v:
@@ -165,6 +167,20 @@ def validate(k, v):
     return None
 
 
+def stick_channels(v):
+    """[ail, ele, thr, rud] channels, [] for none, None when invalid (input.c mix_parse_channels)"""
+    out = []
+    for t in re.split(r"[ \t,]+", v):
+        if not t:
+            continue
+        m = re.fullmatch(r"(?:ch)?([0-9]{1,2})", t, re.I)
+        c = int(m.group(1)) if m else 0
+        if not 1 <= c <= 16 or c in out or len(out) == 4:
+            return None
+        out.append(c)
+    return out if len(out) in (0, 4) else None
+
+
 def normalize(k, v):
     """the stored form of a valid value (settings.c normalize())"""
     if k["kind"] == "bool":
@@ -173,6 +189,8 @@ def normalize(k, v):
         return str(int(v, 10))
     if k["kind"] == "enum" or k["key"] in ("hdmi_mode", "latency"):
         return v.lower()
+    if k["key"] == "stick_channels":
+        return " ".join(str(c) for c in stick_channels(v) or [])
     if k["key"] in ("wifi_country", "channel_order"):
         return v.upper()
     return v
@@ -303,6 +321,8 @@ class MockPi:
         self.free_mb = 312
         self.vtx_table = None                      # a loaded VTX table (the Betaflight JSON as a dict), None = built in
         self.vtx_force = None                      # tests: {"state": ..., "message": ...} instead of "found and set"
+        self.stick_move = None                     # tests: 0 = the WiFi radio's sticks rest, 1-16 = that channel sweeps
+        self.stick_amp = 1000                      # (how far it sweeps, -1024..1024 units)
 
     # demo folders when none are given
     def _demo_sd(self):
@@ -310,8 +330,15 @@ class MockPi:
         tools = sd / "SCRIPTS" / "TOOLS"
         (tools / "StickTimeTracks").mkdir(parents=True)
         (tools / "StickTimeGhosts").mkdir(parents=True)
-        (tools / "StickTime.lua").write_text("-- StickTime v1.7.2\nlocal function run() return 0 end\nreturn { run = run }\n")
-        (tools / "StickTimeBW.lua").write_text("-- StickTime BW v1.7.2\nreturn {}\n")
+        (tools / "StickTime.lua").write_text('local toolName = "TNS|StickTime|TNE"\n-- StickTime v1.7.2\n'
+                                             "local function run() return 0 end\nreturn { run = run }\n")
+        # the B&W and Lite editions, as the image installs them (the Lite's save inside its folder)
+        (tools / "StickTimeBW.lua").write_text('local toolName = "TNS|StickTime BW|TNE"\n-- StickTime BW v1.7.2\nreturn {}\n')
+        (tools / "StickTimeLite.lua").write_text('local toolName = "TNS|StickTime Lite|TNE"\n-- StickTime Lite v1.7.2\nreturn {}\n')
+        for ed in ("StickTimeBW", "StickTimeLite"):
+            (tools / ed).mkdir()
+            (tools / ed / "core.lua").write_text("-- %s core\n" % ed)
+        (tools / "StickTimeLite" / "data.txt").write_bytes(b"lite save\n")
         (tools / "StickTime.dat").write_bytes(b"\x01\x02save")
         (tools / "StickTimeTracks" / "c1.txt").write_text(
             "MultiGP UTT 2017\n1 285132 17 0 0 0 1 0 0 0 95.34 1 0 0 -23.84 47.67 1 180 0 -47.67 95.34 1 0 0 -23.84 -23.84 1 90 0\n")
@@ -553,15 +580,32 @@ class MockPi:
     def sticks(self):
         t = time.time() - self.t0
         sources = []
-        wifi = [int(1024 * math.sin(t * (0.7 + i * 0.13) + i)) for i in range(16)]
-        wifi[4] = 1024 if int(t / 4) % 2 else -1024
+        if self.stick_move is None:                 # the demo: every channel sweeps
+            wifi = [int(1024 * math.sin(t * (0.7 + i * 0.13) + i)) for i in range(16)]
+            wifi[4] = 1024 if int(t / 4) % 2 else -1024
+        else:                                       # tests: sticks centred, throttle and CH5 low, a little noise,
+            wifi = [int(30 * math.sin(t * 7 + i)) for i in range(16)]     # and channel stick_move (1-16) sweeping
+            wifi[2], wifi[4] = -1000, -1024
+            if self.stick_move:
+                wifi[self.stick_move - 1] = int(self.stick_amp * math.sin(t * 7))
         sources.append({"kind": "wifi", "name": "ELRS 10.0.0.1", "live": True, "rate_hz": round(249 + math.sin(t) * 1.5, 1), "nch": 16, "ch": wifi})
         usb = [int(600 * math.cos(t * 0.5 + i)) for i in range(8)] + [0] * 8
         sources.append({"kind": "usb", "name": "EdgeTX RM TX16S Joystick", "live": False, "rate_hz": 0.0, "nch": 8, "ch": usb})
-        order = self.value("channel_order").upper()
-        idx = {c: order.index(c) for c in "AETR"} if sorted(order) == sorted("AETR") else {"A": 0, "E": 1, "T": 2, "R": 3}
-        st = {"ail": wifi[idx["A"]], "ele": wifi[idx["E"]], "thr": wifi[idx["T"]], "rud": wifi[idx["R"]], "pause": wifi[4]}
-        return {"sources": sources, "active": 0, "kind": "wifi", "live": True, "sticks": st}
+        # as input.c: a fixed source kind ignores the others (the wanted one heard but silent: shown, not live)
+        want = self.value("input").lower()
+        active = 0 if want in ("auto", "wifi", "") else next((i for i, s in enumerate(sources) if s["kind"] == want), -1)
+        live = active >= 0 and sources[active]["live"]
+        ch = sources[active]["ch"] if live else None
+        chans = stick_channels(self.value("stick_channels")) or []
+        if chans:
+            idx = {c: chans[i] - 1 for i, c in enumerate("AETR")}
+        else:
+            order = self.value("channel_order").upper()
+            idx = {c: order.index(c) for c in "AETR"} if sorted(order) == sorted("AETR") else {"A": 0, "E": 1, "T": 2, "R": 3}
+        st = ({"ail": ch[idx["A"]], "ele": ch[idx["E"]], "thr": ch[idx["T"]], "rud": ch[idx["R"]], "pause": ch[4]} if ch
+              else {"ail": 0, "ele": 0, "thr": -1024, "rud": 0, "pause": None})
+        kind = sources[active]["kind"] if active >= 0 else "none"
+        return {"sources": sources, "active": active, "kind": kind, "live": live, "sticks": st}
 
     def status(self):
         t = time.time() - self.t0
@@ -576,7 +620,7 @@ class MockPi:
             "game": {"state": state, "state_name": STATE_NAMES[state], "loaded": True, "error": self.game_error, "lua_kb": 812,
                      "script": self.value("script")},
             "video": {"desc": "Composite-1 720x480i 59.94 Hz, NTSC 4:3, render 640x480", "render_w": 640, "render_h": 480},
-            "input": {"active": 0, "kind": "wifi", "live": True, "sticks": s["sticks"],
+            "input": {"active": s["active"], "kind": s["kind"], "live": s["live"], "sticks": s["sticks"],
                       "sources": [{k: v for k, v in src.items() if k != "ch"} for src in s["sources"]]},
             "wifi_joystick": {"module": "ELRS 10.0.0.1", "state": "streaming", "rate_hz": s["sources"][0]["rate_hz"], "dropped": 0, "gaps": 2, "gap_max_ms": 840},
             "audio": {"device": "jack", "ok": True, "music": self.songs_list()[self.song_now % max(1, len(self.songs_list()))]["name"] if self.songs_list() else "Song 3 (generated)"},
@@ -1008,7 +1052,9 @@ class Handler(BaseHTTPRequestHandler):
             d = pi.sd / "SCRIPTS" / "TOOLS"
             for p in sorted(d.iterdir()) if d.is_dir() else []:
                 if p.is_file() and p.suffix.lower() == ".lua":
-                    tools.append({"path": "/SCRIPTS/TOOLS/" + p.name, "name": p.stem})
+                    # the name in its first KB's TNS|...|TNE, else the file's (as web_api.c)
+                    m = re.search(r"TNS\|([^\n]+?)\|TNE", p.read_bytes()[:1024].decode("utf-8", "replace"))
+                    tools.append({"path": "/SCRIPTS/TOOLS/" + p.name, "name": m.group(1) if m else p.stem})
             return self.json(200, {"current": pi.value("script"), "tools": tools})
         if get and path == "songs":
             return self.json(200, {"songs": pi.songs_list(), "free_mb": pi.free_mb})

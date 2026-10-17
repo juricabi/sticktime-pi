@@ -284,6 +284,11 @@ class EditorTest(unittest.TestCase):
 
     # ---------------------------------------------------------------- install
     def test_install_from_staged_release(self):
+        # the Lite's save lives in its game folder, beside a file an older release left there; a B&W save
+        (self.sd / TOOLS / "StickTimeLite").mkdir()
+        (self.sd / TOOLS / "StickTimeLite" / "data.txt").write_bytes(b"lite save\x00\xff")
+        (self.sd / TOOLS / "StickTimeLite" / "old.lua").write_bytes(b"-- an older release's\n")
+        (self.sd / TOOLS / "StickTimeBW.dat").write_bytes(b"BW save")
         self.open("#install")
         p = self.page
         p.wait_for_selector("#edEditions [data-ed]", timeout=20000)
@@ -292,7 +297,8 @@ class EditorTest(unittest.TestCase):
         self.assertIn("will be updated (1.7.1 on the Pi)", p.inner_text("#edEditions"))
         p.screenshot(path=str(SHOTS / f"editor-install{SUFFIX}.png"))
         before = {n: ((self.sd / n).read_bytes(), (self.sd / n).stat().st_mtime_ns) for n in
-                  (TOOLS + "/StickTime.dat", SLOTS + "/c2.txt", TOOLS + "/StickTimeGhosts/c2.txt")}
+                  (TOOLS + "/StickTime.dat", SLOTS + "/c2.txt", TOOLS + "/StickTimeGhosts/c2.txt",
+                   TOOLS + "/StickTimeLite/data.txt", TOOLS + "/StickTimeBW.dat")}
         p.check('#edEditions [data-ed="bw"]')
         p.check('#edEditions [data-ed="lite"]')
         with self.pi.lock:
@@ -301,6 +307,8 @@ class EditorTest(unittest.TestCase):
         self.idle()
         st = p.inner_text("#rpStatus")
         self.assertIn(f"StickTime {self.manifest['version']} is on the Pi: Color, B&W and Lite.", st)
+        self.assertIn("Removed StickTimeLite/old.lua.", st)
+        self.assertFalse((self.sd / TOOLS / "StickTimeLite" / "old.lua").exists())
         self.assertNotIn("Eject", st)
         for f in self.manifest["files"]:
             disk = self.sd / self.manifest["base"] / f["path"]

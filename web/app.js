@@ -264,7 +264,7 @@
   const LABEL = {
     video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', hdmi_mode: 'HDMI mode', margin: 'Border',
     fonts: 'Text size', show_ip: 'Show the web address', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
-    hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', invert: 'Reverse', pause_channel: 'Pause switch',
+    hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', stick_channels: 'Stick mapping', invert: 'Reverse', pause_channel: 'Pause switch',
     stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
     latency: 'Camera prediction', stick_mode: 'Stick mode', script: 'Script', stats: 'Timing stats', sd_write: 'The web page may change',
     sound: 'Sound', volume: 'Volume', music: 'Music', music_volume: 'Music volume', music_source: 'Music from', audio_out: 'Output', audio_mono: 'Mono',
@@ -291,10 +291,11 @@
     av_mode: 'Progressive has half the lines and no flicker.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
     channel_order: 'AETR for ELRS and most radios; TAER for some Spektrum and Futaba setups.',
+    stick_channels: 'Detect asks you to move each stick in turn. Gamepads and the keyboard keep their own layout.',
     pause_channel: 'Flip this switch in flight to pause.',
     latency: 'Seconds the camera looks ahead to hide the delay of the goggles, like 0.02.',
     music: 'Plays while you fly: generated live, or your own songs (below).',
-    password: 'Set it before you turn SSH on. It is applied at the next boot and then removed from the file.',
+    password: 'Set it before you turn SSH on. It is applied at the next boot and then removed from the file, so this shows "None waiting" again; the Pi keeps the password.',
     hotspot_password: 'Not set: the hotspot\'s password is sticktime.',
     vtx: 'One pin works at once; the two-pin UART mode needs a reboot when you turn it on (the Pi turns the UART on as it starts).',
     vtx_port: 'One pin (one wire through 1 kΩ) is the usual way; two pins (a UART) are the most reliable if one pin gives errors.',
@@ -336,8 +337,21 @@
       if (r && (n < r[0] || n > r[1])) return r[0] + ' to ' + r[1];
     }
     if (k.key === 'hotspot_password' && v && (utf8len(v) < 8 || utf8len(v) > 63)) return '8 to 63 characters';
+    if (k.key === 'stick_channels' && v.trim()) {
+      const c = stickChannels(v);
+      if (!c) return 'choose a channel (CH1 to CH16) for every stick, or none';
+      if (new Set(c).size !== 4) return 'each stick needs its own channel';
+    }
     return '';
   }
+  // stick_channels as numbers [ail, ele, thr, rud] (duplicates kept for check()), [] when empty, null when not 4 channels 1-16
+  function stickChannels(v) {
+    const t = String(v || '').split(/[\s,]+/).filter(Boolean);
+    if (!t.length) return [];
+    const c = t.map((x) => (/^(ch)?\d{1,2}$/i.test(x) ? parseInt(x.replace(/^ch/i, ''), 10) : 0));
+    return c.length === 4 && c.every((x) => x >= 1 && x <= 16) ? c : null;
+  }
+  const STICK4 = [['ail', 'Aileron'], ['ele', 'Elevator'], ['thr', 'Throttle'], ['rud', 'Yaw']];
   function parseSettings(text) {                             // the same rules as settings.c
     const out = new Map();
     for (const raw of text.replace(/^﻿/, '').split(/\r?\n/)) {
@@ -385,7 +399,10 @@
       f.root = h('div', { class: 'field' }, top(cb), help, err);
     } else if (k.kind === 'secret') {
       const isSet = !!S.values[key + '_set'];
-      const state = h('span', { class: 'state' + (isSet ? ' set' : ''), text: isSet ? 'Set' : 'Not set' });
+      // the pi password is applied at the next boot and then removed from the file: "Not set" read as
+      // "the Pi has no password" once it had been applied
+      const stateText = () => (key === 'password' ? (isSet ? 'Waiting for the next boot' : 'None waiting') : (isSet ? 'Set' : 'Not set'));
+      const state = h('span', { class: 'state' + (isSet ? ' set' : ''), text: stateText() });
       const inp = h('input', { type: 'password', id, autocomplete: 'new-password', 'aria-describedby': desc, spellcheck: 'false', autocapitalize: 'off', on: { input: changedNow } });
       const reveal = h('button', { class: 'btn sm ghost', type: 'button', text: 'Show', 'aria-pressed': 'false', 'aria-controls': id });
       reveal.addEventListener('click', () => { const show = inp.type === 'password'; inp.type = show ? 'text' : 'password'; reveal.textContent = show ? 'Hide' : 'Show'; reveal.setAttribute('aria-pressed', String(show)); });
@@ -399,7 +416,7 @@
         if (editing) inp.focus();
       };
       change.addEventListener('click', () => mode(true));
-      cancel.addEventListener('click', () => { inp.value = ''; clearing = false; state.textContent = isSet ? 'Set' : 'Not set'; mode(false); changedNow(); });
+      cancel.addEventListener('click', () => { inp.value = ''; clearing = false; state.textContent = stateText(); mode(false); changedNow(); });
       clear.addEventListener('click', () => { clearing = true; state.textContent = 'Will be cleared'; mode(false); changedNow(); });
       f.orig = '';
       f.get = () => (clearing ? '\u0000clear' : edit.hidden ? '' : inp.value);
@@ -435,6 +452,64 @@
       f.set = (v) => { const s = new Set(String(v).split(/[\s,]+/)); boxes.forEach((b) => { b.checked = s.has(b.value); }); };
       f.input = boxes[0];
       f.root = group('group', h('div', { class: 'checks' }, AX.map(([a, n], i) => h('label', {}, boxes[i], h('span', { text: n })))), help, err);
+    } else if (key === 'channel_order') {
+      // all 24 orders of A, E, T, R (a text box with suggestions only listed the ones matching what was typed)
+      const perms = (s) => (s.length <= 1 ? [s] : [...s].flatMap((c, i) => perms(s.slice(0, i) + s.slice(i + 1)).map((p) => c + p)));
+      const common = { AETR: 'AETR (ELRS, most radios)', TAER: 'TAER (some Spektrum and Futaba setups)' };
+      const all = ['AETR', 'TAER', ...perms('AETR').filter((p) => !common[p]).sort()];
+      const cur = String(val || 'AETR').toUpperCase();
+      const sel = h('select', { id, 'aria-describedby': desc, on: { change: changedNow } },
+        all.map((p) => h('option', { value: p, text: common[p] || p, selected: p === cur })));
+      if (!all.includes(cur)) sel.prepend(h('option', { value: cur, text: cur + ' (not valid)', selected: true, disabled: true }));
+      f.get = () => sel.value;
+      f.set = (v) => { sel.value = String(v).toUpperCase(); };
+      f.input = sel;
+      f.root = h('div', { class: 'field' }, top(null), sel, help, err);
+    } else if (key === 'stick_channels') {
+      // a channel per stick, or none (the channel order decides). The first pick fills the other sticks
+      // from the channel order; a channel picked twice swaps with the stick that had it.
+      const sels = STICK4.map(([s], i) => h('select', { id: i ? id + '-' + s : id, 'aria-describedby': desc, 'data-stick': s },
+        h('option', { value: '', text: 'By order' }), Array.from({ length: 16 }, (_, c) => h('option', { value: String(c + 1), text: 'CH' + (c + 1) }))));
+      const clearBtn = h('button', { class: 'btn sm ghost', type: 'button', text: 'Use the channel order' });
+      const note = h('p', { class: 'help warnline', id: id + '-note', hidden: true });
+      let last = ['', '', '', ''];
+      const show = (vals) => { sels.forEach((s, i) => { s.value = vals[i] ? String(vals[i]) : ''; }); last = sels.map((s) => s.value); };
+      const fromOrder = () => {
+        const o = String(form.values().channel_order || '').toUpperCase();
+        return STICK4.map(([s], i) => String(/^[AETR]{4}$/.test(o) && o.includes(s[0].toUpperCase()) ? o.indexOf(s[0].toUpperCase()) + 1 : i + 1));
+      };
+      const after = (v) => {
+        const on = sels.some((s) => s.value);
+        clearBtn.hidden = !on;
+        const p = parseInt((v || form.values()).pause_channel, 10);
+        const hit = on && p > 0 ? STICK4.find((_, i) => sels[i].value === String(p)) : null;
+        note.hidden = !hit;
+        note.textContent = hit ? 'CH' + p + ' is also the pause switch: moving the ' + hit[1].toLowerCase() + ' stick would pause the game.' : '';
+      };
+      sels.forEach((sel, i) => sel.addEventListener('change', () => {
+        const v = sel.value;
+        if (!v) show(['', '', '', '']);
+        else {
+          const base = last.every((x) => !x) ? fromOrder() : last.slice();
+          const j = base.findIndex((x, k) => k !== i && x === v);
+          if (j >= 0) base[j] = base[i] && base[i] !== v ? base[i] : String(Array.from({ length: 16 }, (_, c) => c + 1).find((c) => !base.includes(String(c))));
+          base[i] = v;
+          show(base);
+        }
+        changedNow();
+      }));
+      clearBtn.addEventListener('click', () => { show(['', '', '', '']); changedNow(); });
+      const cur = stickChannels(val);
+      f.orig = cur && cur.length === 4 && new Set(cur).size === 4 ? cur.join(' ') : '';
+      show(f.orig ? f.orig.split(' ') : ['', '', '', '']);
+      f.get = () => (sels.every((s) => !s.value) ? '' : sels.map((s) => s.value || '0').join(' '));
+      f.set = (v) => { const c = stickChannels(v); show(c && c.length ? c : ['', '', '', '']); after(); };
+      f.refresh = after;
+      f.input = sels[0];
+      f.root = group('group', h('div', { class: 'chmap' }, STICK4.map(([, n], i) => h('label', {}, h('span', { text: n }), sels[i]))),
+        h('div', { class: 'btn-row tight' }, h('button', { class: 'btn sm', type: 'button', text: 'Detect', on: { click: () => detect.start(form) } }), clearBtn),
+        note, help, err);
+      after();
     } else if (key === 'pause_channel' && range2) {
       const opts = [];
       for (let c = range2[0]; c <= range2[1]; c++) opts.push(h('option', { value: String(c), text: c === 0 ? 'Off' : 'CH' + c, selected: String(c) === val }));
@@ -546,6 +621,7 @@
     conditions() {
       const v = this.values();
       for (const [k, f] of this.fields) if (WHEN[k]) f.root.hidden = !WHEN[k](v);
+      for (const f of this.fields.values()) if (f.refresh) f.refresh(v);
     }
     dirty() {
       const out = [];
@@ -750,7 +826,7 @@
     gameLine: (s) => (g(s, 'game', 'loaded') === false ? 'not loaded' : g(s, 'game', 'error') ? 'stopped: error' : 'StickTime ' + str(s.game_version)),
     inputKind: (s) => KIND[g(s, 'input', 'kind')] || str(g(s, 'input', 'kind')),
     inputRate: (s) => { const src = (g(s, 'input', 'sources') || [])[g(s, 'input', 'active')]; return src && isNum(src.rate_hz) && src.rate_hz > 0 ? Math.round(src.rate_hz) + ' Hz' : ''; },
-    inputName: (s) => { const src = (g(s, 'input', 'sources') || [])[g(s, 'input', 'active')]; return src ? (src.name || '') + (g(s, 'input', 'live') ? '' : ' · not moving') : 'no source'; },
+    inputName: (s) => { const src = (g(s, 'input', 'sources') || [])[g(s, 'input', 'active')]; return src ? (src.name || '') + (g(s, 'input', 'live') ? '' : ' · not moving') : fixedInput() ? 'none: the source is set to ' + (KIND[fixedInput()] || fixedInput()) : 'no source'; },
     videoDesc: (s) => str(g(s, 'video', 'desc')),
     frameMs: (s) => num(g(s, 'frame_ms', 'avg'), 2) + ' ms avg · ' + num(g(s, 'frame_ms', 'max'), 1) + ' max',
     runMs: (s) => num(g(s, 'run_ms', 'avg'), 2) + ' ms avg · ' + num(g(s, 'run_ms', 'p95'), 1) + ' p95',
@@ -778,6 +854,36 @@
     audioDev: (s) => (g(s, 'audio', 'device') ? 'Output: ' + g(s, 'audio', 'device') + (g(s, 'audio', 'ok') === false ? ', not working' : '') : ''),
     vtx: (s) => { const t = g(s, 'vtx', 'text'); return typeof t === 'string' && t ? (t === 'off' ? 'Off' : t) : '–'; },
   };
+  // Stick source (input) set to one kind: the others are ignored. Said when that kind sends nothing while
+  // another source does (the game gets no sticks then), with a button for auto.
+  const fixedInput = () => { const v = S.values && typeof S.values.input === 'string' ? S.values.input : ''; return v && v !== 'auto' ? v : ''; };
+  const ignoredSrc = (x) => !!fixedInput() && !!x && x.kind !== fixedInput();
+  function inputWarn(srcs) {
+    const f = fixedInput();
+    const live = (Array.isArray(srcs) ? srcs : []).filter((x) => x && typeof x === 'object' && x.live);
+    const ign = f && !live.some((x) => x.kind === f) ? live : [];
+    const names = ign.map((x) => (x.name || KIND[x.kind] || String(x.kind)) + ' (' + (KIND[x.kind] || String(x.kind)) + ')');
+    const text = names.length ? 'Stick source is set to ' + (KIND[f] || f) + ': ' + (names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are' : names[0] + ' is') + ' ignored.' : '';
+    for (const el of $$('.input-warn')) {
+      if (el.hidden !== !text) el.hidden = !text;
+      const t = $('.input-warn-text', el);
+      if (t && t.textContent !== text) t.textContent = text;
+    }
+  }
+  const latestSources = () => (page === 'sticks' && sticksData && Array.isArray(sticksData.sources) ? sticksData.sources : g(lastStatus, 'input', 'sources'));
+  document.addEventListener('settings', () => inputWarn(latestSources()));
+  $$('[data-action="input-auto"]').forEach((b) => b.addEventListener('click', async () => {
+    busy(b, true);
+    try {
+      const sent = Date.now();
+      const r = await api('POST', '/api/settings', 'input = auto\n');
+      if (S.values) S.values.input = 'auto';
+      rerender(null);
+      saved(r || {}, ['input'], sent);
+      if (lastStatus) onStatus(lastStatus);
+    } catch (e) { fail(e); }
+    busy(b, false);
+  }));
   function onStatus(s) {
     for (const el of $$('[data-f]')) {
       const f = SF[el.dataset.f];
@@ -793,16 +899,17 @@
     const err = g(s, 'game', 'error');
     $('#gameError').hidden = !err;
     if (err && $('#gameErrorText').textContent !== err) $('#gameErrorText').textContent = err;
-    const list = $('#srcList'), srcs = g(s, 'input', 'sources') || [];
-    const sig = JSON.stringify(srcs.map((x) => [x.kind, x.name, x.live, Math.round(x.rate_hz || 0)]));
+    const list = $('#srcList'), srcs = g(s, 'input', 'sources') || [], act = g(s, 'input', 'active');
+    const sig = JSON.stringify([act, fixedInput(), srcs.map((x) => [x.kind, x.name, x.live, Math.round(x.rate_hz || 0)])]);
     if (list.dataset.sig !== sig) {
       list.dataset.sig = sig;
       list.replaceChildren(...srcs.map((x, i) => h('li', {}, h('span', { class: 'livedot' + (x.live ? ' on' : ''), title: x.live ? 'moving' : 'idle' }),
-        h('span', { text: (x.name || KIND[x.kind] || x.kind) + (i === g(s, 'input', 'active') ? ' (in use)' : '') }),
+        h('span', { text: (x.name || KIND[x.kind] || x.kind) + (i === act ? ' (in use)' : ignoredSrc(x) ? ' (ignored)' : '') }),
         h('span', { class: 'pill', text: KIND[x.kind] || x.kind }), h('span', { class: 'note', text: isNum(x.rate_hz) && x.rate_hz > 0 ? Math.round(x.rate_hz) + ' Hz' : '' }))));
       if (!srcs.length) list.append(h('li', { class: 'note', text: 'No stick source yet: plug in a radio, or start the ELRS module\'s WiFi joystick.' }));
     }
     if (page === 'sticks') $('#liveSrc').textContent = SF.inputName(s);
+    else inputWarn(srcs);                                    // (the Sticks page: from its own stream)
   }
   let statusT = 0;
   async function statusLoop() {
@@ -885,10 +992,11 @@
         const bars = [];
         for (let c = 0; c < 16; c++) bars.push(bar('CH' + (c + 1)));
         const dot = h('span', { class: 'livedot' }), rate = h('span', { class: 'note' }), active = h('span', { class: 'pill ok', text: 'in use', hidden: true });
+        const ign = h('span', { class: 'pill warn', text: 'ignored', title: 'The stick source setting picks another kind', hidden: true });
         const card = h('section', { class: 'card src-card', 'aria-label': (s.name || s.kind) + ' channels' },
-          h('div', { class: 'card-head' }, h('h2', {}, dot, ' ', s.name || KIND[s.kind] || s.kind, h('small', { text: KIND[s.kind] || s.kind })), h('span', {}, active, ' ', rate)),
+          h('div', { class: 'card-head' }, h('h2', {}, dot, ' ', s.name || KIND[s.kind] || s.kind, h('small', { text: KIND[s.kind] || s.kind })), h('span', {}, active, ign, ' ', rate)),
           h('div', { class: 'bars' }, bars));
-        return { card, bars, dot, rate, active };
+        return { card, bars, dot, rate, active, ign };
       });
       $('#srcCards').replaceChildren(...srcCards.cards.map((c) => c.card));
       if (!srcs.length) $('#srcCards').append(h('section', { class: 'card' }, h('p', { class: 'note', text: 'No stick source yet. Plug in a radio by USB (as a joystick), start the ELRS or Crossfire module\'s WiFi, or pair a Bluetooth gamepad.' })));
@@ -901,7 +1009,9 @@
       c.dot.className = 'livedot' + (s.live ? ' on' : '');
       c.rate.textContent = isNum(s.rate_hz) && s.rate_hz > 0 ? Math.round(s.rate_hz) + ' Hz' : s.live ? '' : 'idle';
       c.active.hidden = i !== d.active;
+      c.ign.hidden = i === d.active || !ignoredSrc(s);
     });
+    inputWarn(srcs);
   }
   const sticksFeed = {
     es: null, poll: 0, on: false, errors: 0,
@@ -925,6 +1035,7 @@
     },
     got(text) {
       try { sticksData = typeof text === 'string' ? JSON.parse(text) : text; } catch (e) { return; }
+      if (detect.on) detect.feed(sticksData);
       if (!sticksRaf) sticksRaf = requestAnimationFrame(drawSticks);
     },
     async pollLoop() {
@@ -937,6 +1048,154 @@
     stop() {
       this.on = false;
       if (this.es) { this.es.close(); this.es = null; }
+    },
+  };
+  // Stick mapping → Detect: the pilot moves each stick in turn and the channel of the radio's live data
+  // that moved most is that stick's. Channels that barely move don't count, one already taken is refused,
+  // the first stick picks the radio the others must come from. The result fills the field; Save keeps it.
+  const DETECT = { min: 400, auto: 1300, settle: 600, pause: 700 };       // channel units (full travel 2048), ms
+  const detect = {
+    on: false, form: null, dlg: null, el: {}, got: [0, 0, 0, 0], step: 0, src: '', mm: new Map(), cand: 0, candK: '', since: 0, quiet: 0, warnUntil: 0,
+    start(form) {
+      this.form = form;
+      if (!this.dlg) this.build();
+      this.on = true;
+      this.got = [0, 0, 0, 0];
+      this.step = 0;
+      this.src = '';
+      this.begin();
+      this.render();
+      this.show(0, 0);
+      this.say('Waiting for a channel to move…', '');
+      if (typeof this.dlg.showModal === 'function') this.dlg.showModal();
+      else this.dlg.setAttribute('open', '');
+      this.el.cancel.focus();
+    },
+    build() {
+      const e = this.el;
+      e.steps = h('ol', { class: 'detect-steps' }, STICK4.map(([s, n]) => h('li', { 'data-stick': s }, h('span', { text: n }), h('b', { text: '–' }))));
+      e.ask = h('p', { class: 'detect-ask', id: 'detectAsk' });
+      e.hint = h('p', { class: 'note', id: 'detectHint' });
+      e.fill = h('span', { class: 'dfill' });
+      e.meter = h('div', { class: 'dmeter', role: 'meter', 'aria-label': 'How far the channel moved', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, h('span', { class: 'dtrack' }, e.fill));
+      e.chan = h('span', { class: 'dchan', id: 'detectChan', text: '–' });
+      e.msg = h('p', { class: 'detect-msg', id: 'detectMsg', role: 'status' });
+      e.use = h('button', { class: 'btn primary', type: 'button', id: 'detectUse', text: 'Use', disabled: true, on: { click: () => this.accept(this.cand, this.candK) } });
+      e.cancel = h('button', { class: 'btn ghost', type: 'button', id: 'detectCancel', text: 'Cancel', on: { click: () => this.stop(false) } });
+      this.dlg = h('dialog', { class: 'dlg detect-dlg', id: 'detectDlg', 'aria-labelledby': 'detectTitle', 'aria-describedby': 'detectAsk' },
+        h('h2', { id: 'detectTitle', text: 'Detect the stick mapping' }), e.steps, e.ask, e.hint,
+        h('div', { class: 'dline' }, e.chan, e.meter), e.msg, h('div', { class: 'btn-row end' }, e.cancel, e.use));
+      this.dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); this.stop(false); });      // Esc
+      document.body.append(this.dlg);
+    },
+    // a new step: sample from now on, after a pause for the last stick to come back
+    begin() {
+      this.mm = new Map();
+      this.cand = 0;
+      this.candK = '';
+      this.since = 0;
+      this.quiet = Date.now() + (this.step ? DETECT.pause : 0);
+    },
+    render() {
+      const e = this.el, i = this.step, [s, n] = STICK4[i];
+      $$('li', e.steps).forEach((li, k) => { li.className = k === i ? 'now' : k < i ? 'done' : ''; $('b', li).textContent = this.got[k] ? 'CH' + this.got[k] : '–'; });
+      const mode = MODES[parseInt(S.values && S.values.stick_mode, 10)] ? parseInt(S.values.stick_mode, 10) : 2, m = MODES[mode];
+      e.ask.textContent = 'Move the ' + n.toUpperCase() + ' stick ' + (m[0][0] === s || m[1][0] === s ? 'left and right' : 'up and down');
+      e.hint.textContent = 'Step ' + (i + 1) + ' of 4: the ' + (m[0].includes(s) ? 'left' : 'right') + ' stick in mode ' + mode +
+        (NAMES[s] !== n.toLowerCase() ? ' (' + NAMES[s] + ')' : '') + ', end to end. Leave the other sticks alone.';
+    },
+    feed(d) {
+      if (!this.on || !d || typeof d !== 'object' || !Array.isArray(d.sources)) return;
+      const now = Date.now();
+      if (now < this.quiet) return;
+      const srcs = d.sources.filter((x) => x && typeof x === 'object' && x.live && Array.isArray(x.ch) && !['gamepad', 'keyboard', 'web'].includes(x.kind)
+        && (!this.src || x.kind + '|' + x.name === this.src));
+      if (!srcs.length) {
+        this.show(0, 0);
+        this.say(this.src ? 'The radio stopped sending: is it still on?' : 'No radio sends sticks yet: connect it first (WiFi, USB or Bluetooth).', 'warn');
+        return;
+      }
+      let best = null, second = 0, taken = null;
+      for (const x of srcs) {
+        const k = x.kind + '|' + x.name;
+        if (!this.mm.has(k)) this.mm.set(k, { min: [], max: [] });
+        const mm = this.mm.get(k), n = Math.min(16, x.ch.length, isNum(x.nch) ? x.nch : 16);
+        for (let c = 0; c < n; c++) {
+          const v = x.ch[c];
+          if (!isNum(v)) continue;
+          if (!isNum(mm.min[c]) || v < mm.min[c]) mm.min[c] = v;
+          if (!isNum(mm.max[c]) || v > mm.max[c]) mm.max[c] = v;
+          const r = mm.max[c] - mm.min[c];
+          if (this.got.includes(c + 1)) { if (!taken || r > taken.r) taken = { c: c + 1, r }; continue; }
+          if (!best || r > best.r) { if (best) second = Math.max(second, best.r); best = { k, c: c + 1, r }; } else second = Math.max(second, r);
+        }
+      }
+      const want = STICK4[this.step][1].toUpperCase();
+      if (taken && taken.r >= DETECT.auto && (!best || taken.r > best.r)) {
+        // a stick that already has its channel: say so and start this step over
+        this.say('CH' + taken.c + ' is already the ' + STICK4[this.got.indexOf(taken.c)][1].toLowerCase() + ': move the ' + want + ' stick.', 'bad');
+        this.warnUntil = now + 2500;
+        this.mm = new Map();
+        this.cand = 0;
+        this.since = 0;
+        this.show(0, 0);
+        return;
+      }
+      const talk = now > this.warnUntil;
+      if (!best || best.r < DETECT.min) {
+        this.cand = 0;
+        this.since = 0;
+        this.show(0, 0);
+        if (talk) this.say('Waiting for a channel to move…', '');
+        return;
+      }
+      if (best.c !== this.cand || best.k !== this.candK) { this.cand = best.c; this.candK = best.k; this.since = 0; }
+      this.show(best.c, best.r);
+      if (best.r >= DETECT.auto && second < best.r * 0.6) {
+        if (!this.since) this.since = now;
+        else if (now - this.since >= DETECT.settle) { this.accept(best.c, best.k); return; }
+        if (talk) this.say('CH' + best.c + ' moves: keep going…', 'ok');
+      } else {
+        this.since = 0;
+        if (talk) this.say(best.r >= DETECT.auto ? 'More than one channel moves: move only the ' + want + ' stick, or press Use.' : 'CH' + best.c + ' moves: all the way to both ends, or press Use.', '');
+      }
+    },
+    show(c, r) {
+      const e = this.el, pct = Math.max(0, Math.min(100, Math.round(r / 20.48)));
+      e.chan.textContent = c ? 'CH' + c : '–';
+      e.fill.style.transform = 'scaleX(' + pct / 100 + ')';
+      e.meter.setAttribute('aria-valuenow', String(pct));
+      e.use.disabled = !c;
+      e.use.textContent = c ? 'Use CH' + c : 'Use';
+    },
+    say(t, kind) {
+      const m = this.el.msg;
+      if (m.textContent !== t) m.textContent = t;
+      m.className = 'detect-msg' + (kind ? ' ' + kind : '');
+    },
+    accept(c, k) {
+      if (!this.on || !c || this.got.includes(c)) return;
+      this.got[this.step] = c;
+      if (!this.src) this.src = k;
+      this.step++;
+      if (this.step === 4) { this.stop(true); return; }
+      this.begin();
+      this.render();
+      this.show(0, 0);
+      this.say('Got it: the ' + STICK4[this.step - 1][1].toLowerCase() + ' is CH' + c + '. Let the stick go back.', 'ok');
+      this.warnUntil = Date.now() + DETECT.pause + 500;
+    },
+    stop(done) {
+      if (!this.on) return;
+      this.on = false;
+      if (this.dlg.open && typeof this.dlg.close === 'function') this.dlg.close();
+      else this.dlg.removeAttribute('open');
+      const f = done && this.form && this.form.fields.get('stick_channels');
+      if (!f) return;
+      f.set(this.got.join(' '));
+      this.form.changed(f);
+      f.input.focus();
+      toast('Found: ' + STICK4.map(([, n], i) => n + ' CH' + this.got[i]).join(', ') + '. Save to keep it.');
     },
   };
   $$('[data-modap]').forEach((b) => b.addEventListener('click', async () => {
@@ -1210,6 +1469,12 @@
     remoteShot().then(() => { liveT = setTimeout(liveLoop, 350); });
   }
   $('#liveView').addEventListener('change', liveLoop);
+  // StickTime's three editions (the Pi has all three; the B&W ones draw in a B&W radio's colors here)
+  const EDITION_NOTES = {
+    'sticktime.lua': 'Color edition: the full game, made for color screens.',
+    'sticktimebw.lua': 'B&W edition: the game of black & white radios, in their colors.',
+    'sticktimelite.lua': 'Lite edition: the smaller B&W game of older radios (X7, X9D, T12...).',
+  };
   async function loadTools() {
     const box = $('#toolList');
     let j;
@@ -1227,7 +1492,9 @@
           if (res && res.reboot) $('#rebootBanner').hidden = false;
         } catch (e) { fail(e); loadTools(); }
       });
-      return h('label', { class: 'tool' }, r, h('span', { class: 'tcol' }, h('b', { text: t.name || t.path }), h('span', { class: 'tpath', text: t.path })));
+      const ed = EDITION_NOTES[String(t.path).split('/').pop().toLowerCase()];
+      return h('label', { class: 'tool' }, r, h('span', { class: 'tcol' }, h('b', { text: t.name || t.path }),
+        ed ? h('span', { class: 'tdesc', text: ed }) : null, h('span', { class: 'tpath', text: t.path })));
     }));
   }
 
@@ -1518,7 +1785,7 @@
   const noop = () => {};
   const PAGES = {
     status: { enter: () => { if ($('#shotImg').hidden) shot($('#shotImg'), $('#shotEmpty')); }, leave: noop },
-    sticks: { enter: () => { gimbalLabels(); sticksFeed.start(); }, leave: () => sticksFeed.stop() },
+    sticks: { enter: () => { gimbalLabels(); sticksFeed.start(); }, leave: () => { detect.stop(false); sticksFeed.stop(); } },
     video: { enter: () => vtxLoop(), leave: () => clearTimeout(V.t) },
     wifi: { enter: () => { if (!$('#netList').children.length) lastScan(); }, leave: noop },
     sound: { enter: loadSongs, leave: noop },

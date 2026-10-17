@@ -330,12 +330,12 @@ int main(void) {
   if (es >= 0) {
     CHECK_INT(src[es].kind, INSRC_BLUETOOTH);
     CHECK_INT(src[es].nch, 16);
-    CHECK_INT(src[es].ch[3], -1024);     /* RY at 0 = CH4 */
+    CHECK_INT(src[es].ch[2], -1024);     /* RY at 0 = CH3 (ELRS 4.x: the throttle) */
     nkeys = 0;
-    absv(elrs, ABS_RX, 32767);           /* CH3 */
+    absv(elrs, ABS_RX, 32767);           /* CH6 */
     absv(elrs, ABS_Z, 0);                /* CH5 */
     key(elrs, BTN_SOUTH, 1);             /* button 1 = CH9, not ENTER */
-    CHECK(WAIT_FOR(false, 1000, src[es].ch[2] == 1024 && src[es].ch[4] == -1024 && src[es].ch[8] == 1024));
+    CHECK(WAIT_FOR(false, 1000, src[es].ch[5] == 1024 && src[es].ch[4] == -1024 && src[es].ch[8] == 1024));
     run_for(false, 100);
     CHECK_INT(nkeys, 0);
   }

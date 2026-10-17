@@ -517,8 +517,11 @@ static void test_ble_radio(void) {
     CHECK(!src[s].fixed_aetr);
     CHECK_INT(src[s].nch, 16);
     for (int i = 0; i < 7; i++) CHECK_INT(src[s].ch[i], 0);
-    /* X=CH1 Y=CH2 RX=CH3 RY=CH4 Z=CH5 RZ=CH6 slider=CH7 */
-    static const int ax[7] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_THROTTLE };
+    /* ELRS 4.x ("ELRS Joystick", ESP32-BLE-Gamepad 0.7.4): X=CH1 Y=CH2 RY=CH3 RZ=CH4 Z=CH5 RX=CH6 slider=CH7;
+     * ELRS 3.x ("ExpressLRS Joystick", 0.5.2): X=CH1 Y=CH2 RX=CH3 RY=CH4 Z=CH5 RZ=CH6 slider=CH7 */
+    static const int ax4[7] = { ABS_X, ABS_Y, ABS_RY, ABS_RZ, ABS_Z, ABS_RX, ABS_THROTTLE };
+    static const int ax3[7] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_THROTTLE };
+    const int *ax = n == 0 ? ax4 : ax3;
     for (int i = 0; i < 7; i++) {
       absv(e, id, ax[i], 32767);
       poll_e(e, false);
@@ -530,6 +533,17 @@ static void test_ble_radio(void) {
     absv(e, id, ABS_X, 16384 + 300);       /* no dead zone */
     poll_e(e, false);
     CHECK_INT(src[s].ch[0], 18);              /* 18.78 */
+    /* a real ELRS 4.x module at rest (seen on a Pi): X, Y centred, Z 0, RX 32767, RY 19, RZ centred
+     * = sticks centred, throttle low, CH5 low, CH6 high */
+    if (n == 0) {
+      absv(e, id, ABS_X, 16384); absv(e, id, ABS_Y, 16384); absv(e, id, ABS_Z, 0);
+      absv(e, id, ABS_RX, 32767); absv(e, id, ABS_RY, 19); absv(e, id, ABS_RZ, 16384);
+      poll_e(e, false);
+      CHECK_INT(src[s].ch[0], 0); CHECK_INT(src[s].ch[1], 0); CHECK_INT(src[s].ch[3], 0);
+      CHECK(src[s].ch[2] <= -1020);           /* throttle low */
+      CHECK_INT(src[s].ch[4], -1024);
+      CHECK_INT(src[s].ch[5], 1024);
+    }
     /* buttons 1-8 = CH9-CH16 and never events (BTN_SOUTH is no ENTER here) */
     for (int b = 0; b < 8; b++) CHECK_INT(src[s].ch[8 + b], -1024);
     keyv(e, id, BTN_SOUTH, 1);
@@ -545,7 +559,7 @@ static void test_ble_radio(void) {
     CHECK_INT(src[s].ch[8], -1024);
     evdev_close(e);
   }
-  /* a second slider shows up as the next code: CH8 */
+  /* a second slider: current kernels drop it (a duplicate usage), older ones gave it the next code: CH8 */
   evdev_t *e = open_e();
   evdev_caps_t c = dev_elrs("ELRS Joystick");
   cap_abs(&c, ABS_RUDDER, 0, 32767, 0);
@@ -567,10 +581,11 @@ static void test_ble_radio(void) {
   s = slot_named("ELRS Joystick");
   if (s >= 0) CHECK_INT(src[s].ch[7], 1024);
   evdev_close(e);
-  /* a Bluetooth joystick that is no gamepad, buttons in the joystick range */
+  /* a Bluetooth joystick that is no gamepad, buttons in the joystick range: read like ELRS 4.x */
   e = open_e();
   c = caps("BT Flight Stick", BUS_BLUETOOTH);
   cap_abs(&c, ABS_X, -127, 127, 0); cap_abs(&c, ABS_Y, -127, 127, 0); cap_abs(&c, ABS_RX, -127, 127, 0);
+  cap_abs(&c, ABS_RY, -127, 127, 0);
   cap_keys(&c, BTN_TRIGGER, BTN_TRIGGER + 1);
   id = evdev_add_virtual(e, &c);
   poll_e(e, false);
@@ -580,9 +595,11 @@ static void test_ble_radio(void) {
     CHECK_INT(src[s].kind, INSRC_BLUETOOTH);
     CHECK_INT(src[s].nch, 10);
     absv(e, id, ABS_RX, 127);
+    absv(e, id, ABS_RY, -127);
     keyv(e, id, BTN_TRIGGER + 1, 1);
     poll_e(e, false);
-    CHECK_INT(src[s].ch[2], 1024);
+    CHECK_INT(src[s].ch[5], 1024);
+    CHECK_INT(src[s].ch[2], -1024);
     CHECK_INT(src[s].ch[9], 1024);
   }
   evdev_close(e);

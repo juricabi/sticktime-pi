@@ -86,6 +86,7 @@
         <div class="tile"><span class="tile-k">Game</span><span class="tile-v"><b class="word" data-f="state">–</b></span><span class="tile-s" data-f="gameLine"></span></div>
         <div class="tile"><span class="tile-k">Sticks</span><span class="tile-v"><b data-f="inputKind">–</b><small data-f="inputRate"></small></span><span class="tile-s" data-f="inputName"></span></div>
       </div>
+      <div class="alert warn input-warn" id="inputWarnStatus" role="status" hidden><svg class="i"><use href="#i-warn"/></svg><div><span class="input-warn-text"></span> <button class="btn sm" type="button" data-action="input-auto">Use auto</button></div></div>
       <div class="grid2">
         <section class="card" aria-labelledby="h-screen">
           <div class="card-head"><h2 id="h-screen">Screen</h2><button class="btn sm" type="button" id="shotBtn"><svg class="i"><use href="#i-refresh"/></svg>Refresh</button></div>
@@ -155,6 +156,7 @@
     <!-- ============================================================ Sticks -->
     <section class="page" id="p-sticks" data-page="sticks" aria-labelledby="h-sticks" hidden>
       <header class="page-head"><h1 id="h-sticks" tabindex="-1">Sticks</h1><p class="lead">Your radio's sticks as the Pi sees them. Move them: the bars follow.</p></header>
+      <div class="alert warn input-warn" id="inputWarnSticks" role="status" hidden><svg class="i"><use href="#i-warn"/></svg><div><span class="input-warn-text"></span> <button class="btn sm" type="button" data-action="input-auto">Use auto</button></div></div>
       <section class="card" aria-labelledby="h-mixed">
         <div class="card-head"><h2 id="h-mixed">What the game gets</h2><span class="pill" id="liveSrc">–</span></div>
         <div class="mixed">
@@ -168,7 +170,7 @@
       <div id="srcCards"></div>
       <section class="card" aria-labelledby="h-stickset">
         <h2 id="h-stickset">Settings</h2>
-        <form class="settings" data-form="sticks" data-keys="input,channel_order,invert,pause_channel,stick_menus,stick_mode,wifi_module_ip,wifi_interval_us,bluetooth" novalidate></form>
+        <form class="settings" data-form="sticks" data-keys="input,channel_order,stick_channels,invert,pause_channel,stick_menus,stick_mode,wifi_module_ip,wifi_interval_us,bluetooth" novalidate></form>
       </section>
       <section class="card" aria-labelledby="h-modap">
         <h2 id="h-modap">Join the module's WiFi</h2>
@@ -192,7 +194,7 @@
         <h2 id="h-vset">Settings</h2>
         <form class="settings" data-form="video" data-keys="video,tv,aspect,av_mode,hdmi_mode,margin,fonts,show_ip" novalidate></form>
         <ul class="explain">
-          <li><span class="flag reboot">after reboot</span> AV ↔ HDMI and the TV standard: the Pi 4 sets up its video output when it starts. Save, then Reboot now (about 30 s; it may restart once more by itself to switch the output).</li>
+          <li><span class="flag reboot">after reboot</span> AV ↔ HDMI and the TV standard: the Pi sets up its video output when it starts. Save, then Reboot now (about 30 s; it may restart once more by itself to switch the output).</li>
           <li><span class="flag restart">restarts the game</span> Shape, progressive, HDMI mode, border and text size: the game restarts in a second or two.</li>
           <li><span class="flag live">at once</span> The rest applies while you fly.</li>
         </ul>

@@ -20,6 +20,7 @@
   X("hotspot_password", SK_SECRET, "sticktime",   "",                                                  false, false, "Hotspot password (8-63 characters)") \
   X("input",            SK_ENUM,   "auto",        "auto|wifi|usb|bluetooth|gamepad|joystick|keyboard", true,  false, "Stick source: auto (the last one that moved) or a fixed one") \
   X("channel_order",    SK_STRING, "AETR",        "",                                                  true,  false, "Which channels are aileron, elevator, throttle, rudder") \
+  X("stick_channels",   SK_STRING, "",            "",                                                  true,  false, "Channel of each stick: aileron, elevator, throttle, yaw, e.g. 1 2 3 4 (empty: the channel order)") \
   X("invert",           SK_STRING, "",            "",                                                  true,  false, "Sticks to invert, e.g. ail, thr") \
   X("pause_channel",    SK_INT,    "5",           "0|16",                                              true,  false, "Switch channel that pauses the game in flight (0 = off)") \
   X("stick_menus",      SK_BOOL,   "on",          "",                                                  true,  false, "Fly the menus with the sticks") \
@@ -96,6 +97,9 @@
 "input = auto\n" \
 "# which channels are aileron, elevator, throttle, rudder: AETR, TAER, ...\n" \
 "channel_order = AETR\n" \
+"# or the channel of each stick (CH1-CH16): aileron elevator throttle yaw, e.g. 1 2 3 4\n" \
+"# (empty: channel_order decides; gamepads and the keyboard keep their own layout)\n" \
+"stick_channels =\n" \
 "# sticks to invert, e.g.: ail, thr\n" \
 "invert =\n" \
 "# switch channel that pauses the game in flight (0 = off)\n" \

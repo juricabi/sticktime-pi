@@ -40,6 +40,7 @@ jobs:
     outputs:
       ver: ${{ steps.ver.outputs.ver }}
       label: ${{ steps.ver.outputs.label }}
+      next: ${{ steps.bin.outputs.next }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -62,55 +63,31 @@ jobs:
         run: |
           curl -fsSL --retry 5 "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" | tar -xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
-      - name: Build the Pi binary
+      - name: Build the Pi binary (and a newer one for the boot test's update check)
+        id: bin
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
-          VERSION=${{ steps.ver.outputs.ver }} CC="zig cc" host/build.sh aarch64 prog
+          # the update check installs a binary with a higher version from a fake GitHub, then rolls back
+          NEXT=$(python3 -c "import sys; p=sys.argv[1].split('.'); p=p+['1'] if len(p)<4 else p[:-1]+[str(int(p[-1])+1)]; print('.'.join(p))" "$VER")
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          VERSION=$NEXT CC="zig cc" host/build.sh aarch64 prog
+          mkdir -p next && cp build/aarch64-edgetx/sticktime-pi next/sticktime-pi
+          rm -f build/aarch64-edgetx/obj/src/app.o build/aarch64-edgetx/obj/src/main.o   # the version is compiled into these
+          VERSION=$VER CC="zig cc" host/build.sh aarch64 prog
           file build/aarch64-edgetx/sticktime-pi | tee /dev/stderr | grep -q 'ARM aarch64.*statically linked'
       - name: Package sticktime-pi-app-${{ steps.ver.outputs.ver }}.tar.gz
         env:
           VER: ${{ steps.ver.outputs.ver }}
         run: |
-          mkdir -p dist
-          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) python3 - <<'PY'
-          import hashlib, io, os, sys, tarfile
-          sys.path.insert(0, "image/rootfs/usr/lib/sticktime")
-          from stupdate import app          # the updater's own checks decide what the package may hold
-          ver, mtime = os.environ["VER"], int(os.environ["SOURCE_DATE_EPOCH"])
-          files = {"bin/sticktime-pi": open("build/aarch64-edgetx/sticktime-pi", "rb").read()}
-          for d, _dirs, names in os.walk("web"):
-              rel = d.replace(os.sep, "/")
-              if rel == "web/tests" or rel.startswith("web/tests/") or "__pycache__" in rel:
-                  continue                       # the web UI's own tests stay in the repo
-              for n in names:
-                  if not n.startswith("."):
-                      p = rel + "/" + n
-                      files[p] = open(p, "rb").read()
-          # fonts/ only when the updater installs it (app.TOP_DIRS); the image carries them anyway
-          if "fonts" in app.TOP_DIRS:
-              for n in sorted(os.listdir("host/fonts")):
-                  files["fonts/" + n] = open("host/fonts/" + n, "rb").read()
-          files["VERSION"] = (ver + "\n").encode()
-          sums = "".join(f"{hashlib.sha256(b).hexdigest()}  {p}\n" for p, b in sorted(files.items()))
-          files["SHA256SUMS"] = sums.encode()
-          out = f"dist/sticktime-pi-app-{ver}.tar.gz"
-          buf = io.BytesIO()
-          with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.USTAR_FORMAT) as tf:
-              for p, b in sorted(files.items()):
-                  ti = tarfile.TarInfo(p)
-                  ti.size, ti.mtime, ti.uid, ti.gid, ti.uname, ti.gname = len(b), mtime, 0, 0, "root", "root"
-                  ti.mode = 0o755 if p.startswith("bin/") else 0o644
-                  tf.addfile(ti, io.BytesIO(b))
-          data = buf.getvalue()
-          pkg = app.validate_app_tar(data, ver)             # raises when the updater would refuse it
-          open(out, "wb").write(data)
-          print(f"{out}: {len(data)} bytes, {len(pkg.files)} files, accepted by the updater")
-          PY
-          (cd dist && sha256sum sticktime-pi-app-*.tar.gz > sticktime-pi-app-$VER.tar.gz.sha256)
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) python3 tools/make_app_package.py \
+            --bin build/aarch64-edgetx/sticktime-pi --ver "$VER" --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: app
           path: |
             build/aarch64-edgetx/sticktime-pi
+            next/sticktime-pi
             dist/*
           if-no-files-found: error
 
@@ -122,6 +99,7 @@ jobs:
     env:
       VER: ${{ needs.app.outputs.ver }}
       LABEL: ${{ needs.app.outputs.label }}
+      NEXT: ${{ needs.app.outputs.next }}
       WORKDIR: /mnt/sticktime-work
     steps:
       - uses: actions/checkout@v4
@@ -186,6 +164,7 @@ jobs:
         if: inputs.boot_test != 'skip'
         run: |
           python3 image/test/boot_test.py out/sticktime-pi-$LABEL.img.xz --work "$WORKDIR/boot" \
+            --update-bin app/next/sticktime-pi --update-ver "$NEXT" \
             ${{ inputs.boot_test == 'quick' && '--quick' || '' }}
       - name: Boot test logs
         if: always() && inputs.boot_test != 'skip'
