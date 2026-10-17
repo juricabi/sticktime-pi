@@ -101,7 +101,7 @@ for f in $LUA_SRC; do LUA_OBJ="$LUA_OBJ $OUT/obj/lua/$f.o"; done
 SRC_OBJ=""
 for f in $SRC; do [ -f "$OUT/obj/src/$f.o" ] && [ "$f" != main ] && SRC_OBJ="$SRC_OBJ $OUT/obj/src/$f.o"; done
 
-if [ "$WHAT" != tests ] && [ "$WHAT" != test ] && [ -f "$HERE/src/main.c" ]; then
+if [ "$WHAT" != tests ] && [ -f "$HERE/src/main.c" ]; then
   add "$HERE/src/main.c" "$OUT/obj/src/main.o" "$WARN" h
   if [ ! -f "$OUT/obj/src/main.o" ] || [ "$HERE/src/main.c" -nt "$OUT/obj/src/main.o" ] || [ "$NEWEST_H" -nt "$OUT/obj/src/main.o" ]; then
     echo "  CC main.c"; $CC $CFLAGS $WARN -c "$HERE/src/main.c" -o "$OUT/obj/src/main.o"

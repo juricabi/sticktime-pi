@@ -699,7 +699,8 @@
   $('#fileSave').addEventListener('click', () => download('sticktime.txt', $('#fileText').value));
   $('#fileReset').addEventListener('click', () => { renderFile(true); $('#fileErr').hidden = true; });
   $('#fileApply').addEventListener('click', async () => {
-    const now = parseSettings($('#fileText').value), todo = [];
+    const applied = $('#fileText').value;
+    const now = parseSettings(applied), todo = [];
     for (const [key, v] of now) {
       const k = S.byKey.get(key);
       if (key.endsWith('_set') && SECRET(S.byKey.get(key.slice(0, -4)))) continue;
@@ -717,7 +718,8 @@
       busy(btn, false);
       fileShown = '';
       if (!(r && r.restart)) await loadSettings();
-      renderFile(true);
+      if ($('#fileText').value === applied) renderFile(true);
+      else fileShown = settingsText();          // typed on while it saved: keep that (it shows as an edit)
       saved(r || {}, todo.map(([k]) => k), sent);
     } catch (e) {
       busy(btn, false);

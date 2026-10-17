@@ -189,6 +189,24 @@ class RealServerTest(unittest.TestCase):
         self.page.click(f'#tabs a[data-page="{name}"]')
         self.page.wait_for_selector(f"#p-{name}", state="visible")
 
+    def server_side(self, tab):
+        """what the server says, for a failure message: the tab's API answer and the end of its log"""
+        import http.client
+        out = []
+        for path in {"system": ["/api/system", "/api/log"]}.get(tab, ["/api/status"]):
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+                c.request("GET", path, headers={"Host": f"{HOST}:{self.port}"})
+                r = c.getresponse()
+                out.append(f"GET {path}: {r.status} {r.read()[:600]!r}")
+            except Exception as e:
+                out.append(f"GET {path}: {e!r}")
+        try:
+            out.append("server.log: " + (self.base / "server.log").read_text(errors="replace")[-3000:])
+        except OSError as e:
+            out.append(f"server.log: {e}")
+        return "\n".join(out)
+
     def events(self):
         try:
             return (self.base / "state" / "events.log").read_text().splitlines()
@@ -237,7 +255,7 @@ class RealServerTest(unittest.TestCase):
             try:
                 p.wait_for_function(cond, timeout=10000)
             except Exception as e:
-                raise AssertionError(f"the {t} tab didn't load ({cond}): {e}") from None
+                raise AssertionError(f"the {t} tab didn't load ({cond}): {e}\n{self.server_side(t)}") from None
             got = p.evaluate("(t) => stp.forms.filter((f) => f.spec !== '*' && f.el.closest('.page').dataset.page === t).map((f) => [f.spec, [...f.fields.keys()].join(',')])", t)
             for spec, keys in got:
                 self.assertEqual(keys, spec, f"{t}: every key of the form is in the server's metadata")
@@ -254,7 +272,10 @@ class RealServerTest(unittest.TestCase):
         p.wait_for_function("document.querySelectorAll('#netList li').length === 2", timeout=10000)
         self.assertEqual(p.eval_on_selector_all("#netList .ssid", "els => els.map((e) => e.textContent)"), ["Home", 'Café "<b>"'])
         self.tab("system")
-        self.assertIn("not a Pi", p.inner_text("[data-s=os]"))
+        if WIN:
+            self.assertIn("not a Pi", p.inner_text("[data-s=os]"))
+        else:
+            self.assertNotEqual(p.inner_text("[data-s=os]"), "–", "the OS from /etc/os-release")
         txt = p.input_value("#fileText")
         self.assertIn("# wifi_password is set", txt)
         self.assertNotIn("secret-pass-123", p.content())
