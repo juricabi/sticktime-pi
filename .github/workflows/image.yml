@@ -162,6 +162,7 @@ jobs:
           ls -la out
       - name: Boot test (QEMU raspi3b)
         if: inputs.boot_test != 'skip'
+        timeout-minutes: 90             # usually 7-15; a hung guest must not hold the job for hours
         run: |
           python3 image/test/boot_test.py out/sticktime-pi-$LABEL.img.xz --work "$WORKDIR/boot" \
             --update-bin app/next/sticktime-pi --update-ver "$NEXT" \

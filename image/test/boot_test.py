@@ -813,8 +813,11 @@ class BootTest:
             gh.stop()
 
     def guest_checks_first(self):
+        """False when the login fails: every later command would only be typed into the login prompt"""
         c, pw = self.console, self.password
-        self.check("serial login as pi with the password from sticktime.txt", c.login("pi", pw))
+        if not self.check("serial login as pi with the password from sticktime.txt", c.login("pi", pw)):
+            self.tail_log(len(self.boots))
+            return False
         c.sudo("dmesg -n 1", pw)                    # no kernel messages between our command outputs
         rc, out = self.sh("hostname")
         self.check("hostname from sticktime.txt", out.strip() == CI_HOST1, out)
@@ -920,6 +923,7 @@ class BootTest:
         rc, out = self.sh("systemd-analyze time; systemd-analyze blame --no-pager | head -n 15")
         self.info("systemd-analyze (first boot)", out)
         self.screenshot("first-boot")
+        return True
 
     def screenshot(self, name):
         ppm = os.path.join(self.work, f"screen-{name}.ppm").replace(os.sep, "/")
@@ -980,8 +984,7 @@ class BootTest:
                 return self.finish(started)
             self.check("boot 1: sticktime-setup marker", "setup_s" in t, t.get("setup_line", ""))
             self.check("boot 1: no failed units at ready", "failed=none" in t.get("ready_line", ""), t.get("ready_line", ""))
-            self.guest_checks_first()
-            if self.a.quick:
+            if not self.guest_checks_first() or self.a.quick:
                 return self.finish(started)
             # ---- boot 2: video change -> setup rewrites config.txt and reboots once
             self.check("settings edited for boot 2 (hostname, video = hdmi)",
@@ -999,7 +1002,9 @@ class BootTest:
             self.check("boot 3: ready without another setup reboot", "ready_s" in t and t.get("setup_reboot") is False, t)
             if "ready_s" in t or t.get("ready_missing"):
                 c, pw = self.console, self.password
-                self.check("boot 3: serial login", c.login("pi", pw))
+                if not self.check("boot 3: serial login", c.login("pi", pw)):
+                    self.tail_log(3)
+                    return self.finish(started)
                 c.sudo("dmesg -n 1", pw)
                 rc, out = self.sh("hostname")
                 self.check("boot 3: new hostname applied", out.strip() == CI_HOST2, out)
@@ -1017,8 +1022,9 @@ class BootTest:
                 self.launch(4, first=False)
                 t = self.wait_boot(4)
                 if self.check("boot 4: ready", "ready_s" in t, t) or t.get("ready_missing"):
-                    rc_ok = self.console.login("pi", pw)
-                    self.check("boot 4: serial login", rc_ok)
+                    if not self.check("boot 4: serial login", self.console.login("pi", pw)):
+                        self.tail_log(4)
+                        return self.finish(started)
                     rc, out = self.sh("systemctl is-enabled ssh.service; systemctl is-active ssh.service")
                     self.check("boot 4: ssh disabled and stopped", out.split()[:2] == ["disabled", "inactive"], out)
                     banner = ssh_banner(self.ssh_port, 5)

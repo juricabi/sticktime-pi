@@ -20,8 +20,9 @@ Before=shutdown.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/lib/sticktime/sticktime-setup boot
-# a broken step must never hold up the boot for long (each command has its own timeout too)
-TimeoutStartSec=3min
+# a broken step must not hold up the boot forever (each command has its own timeout too). On a Pi it
+# takes seconds; the emulated first boot in CI (QEMU on a slow runner) has needed more than 3 minutes
+TimeoutStartSec=10min
 StandardOutput=journal
 StandardError=journal
 
