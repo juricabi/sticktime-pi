@@ -360,7 +360,7 @@ class UiTest(unittest.TestCase):
         self.save("updates")
         self.until(lambda: len(self.posts("/api/settings")) == 2)
         self.assertEqual(self.posts("/api/settings")[1]["body"], b"github_token = ghp_secret123\n")
-        p.wait_for_selector(f"{gt} .state:has-text('Set')")
+        p.wait_for_selector(f"{gt} .state:text-is('Set')")            # has-text would match "Not set" too
         self.assertTrue(p.is_hidden("#f-updates-github_token"))
         self.assertNotIn("ghp_secret123", p.content())
         # Change, then Cancel: nothing to save; an empty change isn't sent either
@@ -756,8 +756,9 @@ class UiTest(unittest.TestCase):
         p.wait_for_function("document.getElementById('fileText').value.includes('tv = pal')")
         self.net_errors_ok = True
         p.fill("#fileText", p.input_value("#fileText").replace("margin = 0", "margin = 99"))
+        self.assertIn("margin = 99", p.input_value("#fileText"), "the edit is in the box")
         p.click("#fileApply")
-        p.wait_for_selector("#fileErr:has-text('margin: must be 0 to 20')")
+        p.wait_for_selector("#fileErr:has-text('margin: must be 0 to 20')", timeout=10000)
         self.assertEqual(self.pi.value("margin"), "0")
         p.click("#fileReset")
         self.assertIn("margin = 0", p.input_value("#fileText"))

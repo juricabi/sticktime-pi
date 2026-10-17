@@ -234,7 +234,10 @@ class RealServerTest(unittest.TestCase):
         }
         for t, cond in loaded.items():
             self.tab(t)
-            p.wait_for_function(cond, timeout=10000)
+            try:
+                p.wait_for_function(cond, timeout=10000)
+            except Exception as e:
+                raise AssertionError(f"the {t} tab didn't load ({cond}): {e}") from None
             got = p.evaluate("(t) => stp.forms.filter((f) => f.spec !== '*' && f.el.closest('.page').dataset.page === t).map((f) => [f.spec, [...f.fields.keys()].join(',')])", t)
             for spec, keys in got:
                 self.assertEqual(keys, spec, f"{t}: every key of the form is in the server's metadata")

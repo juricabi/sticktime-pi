@@ -1246,7 +1246,9 @@ static void test_tty_line(void) {
   if (!io) { close(m); return; }
   CHECK_INT(io->open(io, err, sizeof err), 0);
   CHECK_INT(io->set_line(io, 4800, 2), 0);
-  int s = open(ptsname(m), O_RDWR | O_NOCTTY);           /* look at the slave's settings from outside */
+  /* look at the line's settings from outside: termios ioctls on the master act on the slave (tty_mode_ioctl),
+   * and opening the slave again would fail for non-root users (the transport holds TIOCEXCL) */
+  int s = dup(m);
   struct termios tio;
   if (s >= 0 && tcgetattr(s, &tio) == 0) {
     CHECK(tio.c_cflag & CSTOPB);

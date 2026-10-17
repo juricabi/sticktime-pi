@@ -129,7 +129,7 @@ jobs:
         with: { python-version: "3.12" }
       - name: Playwright
         run: |
-          python -m pip install --quiet playwright
+          python -m pip install --quiet playwright==1.49.1    # the version the tests are checked with
           python -m playwright install --with-deps chromium
       - name: Build the real web server test program
         working-directory: sticktime-pi
