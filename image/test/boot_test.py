@@ -732,6 +732,11 @@ class BootTest:
         return t
 
     # ---- checks over the console
+    def login(self):
+        # -icount (after QEMU's SD controller flaked) can keep the console busy with boot messages for
+        # minutes after 'ready'
+        return self.console.login("pi", self.password, timeout=600 if self.icount else 180)
+
     def sh(self, cmd, timeout=60):
         rc, out = self.console.run(cmd, timeout)
         return rc, out
@@ -815,7 +820,7 @@ class BootTest:
     def guest_checks_first(self):
         """False when the login fails: every later command would only be typed into the login prompt"""
         c, pw = self.console, self.password
-        if not self.check("serial login as pi with the password from sticktime.txt", c.login("pi", pw)):
+        if not self.check("serial login as pi with the password from sticktime.txt", self.login()):
             self.tail_log(len(self.boots))
             return False
         c.sudo("dmesg -n 1", pw)                    # no kernel messages between our command outputs
@@ -1002,7 +1007,7 @@ class BootTest:
             self.check("boot 3: ready without another setup reboot", "ready_s" in t and t.get("setup_reboot") is False, t)
             if "ready_s" in t or t.get("ready_missing"):
                 c, pw = self.console, self.password
-                if not self.check("boot 3: serial login", c.login("pi", pw)):
+                if not self.check("boot 3: serial login", self.login()):
                     self.tail_log(3)
                     return self.finish(started)
                 c.sudo("dmesg -n 1", pw)
@@ -1022,7 +1027,7 @@ class BootTest:
                 self.launch(4, first=False)
                 t = self.wait_boot(4)
                 if self.check("boot 4: ready", "ready_s" in t, t) or t.get("ready_missing"):
-                    if not self.check("boot 4: serial login", self.console.login("pi", pw)):
+                    if not self.check("boot 4: serial login", self.login()):
                         self.tail_log(4)
                         return self.finish(started)
                     rc, out = self.sh("systemctl is-enabled ssh.service; systemctl is-active ssh.service")
