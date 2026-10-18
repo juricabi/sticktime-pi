@@ -116,6 +116,7 @@ typedef struct host {
   int64_t last_publish_us;
   int64_t last_flip_us;
   int64_t now_us;              /* the time of the current frame (real or virtual) */
+  int64_t frame_dt_us;         /* display time from the last frame to this one (STICKTIME_DT); 0: unknown */
   uint32_t video_missed_seen;
   bool quit;                   /* APP_CMD_QUIT seen */
   char err[512];

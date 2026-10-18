@@ -94,6 +94,23 @@ The main menu shows the web address at the bottom for a minute (`http://192.168.
 - **Keyboard**: arrows, Enter, Esc; fly with arrows (pitch/roll), A/D (yaw), W/S (throttle), Shift = full.
 - **Gamepad**: mode 2 layout (change `stick_mode`), A = select, B/Start = back/pause.
 
+### Easy on the eyes in goggles
+
+Analog video smears strong colors, turns fine detail into rainbows, and the screen sits right in front of your
+eyes. What helps:
+
+- **Settings → Colors** (StickTime releases after 1.8.0): **Auto** is **Summer** on the AV output and
+  **Classic** (the radio's bright colors) on HDMI. **Summer**, **Evening** and **Overcast** have a natural sky
+  that fades into the haze at the horizon, duller grass, and calmer object and text colors: the next gate is
+  the brightest thing in view. Overcast is the softest.
+- On the AV output the text has a black outline (like Betaflight's OSD), readable over sky and grass alike.
+- Thin lines and text flicker on interlaced video (480i / 576i). If your goggles take it, `av_mode = progressive`
+  (240p / 288p: half the lines, but no flicker).
+- `tv = ntsc` (or `pal60`) refreshes at 60 Hz: a little less delay and smoother than PAL's 50 Hz. Most analog
+  goggles show both. PAL has more lines, so slightly sharper text.
+- Blacks grey, or dark areas crushed? Switch between `tv = ntsc` and `tv = ntsc-j` (the same signal without
+  NTSC's 7.5 % black level step).
+
 ### The three editions
 
 The Pi has all three editions of StickTime, the same as on a radio:
@@ -320,6 +337,7 @@ more only overloads the goggles' receiver. Never run a VTX without its antenna.
 |---|---|
 | No picture in the goggles | Check the cable (video on the sleeve), the VTX channel and power. `video = av` in sticktime.txt. Some goggles want `tv = pal`. With HDMI plugged in at boot, use `video = hdmi`. |
 | Picture cut off at the edges | `margin = 5` (percent). |
+| Hard on the eyes, colors smear, thin lines shimmer | The game's Settings → Colors: Summer, Evening or Overcast; `av_mode = progressive` (see [Easy on the eyes in goggles](#easy-on-the-eyes-in-goggles)). |
 | Wrong shape | `aspect = 16:9` or `4:3`. |
 | Can't find the web page | Look at the bottom of the main menu for the address. Phones on mobile data: turn it off. On the hotspot: http://10.42.0.1. |
 | WiFi joystick not found | Same 2.4 GHz network; some routers isolate clients (turn "AP isolation" off) or block broadcasts (set `wifi_module_ip`). One client per module. |

@@ -14,7 +14,7 @@
  *   shot(name)                 write <png-dir>/<name>.png of the current frame
  *   pixel(x, y)                RGB565 of a pixel;  hash()  FNV-1a hash of the frame
  *   err()                      the game's error text, or nil
- *   reload()                   reload the game now
+ *   reload([av])               reload the game now; av: as if on analog video (STICKTIME_AV) or not
  *   setting(key, value)        change sticktime.txt and apply it (live keys)
  *   sd_write(path, text), sd_read(path), sd_remove(path)   the game's SD folder (SD paths)
  *   stats()                    {frames=, run_avg_ms=, run_max_ms=, lua_kb=}

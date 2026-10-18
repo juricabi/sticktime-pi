@@ -157,6 +157,7 @@ static int device_loop(host_t *h, int max_frames) {
   if (period <= 0) period = 16667;
   pc.budget_us = period / 3;
   int64_t sample = plat_now_us();
+  int64_t last_deadline = 0;
   int frames = 0;
   while (!*quit && !h->quit && (!max_frames || frames < max_frames)) {
     bool missed = false;
@@ -175,8 +176,14 @@ static int device_loop(host_t *h, int max_frames) {
     /* the video module recovers lost displays itself and keeps a software clock meanwhile;
      * the deadline is the latest time to queue a frame for the coming refresh */
     int64_t now = plat_now_us();
-    int64_t start = video_deadline_us(h->video, now) - pc.budget_us;
+    int64_t deadline = video_deadline_us(h->video, now);
+    int64_t start = deadline - pc.budget_us;
     if (start > now && start - now < 2 * period) plat_sleep_until_us(start);
+    /* the frame shows at the refresh after its deadline: the game steps from the last frame's
+     * refresh to this one's (usually one period; two after a missed one) */
+    int64_t dt = deadline - last_deadline;
+    h->frame_dt_us = !last_deadline || dt <= 0 ? period : dt < 1000000 ? dt : 1000000;
+    last_deadline = deadline;
     sample = plat_now_us();
     host_frame(h, sample);
     host_present(h);

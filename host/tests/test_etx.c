@@ -829,6 +829,11 @@ static void test_globals(void) {
   etx_t *e = open_etx(&L640, &c, 0);
   CHECK_INT(etx_test_call(e, "lat", NULL, 0, v, 3), 3);
   CHECK(v[0] == 0 && v[1] == 1 && v[2] == 0);              /* STICKTIME_LAT = 0 (an integer) */
+  CHECK_INT(etx_test_call(e, "av", NULL, 0, v, 2), 2);
+  CHECK(v[0] == 0 && isnan(v[1]));                          /* no STICKTIME_AV, no STICKTIME_DT */
+  etx_set_global_number(e, "STICKTIME_DT", 16.683);
+  CHECK_INT(etx_test_call(e, "av", NULL, 0, v, 2), 2);
+  CHECK_NEAR(v[1], 16.683, 1e-6);
   CHECK_INT(etx_test_call(e, "touch", NULL, 0, v, 1), 1);
   CHECK_INT(v[0], 0x1004);
   CHECK_INT(etx_test_call(e, "size", NULL, 0, v, 2), 2);
@@ -859,7 +864,10 @@ static void test_globals(void) {
 
   c.lat = 0.0183;
   c.no_touch = true;
+  c.av = true;
   e = open_etx(&L640, &c, 0);
+  CHECK_INT(etx_test_call(e, "av", NULL, 0, v, 2), 2);
+  CHECK_INT(v[0], 1);                                       /* STICKTIME_AV = true before the script ran */
   CHECK_INT(etx_test_call(e, "lat", NULL, 0, v, 3), 3);
   CHECK_NEAR(v[0], 0.0183, 1e-6);
   CHECK(v[1] == 0 && v[2] == 0);
@@ -869,6 +877,7 @@ static void test_globals(void) {
 
   c.lat = -1;
   c.no_touch = false;
+  c.av = false;
   e = open_etx(&L640, &c, 0);
   CHECK_INT(etx_test_call(e, "lat", NULL, 0, v, 3), 3);
   CHECK(isnan(v[0]) && v[2] == 1);

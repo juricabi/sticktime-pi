@@ -1235,6 +1235,10 @@ static int setup_state(lua_State *L) {
     push_num(L, e->cfg.lat);
     lua_setglobal(L, "STICKTIME_LAT");
   }
+  if (e->cfg.av) {
+    lua_pushboolean(L, 1);
+    lua_setglobal(L, "STICKTIME_AV");
+  }
 
   luaL_newlib(L, LCD_FUNCS);
   lua_setglobal(L, "lcd");
