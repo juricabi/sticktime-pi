@@ -1330,6 +1330,22 @@ static void test_none_backend(void) {
   video_close(v);
 }
 
+/* STICKTIME_DT from the deadlines: whole refresh periods */
+static void test_frame_dt(void) {
+  const int64_t P = 16683, t = 5000000;
+  CHECK_INT(video_frame_dt(t, 0, P), P);                       /* the first frame */
+  CHECK_INT(video_frame_dt(t + P, t, P), P);
+  CHECK_INT(video_frame_dt(t + P + 900, t, P), P);             /* the flip event's wakeup jitter */
+  CHECK_INT(video_frame_dt(t + P - 900, t, P), P);
+  CHECK_INT(video_frame_dt(t + P + 250, t, P), P);             /* the margin grew */
+  CHECK_INT(video_frame_dt(t + 2 * P + 500, t, P), 2 * P);     /* a missed refresh */
+  CHECK_INT(video_frame_dt(t + 3000, t, P), P);                /* the same refresh again */
+  CHECK_INT(video_frame_dt(t - P, t, P), P);                   /* back in time (a new phase) */
+  CHECK_INT(video_frame_dt(t + 5000000, t, P), 59 * P);        /* a stall: at most a second */
+  CHECK_INT(video_frame_dt(t + 20000, t, 20000), 20000);       /* PAL */
+  CHECK_INT(video_frame_dt(t + 16667, t, 0), 16667);           /* no period yet: 60 Hz */
+}
+
 static void test_dispatch(void) {
   video_config_t c;
   memset(&c, 0, sizeof c);
@@ -1399,6 +1415,7 @@ int main(void) {
   test_snapshot();
   test_png_backend();
   test_none_backend();
+  test_frame_dt();
   test_dispatch();
   rm_tree(tmpdir);
   T_DONE();

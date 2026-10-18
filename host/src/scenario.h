@@ -15,6 +15,8 @@
  *   pixel(x, y)                RGB565 of a pixel;  hash()  FNV-1a hash of the frame
  *   err()                      the game's error text, or nil
  *   reload([av])               reload the game now; av: as if on analog video (STICKTIME_AV) or not
+ *   frame_dt(on)               whether frames give the game their interval (STICKTIME_DT; default
+ *                              on, as on the Pi; off like a radio or the browser emulator)
  *   setting(key, value)        change sticktime.txt and apply it (live keys)
  *   sd_write(path, text), sd_read(path), sd_remove(path)   the game's SD folder (SD paths)
  *   stats()                    {frames=, run_avg_ms=, run_max_ms=, lua_kb=}

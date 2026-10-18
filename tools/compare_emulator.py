@@ -114,7 +114,9 @@ def web_render(size, outdir):
 
 
 def pi_render(binary, size, outdir):
-    lines = []
+    # no STICKTIME_DT, like the browser: the same simulation steps on both sides (the color game
+    # steps by the host's frame interval when it has one)
+    lines = ["frame_dt(false)"]
     for name, steps in SCENES.items():
         lines.append("reload()")
         lines.append("sticks(0, 0, -1024, 0)")

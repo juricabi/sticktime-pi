@@ -127,6 +127,11 @@ int64_t video_period_us(const video_t *v);
 /* Late latching: the latest time (plat_now_us clock) after now_us by which video_present() must
  * have queued a frame so it shows at the coming refresh (vblank phase - safety margin). */
 int64_t video_deadline_us(const video_t *v, int64_t now_us);
+/* The display time from the last frame to this one (the game's STICKTIME_DT): the distance between
+ * their deadlines in whole refresh periods, since the deadlines jitter with the flip event's wakeup
+ * and the adaptive margin while the refreshes don't. One period for the first frame (last 0) and
+ * for one paced for the same refresh; at most a second. */
+int64_t video_frame_dt(int64_t deadline_us, int64_t last_deadline_us, int64_t period_us);
 
 /* write the last presented frame as PNG (any backend; temp file + rename); 0 ok, -1 error */
 int  video_snapshot_png(const uint16_t *fb, int w, int h, const char *path);
