@@ -1,7 +1,9 @@
 -- globals the host sets
 local T = STICKTIME_TEST
+local av = STICKTIME_AV              -- read while the script loads, as the game does
 T.lat = function() return STICKTIME_LAT, math.type(STICKTIME_LAT) == "integer", STICKTIME_LAT == nil end
 T.tool = function() return TOOL_RUN_US, TOOL_SHOW_US, math.type(TOOL_RUN_US) == "integer" end
+T.av = function() return av == true and 1 or 0, STICKTIME_DT end
 T.touch = function() return EVT_TOUCH_TAP == nil and 0 or EVT_TOUCH_TAP end
 T.size = function() return LCD_W, LCD_H end
 T.draw = function() lcd.clear(RED) lcd.drawText(1, 1, "x") return lcd.sizeText("abc") end

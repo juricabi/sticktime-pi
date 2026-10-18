@@ -156,6 +156,11 @@ From `radio/src/usb_joystick.cpp` (EdgeTX main):
   - Camera prediction: `STICKTIME_LAT` (seconds) overrides the display-delay prediction. 0 turns it off.
     The web emulator's PC mode sets 0 because frames show at once. Set it to the measured
     sample-to-display time, or 0.
+  - After 1.8.0 (the color game): `STICKTIME_DT` (ms, read every frame) is the display interval, and the
+    simulation steps by it instead of the smoothed ticks (pulled 1 % a frame towards the tick clock).
+    `STICKTIME_AV = true` (read when the script loads): analog video. The HUD text gets a black outline
+    instead of the drop shadow, and Settings → Colors Auto is Summer (else Classic). The save keeps it as
+    `colors=` (0 Auto, 1 Classic, 2 Summer, 3 Evening, 4 Overcast).
 - Saves: `StickTime.dat`. Ghosts: `StickTimeGhosts/c<N>.txt` (5 KB, written when a lap sets a new ghost).
   Custom tracks: `StickTimeTracks/c1.txt..c8.txt` (tracks 9–16), read at start ("restart the game after adding one").
 

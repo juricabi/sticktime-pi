@@ -22,6 +22,7 @@ static int64_t vnow(void) { return S->now_us; }
 
 static void one_frame(double dt_ms) {
   S->now_us += (int64_t)(dt_ms * 1000.0);
+  S->h.frame_dt_us = (int64_t)(dt_ms * 1000.0 + 0.5);
   host_frame(&S->h, S->now_us);
   host_present(&S->h);
   int64_t period = (int64_t)(dt_ms * 1000.0);
@@ -154,6 +155,7 @@ static int l_err(lua_State *L) {
 }
 
 static int l_reload(lua_State *L) {
+  if (!lua_isnoneornil(L, 1)) S->h.ecfg.av = lua_toboolean(L, 1);
   lua_pushboolean(L, host_reload_game(&S->h) == 0);
   return 1;
 }

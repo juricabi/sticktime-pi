@@ -324,6 +324,7 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
   h->ecfg.sd_root = app->paths.sd;
   h->ecfg.test_hooks = true;
   h->ecfg.lat = -1;
+  h->ecfg.av = h->vinfo.composite;
   h->ecfg.async_writes = opt->async_writes;
   if (host_reload_game(h) != 0) note_error(h, h->now_us);
   h->hs.window_us = h->now_us;
@@ -486,6 +487,8 @@ void host_frame(host_t *h, int64_t now) {
   /* the game */
   etx_set_clock_ms(h->etx, (now - h->clock0_us) / 1000);
   etx_set_sticks(h->etx, h->sticks.ail, h->sticks.ele, h->sticks.thr, h->sticks.rud);
+  /* the color game steps its simulation by this instead of the 10 ms getTime() ticks: even steps at 60 Hz */
+  if (h->frame_dt_us > 0) etx_set_global_number(h->etx, "STICKTIME_DT", (double)h->frame_dt_us / 1000.0);
   if (settings_get_bool(h->set, "stats", false)) {
     etx_set_global_number(h->etx, "TOOL_RUN_US", (double)h->last_run_us);
     etx_set_global_number(h->etx, "TOOL_SHOW_US", (double)h->last_show_us);

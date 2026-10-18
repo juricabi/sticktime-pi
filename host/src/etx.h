@@ -43,6 +43,8 @@ typedef struct {
   const char *script;        /* SD path of the tool, e.g. "/SCRIPTS/TOOLS/StickTime.lua" */
   bool test_hooks;           /* define the global STICKTIME_TEST = {} before the script loads */
   double lat;                /* STICKTIME_LAT in seconds; < 0 leaves it undefined */
+  bool av;                   /* STICKTIME_AV = true before the script loads: the picture goes to analog
+                              * video (the color game outlines its HUD text, Colors Auto = Summer) */
   int stick_mode;            /* getStickMode(): 1..4 */
   bool async_writes;         /* io writes are handed to a writer thread at io.close (device) */
   /* (zero = default) */

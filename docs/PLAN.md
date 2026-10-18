@@ -59,6 +59,7 @@ per frame:
   sleep until  next_vblank − (render_p95 + margin)      ← "late latching": render just in time
   drain inputs (UDP, evdev) non-blocking                 ← the newest sample wins, no smoothing
   clock = monotonic ms → getTime() = clock / 10
+  STICKTIME_DT = display time from the last frame's refresh to this one's (ms)
   run(event)  → Lua draws into the RGB565 buffer
   copy/scale into the back dumb buffer (x-scale for non-square composite pixels)
   drmModePageFlip(event) → read flip event (vblank timestamp, sequence)
@@ -71,6 +72,10 @@ per frame:
   `performance` (set by the setup script), no swap.
 - Inputs: ask ELRS for `interval=4000` (250 Hz; configurable, ELRS allows ≥ 1000 µs). USB HID polls at 1 ms.
 - `STICKTIME_LAT`: try 0 first (frames show quickly), then the measured sample-to-mid-scanout time. Pick by feel and slow-motion video.
+- `STICKTIME_DT`: the color game (after 1.8.0) steps its simulation by it. From the 10 ms `getTime()` ticks
+  alone, 60 Hz frames step 0.6 ms unevenly on average and at times 3 ms (micro-judder in fast turns); with it
+  the steps are even. `STICKTIME_AV = true` (set before the script loads when the output is composite): the
+  game outlines its HUD text, and its Colors setting's Auto is the natural Summer look.
 - A latency test mode: a white box appears the frame a chosen channel crosses 50%. Film the stick and the goggles at 240 fps.
 
 ### 3.3 Video modes
