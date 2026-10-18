@@ -5,6 +5,7 @@
 #include "lua.h"
 #include "lualib.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@ typedef struct {
   host_t h;
   int64_t now_us;
   double dt_ms;
+  bool no_frame_dt;                      /* frame_dt(false): no STICKTIME_DT, like a radio */
   char png_dir[512];
 } scen_t;
 
@@ -21,11 +23,11 @@ static scen_t *S;
 static int64_t vnow(void) { return S->now_us; }
 
 static void one_frame(double dt_ms) {
-  S->now_us += (int64_t)(dt_ms * 1000.0);
-  S->h.frame_dt_us = (int64_t)(dt_ms * 1000.0 + 0.5);
+  int64_t period = llround(dt_ms * 1000.0);
+  S->now_us += period;
+  S->h.frame_dt_us = S->no_frame_dt ? 0 : period;
   host_frame(&S->h, S->now_us);
   host_present(&S->h);
-  int64_t period = (int64_t)(dt_ms * 1000.0);
   host_note_shown(&S->h, S->now_us + period, S->now_us, period);
   host_publish(&S->h, S->now_us);
   if (S->h.audio_offline) host_audio_offline(&S->h, dt_ms);
@@ -155,9 +157,18 @@ static int l_err(lua_State *L) {
 }
 
 static int l_reload(lua_State *L) {
-  if (!lua_isnoneornil(L, 1)) S->h.ecfg.av = lua_toboolean(L, 1);
+  if (!lua_isnoneornil(L, 1)) S->h.av_override = lua_toboolean(L, 1) ? 1 : -1;
   lua_pushboolean(L, host_reload_game(&S->h) == 0);
   return 1;
+}
+
+static int l_frame_dt(lua_State *L) {
+  S->no_frame_dt = !lua_toboolean(L, 1);
+  if (S->no_frame_dt) {
+    S->h.frame_dt_us = 0;                 /* (a reload would set it again) */
+    if (S->h.etx) etx_clear_global(S->h.etx, "STICKTIME_DT");
+  }
+  return 0;
 }
 
 static int l_setting(lua_State *L) {
@@ -276,7 +287,7 @@ int scenario_run(app_t *app, const host_options_t *opt_in, const char *path) {
   static const luaL_Reg fns[] = {
     { "frames", l_frames }, { "key", l_key }, { "sticks", l_sticks }, { "source", l_source }, { "unplug", l_unplug },
     { "test", l_test }, { "state", l_state }, { "editing", l_editing }, { "shot", l_shot }, { "pixel", l_pixel },
-    { "hash", l_hash }, { "err", l_err }, { "reload", l_reload }, { "setting", l_setting },
+    { "hash", l_hash }, { "err", l_err }, { "reload", l_reload }, { "frame_dt", l_frame_dt }, { "setting", l_setting },
     { "sd_write", l_sd_write }, { "sd_read", l_sd_read }, { "sd_remove", l_sd_remove }, { "stats", l_stats },
     { "now", l_now }, { "size", l_size }, { "log", l_log }, { NULL, NULL },
   };

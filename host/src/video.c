@@ -516,6 +516,15 @@ int64_t video_deadline_us(const video_t *v, int64_t now_us) {
   return grid_next(v->phase_us, v->period_us, now_us + v->margin_us) - v->margin_us;
 }
 
+int64_t video_frame_dt(int64_t deadline_us, int64_t last_deadline_us, int64_t period_us) {
+  if (period_us <= 0) period_us = DEFAULT_PERIOD_US;
+  int64_t n = last_deadline_us ? (deadline_us - last_deadline_us + period_us / 2) / period_us : 1;
+  int64_t max = 1000000 / period_us;
+  if (n > max) n = max;
+  if (n < 1) n = 1;
+  return n * period_us;
+}
+
 int video_debug(video_t *v, const char *action) {
   if (!v || !action || !v->ops->debug) return -1;
   return v->ops->debug(v, action);

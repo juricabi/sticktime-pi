@@ -181,8 +181,7 @@ static int device_loop(host_t *h, int max_frames) {
     if (start > now && start - now < 2 * period) plat_sleep_until_us(start);
     /* the frame shows at the refresh after its deadline: the game steps from the last frame's
      * refresh to this one's (usually one period; two after a missed one) */
-    int64_t dt = deadline - last_deadline;
-    h->frame_dt_us = !last_deadline || dt <= 0 ? period : dt < 1000000 ? dt : 1000000;
+    h->frame_dt_us = video_frame_dt(deadline, last_deadline, period);
     last_deadline = deadline;
     sample = plat_now_us();
     host_frame(h, sample);

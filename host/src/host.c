@@ -184,6 +184,11 @@ static void read_game_version(host_t *h) {
   free(s);
 }
 
+/* STICKTIME_DT: the color game steps its simulation by it instead of the 10 ms getTime() ticks */
+static void set_frame_dt(host_t *h) {
+  if (h->frame_dt_us > 0) etx_set_global_number(h->etx, "STICKTIME_DT", (double)h->frame_dt_us / 1000.0);
+}
+
 int host_reload_game(host_t *h) {
   if (h->audio) audio_game_reset(h->audio);
   nav_reset(&h->nav);
@@ -193,6 +198,9 @@ int host_reload_game(host_t *h) {
   plat_strlcpy(h->script, settings_get(h->set, "script"), sizeof h->script);
   h->ecfg.script = h->script;
   h->ecfg.stick_mode = settings_get_int(h->set, "stick_mode", 2, 1, 4);
+  /* STICKTIME_AV: composite now (a recovered display may be another connector) */
+  const video_info_t *vi = video_get_info(h->video);
+  h->ecfg.av = h->av_override ? h->av_override > 0 : vi ? vi->composite : h->vinfo.composite;
   etx_free(h->etx);
   h->etx = etx_new(&h->lcd, &h->ecfg);
   if (!h->etx) { snprintf(h->err, sizeof h->err, "out of memory"); return -1; }
@@ -206,6 +214,7 @@ int host_reload_game(host_t *h) {
   }
   h->last_result = 0;
   apply_latency(h, h->lat_measured_s);
+  set_frame_dt(h);                        /* for a run() before the next frame's (a restart) */
   read_game_version(h);
   app_log(h->app, "game: loaded %s %s", h->script, h->game_version);
   return 0;
@@ -324,7 +333,6 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
   h->ecfg.sd_root = app->paths.sd;
   h->ecfg.test_hooks = true;
   h->ecfg.lat = -1;
-  h->ecfg.av = h->vinfo.composite;
   h->ecfg.async_writes = opt->async_writes;
   if (host_reload_game(h) != 0) note_error(h, h->now_us);
   h->hs.window_us = h->now_us;
@@ -487,8 +495,7 @@ void host_frame(host_t *h, int64_t now) {
   /* the game */
   etx_set_clock_ms(h->etx, (now - h->clock0_us) / 1000);
   etx_set_sticks(h->etx, h->sticks.ail, h->sticks.ele, h->sticks.thr, h->sticks.rud);
-  /* the color game steps its simulation by this instead of the 10 ms getTime() ticks: even steps at 60 Hz */
-  if (h->frame_dt_us > 0) etx_set_global_number(h->etx, "STICKTIME_DT", (double)h->frame_dt_us / 1000.0);
+  set_frame_dt(h);
   if (settings_get_bool(h->set, "stats", false)) {
     etx_set_global_number(h->etx, "TOOL_RUN_US", (double)h->last_run_us);
     etx_set_global_number(h->etx, "TOOL_SHOW_US", (double)h->last_show_us);
