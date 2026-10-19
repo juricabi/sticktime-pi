@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "font.h"
+#include "lcd_rec.h"
+#include "par.h"
 
 /* flags (EdgeTX color radios) */
 #define LCDF_INVERS   0x01u
@@ -35,10 +37,26 @@ typedef struct {
   fonts_t *fonts;
   font_class_t cls;
   lcd_stats_t st;                 /* reset by the caller each frame */
+  int row0, row1;                 /* the rows drawn: 0, h (a band while lcd_flush plays a recording) */
+  struct lcd_rec *rec;            /* lcd_set_pool: the drawing calls since the last lcd_flush */
 } lcd_t;
 
 int  lcd_init(lcd_t *l, int w, int h, fonts_t *fonts, const font_class_t *cls);  /* 0 ok */
 void lcd_free(lcd_t *l);
+
+/* Drawing on several cores (drawing = multi): with a pool, the drawing calls are recorded (and counted
+ * in st as they come), and lcd_flush() draws them in bands of rows on the pool's threads: the same
+ * pixels as drawing at once. Whatever reads fb calls lcd_flush() first. NULL: draw at once (the
+ * default). Returns 0, or -1 when out of memory (then drawing goes on at once). */
+int  lcd_set_pool(lcd_t *l, par_t *par);
+void lcd_flush(lcd_t *l);
+/* drawing = gpu (keep): the calls are recorded and kept, lcd_flush() leaves them: another drawer (the
+ * GPU) draws lcd_calls() and then lcd_drop()s them; lcd_play() draws them here after all (on the
+ * pool when there is one). lcd_set_pool(l, par) is lcd_set_mode(l, par, false). */
+int  lcd_set_mode(lcd_t *l, par_t *par, bool keep);
+const rcmd_t *lcd_calls(const lcd_t *l, int *n);
+void lcd_play(lcd_t *l);
+void lcd_drop(lcd_t *l);
 
 static inline uint16_t lcd_rgb565(int r, int g, int b) {
   return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xFF) >> 3));

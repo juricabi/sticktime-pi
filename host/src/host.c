@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 #define RELOAD_DEBOUNCE_US 300000
 #define ERROR_RETRY_US 10000000
@@ -227,6 +230,62 @@ static void note_error(host_t *h, int64_t now) {
   h->err_retry_us = h->err_count <= 3 ? now + ERROR_RETRY_US : 0;
 }
 
+/* the GPU helper: next to this program */
+static void gpu_helper_path(char *buf, size_t n) {
+  plat_strlcpy(buf, "sticktime-gpu", n);
+#ifdef __linux__
+  char exe[512];
+  ssize_t r = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (r > 0) {
+    exe[r] = 0;
+    char *slash = strrchr(exe, '/');
+    if (slash) {
+      *slash = 0;
+      snprintf(buf, n, "%s/sticktime-gpu", exe);
+    }
+  }
+#endif
+}
+
+static void gpu_off(host_t *h) {
+  video_set_gpu(h->video, NULL);
+  gpu_close(h->gpu);
+  h->gpu = NULL;
+  h->gpu_said = false;
+}
+
+/* drawing = multi: the frame drawn (lcd_flush) and copied out on every core; single: on the frame loop's;
+ * gpu: by the GPU helper, all cores until it is ready and if it fails. The threads start the first time
+ * they're asked for and stay. */
+static void apply_drawing(host_t *h) {
+  const char *mode = settings_get(h->set, "drawing");
+  bool gpu = !strcmp(mode, "gpu"), multi = gpu || strcmp(mode, "single") != 0;
+  if (!gpu) h->gpu_given_up = false;            /* asking for it again later starts it again */
+  if (multi && !h->par && !(h->par = par_open(0))) app_log(h->app, "drawing: no threads to draw with: one core");
+  par_t *p = multi ? h->par : NULL;
+  if (gpu && !h->gpu && !h->gpu_given_up && h->video) {
+    char path[600], err[256];
+    gpu_helper_path(path, sizeof path);
+    if (!(h->gpu = gpu_open(path, err, sizeof err))) {
+      app_log(h->app, "drawing: no GPU (%s): all cores", err);
+      h->gpu_given_up = true;
+    }
+  }
+  if (!gpu && h->gpu) gpu_off(h);
+  if (lcd_set_mode(&h->lcd, p, h->gpu != NULL) != 0) {
+    app_log(h->app, "drawing: out of memory: one core");
+    p = NULL;
+    if (h->gpu) gpu_off(h);
+  }
+  video_set_pool(h->video, p);
+  video_set_gpu(h->video, h->gpu);
+  if (p != h->drawing_pool || !h->drawing_said) {
+    app_log(h->app, "drawing: %d %s%s", par_threads(p), p ? "threads" : "thread", h->gpu ? ", the GPU when it is ready" : "");
+    h->drawing_pool = p;
+    h->drawing_said = true;
+  }
+}
+
 /* ------------------------------------------------------------------ init / close */
 static void video_config_from_settings(host_t *h) {
   video_config_t *v = &h->vcfg;
@@ -290,6 +349,7 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
     return -1;
   }
   fonts_warm(h->fonts, &h->fcls);
+  apply_drawing(h);
 
   /* inputs */
   read_mix(h);
@@ -350,8 +410,11 @@ void host_close(host_t *h) {
     vtx_close(h->vtx);
   }
   if (h->evdev) evdev_close(h->evdev);
+  if (h->gpu) gpu_off(h);
+  free(h->gpu_shot);
   if (h->video) video_close(h->video);
   lcd_free(&h->lcd);
+  par_close(h->par);
   if (h->fonts) fonts_close(h->fonts);
   if (h->set) settings_free(h->set);
   memset(h, 0, sizeof *h);
@@ -368,6 +431,7 @@ void host_apply_settings(host_t *h) {
   h->set = s;
   read_mix(h);
   read_audio_levels(h);
+  apply_drawing(h);
   if (h->wifi) {
     wifi_config_t wc;
     read_wifi_config(h, &wc);
@@ -505,6 +569,7 @@ void host_frame(host_t *h, int64_t now) {
   memset(&h->lcd.st, 0, sizeof h->lcd.st);
   int64_t t0 = plat_now_us();
   int r = etx_run(h->etx, ev);
+  lcd_flush(&h->lcd);                     /* drawing = multi: what it drew, on every core (counted in run) */
   int64_t t1 = plat_now_us();
   h->last_run_us = t1 - t0;
   h->hs.run_ms[h->hs.run_n++ % 64] = (float)(h->last_run_us / 1000.0);
@@ -563,7 +628,55 @@ void host_frame(host_t *h, int64_t now) {
   h->frames_drawn++;
 }
 
+/* drawing = gpu: the GPU draws the recorded frame into the display's buffers; 1 when it did */
+static int present_gpu(host_t *h) {
+  size_t n = (size_t)h->lcd.w * (size_t)h->lcd.h;
+  if (h->want_shot && !h->gpu_shot) h->gpu_shot = malloc(n * sizeof(uint16_t));
+  uint16_t *shot = h->want_shot ? h->gpu_shot : NULL;
+  int nc;
+  const rcmd_t *c = lcd_calls(&h->lcd, &nc);
+  int64_t t0 = plat_now_us();
+  h->present_start_us = t0;
+  int r = video_present_gpu(h->video, c, nc, shot);
+  if (r < 0) {
+    app_log(h->app, "drawing: the GPU stopped (%s): all cores", gpu_info(h->gpu));
+    h->gpu_given_up = true;
+    gpu_off(h);
+    lcd_set_mode(&h->lcd, h->drawing_pool, false);
+    return 0;
+  }
+  if (r == 0) return 0;
+  if (!h->gpu_said) {
+    app_log(h->app, "drawing: the GPU (%s)", gpu_info(h->gpu));
+    h->gpu_said = true;
+  }
+  lcd_drop(&h->lcd);
+  if (shot) {
+    plat_mutex_lock(&h->app->mu);
+    if (!h->app->shot || h->app->shot_w != h->lcd.w || h->app->shot_h != h->lcd.h) {
+      free(h->app->shot);
+      h->app->shot = malloc(n * sizeof(uint16_t));
+    }
+    if (h->app->shot) {
+      memcpy(h->app->shot, shot, n * sizeof(uint16_t));
+      h->app->shot_w = h->lcd.w;
+      h->app->shot_h = h->lcd.h;
+      h->app->shot_ready = true;
+    }
+    plat_mutex_unlock(&h->app->mu);
+    h->want_shot = false;
+  }
+  h->last_present_us = plat_now_us() - t0;
+  h->hs.present_sum += h->last_present_us / 1000.0;
+  return 1;
+}
+
 int host_present(host_t *h) {
+  if (h->gpu) {
+    if (present_gpu(h)) return 0;
+    lcd_play(&h->lcd);                    /* this frame on the CPU */
+  }
+  lcd_flush(&h->lcd);                     /* what was drawn after the game's run (the web address) */
   if (h->want_shot) {
     /* hand a copy of this frame to the web thread */
     plat_mutex_lock(&h->app->mu);

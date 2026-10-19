@@ -236,6 +236,8 @@ int lcd_init(lcd_t *l, int w, int h, fonts_t *fonts, const font_class_t *cls) {
   if (!l->fb) return -1;
   l->w = w;
   l->h = h;
+  l->row0 = 0;
+  l->row1 = h;
   l->fonts = fonts;
   if (cls) l->cls = *cls;
   else font_class_for(&l->cls, w, h, NULL);
@@ -243,6 +245,7 @@ int lcd_init(lcd_t *l, int w, int h, fonts_t *fonts, const font_class_t *cls) {
 }
 
 void lcd_free(lcd_t *l) {
+  lcd_set_pool(l, NULL);
   free(l->fb);
   memset(l, 0, sizeof *l);
 }
@@ -268,18 +271,177 @@ static void fill16(uint16_t *p, uint16_t c, int64_t n) {
   for (int64_t i = 0; i < n; i++) p[i] = c;
 }
 
+/* lcd_blend565 of colour c at alpha a (0..255) for every value of each channel: the channels blend on
+ * their own, so a pixel is three lookups instead of three divisions */
+typedef struct { uint16_t r[32], g[64], b[32]; } blend_tab_t;
+
+static void blend_tab(blend_tab_t *t, uint16_t c, int a) {
+  for (int v = 0; v < 32; v++) {
+    t->r[v] = lcd_blend565((uint16_t)(v << 11), c, a) & 0xF800;
+    t->b[v] = lcd_blend565((uint16_t)v, c, a) & 0x001F;
+  }
+  for (int v = 0; v < 64; v++) t->g[v] = lcd_blend565((uint16_t)(v << 5), c, a) & 0x07E0;
+}
+
+static void blend_tab_run(uint16_t *p, const blend_tab_t *t, int64_t n) {
+  for (int64_t i = 0; i < n; i++) {
+    uint16_t d = p[i];
+    p[i] = t->r[d >> 11] | t->g[(d >> 5) & 63] | t->b[d & 31];
+  }
+}
+
+/* a run blended at alpha a (0..255); a long one through the tables */
+#define BLEND_TAB_MIN 256
 static void blend_run(uint16_t *p, uint16_t c, int64_t n, int a) {
+  if (n >= BLEND_TAB_MIN) {
+    blend_tab_t t;
+    blend_tab(&t, c, a);
+    blend_tab_run(p, &t, n);
+    return;
+  }
   for (int64_t i = 0; i < n; i++) p[i] = lcd_blend565(p[i], c, a);
 }
 
+/* ------------------------------------------------------------------ recording (drawing = multi)
+ *
+ * A recorded call keeps what its drawing needs, after the work that counts it in st (clipping a
+ * rect, the ends of a line, a glyph's place), and the rows it can touch. lcd_flush() hands bands of
+ * rows to the pool: each plays every call that reaches its band, drawing only the band's rows (row0,
+ * row1). The primitives clip their rows to row0..row1 and do the rest as before, so the pixels are
+ * the same as drawing at once. */
+struct lcd_rec {
+  rcmd_t *cmd;
+  int n, cap;
+  par_t *par;
+  int bands;
+  bool keep;                       /* drawing = gpu: lcd_flush() leaves the calls for lcd_calls() */
+  bool held;                       /* fonts_hold() on: glyphs were recorded */
+};
+
+/* a new recorded call, or NULL when not recording: then the caller draws at once (also when there is
+ * no room for it: what was recorded is drawn first) */
+static rcmd_t *rec_add(lcd_t *l, int op, int64_t ylo, int64_t yhi) {
+  struct lcd_rec *r = l->rec;
+  if (!r) return NULL;
+  if (r->n == r->cap) {
+    int cap = r->cap ? r->cap * 2 : 4096;
+    rcmd_t *m = cap <= (1 << 22) ? realloc(r->cmd, (size_t)cap * sizeof *m) : NULL;
+    if (!m) {
+      lcd_play(l);
+      return NULL;
+    }
+    r->cmd = m;
+    r->cap = cap;
+  }
+  rcmd_t *k = &r->cmd[r->n++];
+  k->op = (uint8_t)op;
+  k->ylo = ylo < 0 ? 0 : ylo > l->h ? l->h : (int)ylo;
+  k->yhi = yhi < 0 ? -1 : yhi > l->h - 1 ? l->h - 1 : (int)yhi;
+  return k;
+}
+
+int lcd_set_pool(lcd_t *l, par_t *par) { return lcd_set_mode(l, par, false); }
+
+int lcd_set_mode(lcd_t *l, par_t *par, bool keep) {
+  lcd_play(l);
+  if (!par && !keep) {
+    if (l->rec) free(l->rec->cmd);
+    free(l->rec);
+    l->rec = NULL;
+    return 0;
+  }
+  if (!l->rec && !(l->rec = calloc(1, sizeof *l->rec))) return -1;
+  l->rec->par = par;
+  l->rec->keep = keep;
+  /* two bands per thread (when one is held up by another process the others take its share), of 16
+   * rows or more */
+  int bands = par ? par_threads(par) * 2 : 1;
+  if (bands > l->h / 16) bands = l->h / 16;
+  l->rec->bands = bands > 1 ? bands : 1;
+  return 0;
+}
+
+const rcmd_t *lcd_calls(const lcd_t *l, int *n) {
+  *n = l->rec ? l->rec->n : 0;
+  return l->rec ? l->rec->cmd : NULL;
+}
+
+static void rows_fill(lcd_t *l, uint16_t c);
+static void hline64(lcd_t *l, int64_t x, int64_t y, int64_t w, uint16_t c, int opa);
+static void rect_rows(lcd_t *l, int64_t x, int64_t y, int64_t w, int64_t h, uint16_t c, int opa);
+static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint16_t c);
+static void tri_draw(lcd_t *l, int ix0, int iy0, int ix1, int iy1, int ix2, int iy2, uint16_t c, int opa);
+static void point_px(lcd_t *l, int x, int y, uint16_t c);
+static void fcircle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c);
+static void circle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c);
+static void invert_draw(lcd_t *l, int x, int y, int w, int h);
+static void glyph_blit(lcd_t *l, const glyph_t *g, int64_t gx, int64_t gy, uint16_t c);
+
+static void play_band(void *ctx, int part) {
+  const lcd_t *src = ctx;
+  const struct lcd_rec *r = src->rec;
+  lcd_t b = *src;
+  b.rec = NULL;
+  b.row0 = (int)((int64_t)src->h * part / r->bands);
+  b.row1 = (int)((int64_t)src->h * (part + 1) / r->bands);
+  for (int i = 0; i < r->n; i++) {
+    const rcmd_t *k = &r->cmd[i];
+    if (k->yhi < b.row0 || k->ylo >= b.row1) continue;
+    switch (k->op) {
+      case RC_CLEAR: rows_fill(&b, k->c); break;
+      case RC_HLINE: hline64(&b, k->u.r.x, k->u.r.y, k->u.r.w, k->c, k->opa); break;
+      case RC_RECT: rect_rows(&b, k->u.r.x, k->u.r.y, k->u.r.w, k->u.r.h, k->c, k->opa); break;
+      case RC_LINE: line_px(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->pat, k->c); break;
+      case RC_TRI: tri_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->u.p.x2, k->u.p.y2, k->c, k->opa); break;
+      case RC_POINT: point_px(&b, k->u.p.x0, k->u.p.y0, k->c); break;
+      case RC_FCIRCLE: fcircle_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->c); break;
+      case RC_CIRCLE: circle_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->c); break;
+      case RC_INVERT: invert_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1); break;
+      case RC_GLYPH: glyph_blit(&b, &k->u.gl.g, k->u.gl.x, k->u.gl.y, k->c); break;
+    }
+  }
+}
+
+void lcd_flush(lcd_t *l) {
+  if (l->rec && !l->rec->keep) lcd_play(l);
+}
+
+void lcd_play(lcd_t *l) {
+  struct lcd_rec *r = l->rec;
+  if (!r || !r->n) return;
+  par_run(r->par, r->bands, play_band, l);
+  lcd_drop(l);
+}
+
+void lcd_drop(lcd_t *l) {
+  struct lcd_rec *r = l->rec;
+  if (!r) return;
+  r->n = 0;
+  if (r->held) {
+    fonts_hold(l->fonts, false);
+    r->held = false;
+  }
+}
+
+/* the rows this lcd_t draws, in one colour */
+static void rows_fill(lcd_t *l, uint16_t c) {
+  fill16(l->fb + (size_t)l->row0 * (size_t)l->w, c, (int64_t)(l->row1 - l->row0) * l->w);
+}
+
 void lcd_clear(lcd_t *l, uint16_t c) {
-  fill16(l->fb, c, (int64_t)l->w * l->h);
   l->st.rects++;
+  if (l->rec) l->rec->n = 0;                  /* what was recorded would be painted over */
+  rcmd_t *k = rec_add(l, RC_CLEAR, 0, l->h - 1);
+  if (k) {
+    k->c = c;
+    return;
+  }
+  rows_fill(l, c);
 }
 
 /* engine.js hline; opacity 0..15 like EdgeTX (0 = opaque) */
 static void hline64(lcd_t *l, int64_t x, int64_t y, int64_t w, uint16_t c, int opa) {
-  if (y < 0 || y >= l->h || w <= 0) return;
+  if (y < l->row0 || y >= l->row1 || w <= 0) return;
   if (x < 0) { w += x; x = 0; }
   if (x + w > l->w) w = l->w - x;
   if (w <= 0) return;
@@ -289,6 +451,15 @@ static void hline64(lcd_t *l, int64_t x, int64_t y, int64_t w, uint16_t c, int o
 }
 
 void lcd_hline(lcd_t *l, int x, int y, int w, uint16_t c, int opa) {
+  rcmd_t *k = rec_add(l, RC_HLINE, y, y);
+  if (k) {
+    k->u.r.x = x;
+    k->u.r.y = y;
+    k->u.r.w = w;
+    k->c = c;
+    k->opa = (uint8_t)(opa & 15);
+    return;
+  }
   hline64(l, x, y, w, c, opa & 15);
 }
 
@@ -303,8 +474,31 @@ static void fill_rect64(lcd_t *l, int64_t x, int64_t y, int64_t w, int64_t h, ui
   if (y + h > l->h) h = l->h - y;
   if (w <= 0 || h <= 0) return;
   l->st.rects++;
-  for (int64_t j = 0; j < h; j++) {
-    uint16_t *p = l->fb + (y + j) * l->w + x;
+  rcmd_t *k = rec_add(l, RC_RECT, y, y + h - 1);
+  if (k) {
+    k->u.r.x = x;
+    k->u.r.y = y;
+    k->u.r.w = w;
+    k->u.r.h = h;
+    k->c = c;
+    k->opa = (uint8_t)opa;
+    return;
+  }
+  rect_rows(l, x, y, w, h, c, opa);
+}
+
+/* a rect on the screen (fill_rect64 clipped it): its rows in row0..row1 */
+static void rect_rows(lcd_t *l, int64_t x, int64_t y, int64_t w, int64_t h, uint16_t c, int opa) {
+  int64_t j0 = y > l->row0 ? y : l->row0, j1 = y + h < l->row1 ? y + h : l->row1;
+  if (j0 >= j1) return;
+  if (opa && w * (j1 - j0) >= BLEND_TAB_MIN) {
+    blend_tab_t t;
+    blend_tab(&t, c, (15 - opa) * 17);
+    for (int64_t j = j0; j < j1; j++) blend_tab_run(l->fb + j * l->w + x, &t, w);
+    return;
+  }
+  for (int64_t j = j0; j < j1; j++) {
+    uint16_t *p = l->fb + j * l->w + x;
     if (!opa) fill16(p, c, w);
     else blend_run(p, c, w, (15 - opa) * 17);
   }
@@ -317,7 +511,18 @@ void lcd_fill_rect(lcd_t *l, int x, int y, int w, int h, uint16_t c, int opa) {
 }
 
 void lcd_point(lcd_t *l, int x, int y, uint16_t c) {
-  if (x >= 0 && y >= 0 && x < l->w && y < l->h) l->fb[(size_t)y * l->w + x] = c;
+  rcmd_t *k = rec_add(l, RC_POINT, y, y);
+  if (k) {
+    k->u.p.x0 = x;
+    k->u.p.y0 = y;
+    k->c = c;
+    return;
+  }
+  point_px(l, x, y, c);
+}
+
+static void point_px(lcd_t *l, int x, int y, uint16_t c) {
+  if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) l->fb[(size_t)y * l->w + x] = c;
 }
 
 /* Liang-Barsky in doubles, like engine.js */
@@ -345,19 +550,72 @@ void lcd_line(lcd_t *l, int x1, int y1, int x2, int y2, uint8_t pat, uint16_t c)
   /* the clipped ends lie on the screen (to within rounding), so they fit an int */
   int ax = (int)js_round(x1 + fmul(t0, dx)), ay = (int)js_round(y1 + fmul(t0, dy));
   int bx = (int)js_round(x1 + fmul(t1, dx)), by = (int)js_round(y1 + fmul(t1, dy));
+  rcmd_t *k = rec_add(l, RC_LINE, ay < by ? ay : by, ay < by ? by : ay);
+  if (k) {
+    k->u.p.x0 = ax;
+    k->u.p.y0 = ay;
+    k->u.p.x1 = bx;
+    k->u.p.y1 = by;
+    k->pat = pat;
+    k->c = c;
+    return;
+  }
+  line_px(l, ax, ay, bx, by, pat, c);
+}
+
+/* Bresenham from the clipped, rounded ends; pixels in row0..row1 */
+static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint16_t c) {
+  const int W = l->w, Y0 = l->row0, Y1 = l->row1;
   int ddx = bx - ax, ddy = by - ay;
   int adx = abs(ddx), ady = abs(ddy), sx = (ddx > 0) - (ddx < 0), sy = (ddy > 0) - (ddy < 0);
   int ex = ady >> 1, ey = adx >> 1, px = ax, py = ay;
+  if (!ady && pat == 0xFF) {
+    /* solid and level: the same pixels as below, as one run */
+    if (py < Y0 || py >= Y1) return;
+    int lo = ax < bx ? ax : bx, hi = ax < bx ? bx : ax;
+    if (lo < 0) lo = 0;
+    if (hi > W - 1) hi = W - 1;
+    if (lo <= hi) fill16(l->fb + (size_t)py * W + lo, c, hi - lo + 1);
+    return;
+  }
+  /* A band draws only the steps that land in its rows, starting at the first of them: after k steps the
+   * minor coordinate has moved floor((major / 2 + k * minor) / major) times and the error term is the
+   * remainder, as the loop would have it. */
   if (adx >= ady) {
-    for (int i = 0; i <= adx; i++) {
-      if (((1 << (px & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H) l->fb[(size_t)py * W + px] = c;
+    int64_t k0 = 0, k1 = adx, h0 = adx >> 1;
+    if (ady) {
+      /* py = ay + sy * floor((h0 + k * ady) / adx): that floor must be in D..E */
+      int64_t D = sy > 0 ? Y0 - ay : ay - (Y1 - 1), E = sy > 0 ? Y1 - 1 - ay : ay - Y0;
+      if (E < 0 || D > ady) return;
+      if (D > 0) k0 = (D * adx - h0 + ady - 1) / ady;
+      int64_t last = ((E + 1) * adx - 1 - h0) / ady;
+      if (last < k1) k1 = last;
+    } else if (ay < Y0 || ay >= Y1) {
+      return;
+    }
+    if (k0 > k1) return;
+    int64_t q = h0 + k0 * ady;
+    px = ax + sx * (int)k0;
+    py = ay + (adx ? sy * (int)(q / adx) : 0);
+    ey = adx ? (int)(q % adx) : 0;
+    for (int64_t i = k0; i <= k1; i++) {
+      if (((1 << (px & 7)) & pat) && px >= 0 && px < W && py >= Y0 && py < Y1) l->fb[(size_t)py * W + px] = c;
       ey += ady;
       if (ey >= adx) { ey -= adx; py += sy; }
       px += sx;
     }
   } else {
-    for (int i = 0; i <= ady; i++) {
-      if (((1 << (py & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H) l->fb[(size_t)py * W + px] = c;
+    /* py = ay + sy * k */
+    int64_t k0 = sy > 0 ? Y0 - ay : ay - (Y1 - 1), k1 = sy > 0 ? Y1 - 1 - ay : ay - Y0;
+    if (k0 < 0) k0 = 0;
+    if (k1 > ady) k1 = ady;
+    if (k0 > k1) return;
+    int64_t q = (int64_t)(ady >> 1) + k0 * adx;
+    py = ay + sy * (int)k0;
+    px = ax + sx * (int)(q / ady);
+    ex = (int)(q % ady);
+    for (int64_t i = k0; i <= k1; i++) {
+      if (((1 << (py & 7)) & pat) && px >= 0 && px < W && py >= Y0 && py < Y1) l->fb[(size_t)py * W + px] = c;
       ex += adx;
       if (ex >= ady) { ex -= ady; px += sx; }
       py += sy;
@@ -385,10 +643,27 @@ static void tri_row(lcd_t *l, int64_t a, int64_t b, int64_t y, uint16_t c, int o
  * below 2^53, which any triangle a game could draw stays under) and lets the loops start at the
  * first visible row. */
 void lcd_tri(lcd_t *l, int ix0, int iy0, int ix1, int iy1, int ix2, int iy2, uint16_t c, int opa) {
-  int64_t x0 = ix0, y0 = iy0, x1 = ix1, y1 = iy1, x2 = ix2, y2 = iy2, t;
-  const int64_t ymax = l->h - 1;
   opa &= 15;
   l->st.tris++;
+  int lo = iy0 < iy1 ? iy0 : iy1, hi = iy0 > iy1 ? iy0 : iy1;
+  rcmd_t *k = rec_add(l, RC_TRI, iy2 < lo ? iy2 : lo, iy2 > hi ? iy2 : hi);
+  if (k) {
+    k->u.p.x0 = ix0;
+    k->u.p.y0 = iy0;
+    k->u.p.x1 = ix1;
+    k->u.p.y1 = iy1;
+    k->u.p.x2 = ix2;
+    k->u.p.y2 = iy2;
+    k->c = c;
+    k->opa = (uint8_t)opa;
+    return;
+  }
+  tri_draw(l, ix0, iy0, ix1, iy1, ix2, iy2, c, opa);
+}
+
+static void tri_draw(lcd_t *l, int ix0, int iy0, int ix1, int iy1, int ix2, int iy2, uint16_t c, int opa) {
+  int64_t x0 = ix0, y0 = iy0, x1 = ix1, y1 = iy1, x2 = ix2, y2 = iy2, t;
+  const int64_t ymax = l->row1 - 1;
   if (y0 > y1) { t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
   if (y1 > y2) { t = y2; y2 = y1; y1 = t; t = x2; x2 = x1; x1 = t; }
   if (y0 > y1) { t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
@@ -404,13 +679,13 @@ void lcd_tri(lcd_t *l, int ix0, int iy0, int ix1, int iy1, int ix2, int iy2, uin
   const double dx01 = (double)(x1 - x0), dy01 = (double)(y1 - y0), dx02 = (double)(x2 - x0);
   const double dy02 = (double)(y2 - y0), dx12 = (double)(x2 - x1), dy12 = (double)(y2 - y1);
   const int64_t last = y1 == y2 ? y1 : y1 - 1;
-  int64_t y = y0 > 0 ? y0 : 0, yend = last < ymax ? last : ymax;
+  int64_t y = y0 > l->row0 ? y0 : l->row0, yend = last < ymax ? last : ymax;
   for (; y <= yend; y++) {
     double sa = (double)(y - y0) * dx01, sb = (double)(y - y0) * dx02;
     tri_row(l, x0 + (int64_t)trunc(sa / dy01), x0 + (int64_t)trunc(sb / dy02), y, c, opa);
   }
   y = last + 1;
-  if (y < 0) y = 0;
+  if (y < l->row0) y = l->row0;
   yend = y2 < ymax ? y2 : ymax;
   for (; y <= yend; y++) {
     double sa = (double)(y - y1) * dx12, sb = (double)(y - y0) * dx02;
@@ -419,9 +694,21 @@ void lcd_tri(lcd_t *l, int ix0, int iy0, int ix1, int iy1, int ix2, int iy2, uin
 }
 
 void lcd_filled_circle(lcd_t *l, int cx, int cy, int r, uint16_t c) {
+  rcmd_t *k = rec_add(l, RC_FCIRCLE, (int64_t)cy - r, (int64_t)cy + r);
+  if (k) {
+    k->u.p.x0 = cx;
+    k->u.p.y0 = cy;
+    k->u.p.x1 = r;
+    k->c = c;
+    return;
+  }
+  fcircle_draw(l, cx, cy, r, c);
+}
+
+static void fcircle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c) {
   int64_t lo = -(int64_t)r, hi = r;
-  if (lo < -(int64_t)cy) lo = -(int64_t)cy;
-  if (hi > (int64_t)l->h - 1 - cy) hi = (int64_t)l->h - 1 - cy;
+  if (lo < (int64_t)l->row0 - cy) lo = (int64_t)l->row0 - cy;
+  if (hi > (int64_t)l->row1 - 1 - cy) hi = (int64_t)l->row1 - 1 - cy;
   for (int64_t dy = lo; dy <= hi; dy++) {
     int64_t dx = (int64_t)floor(sqrt(fmul(r, r) - fmul((double)dy, (double)dy)));
     hline64(l, (int64_t)cx - dx, cy + dy, dx * 2 + 1, c, 0);
@@ -429,15 +716,40 @@ void lcd_filled_circle(lcd_t *l, int cx, int cy, int r, uint16_t c) {
 }
 
 void lcd_circle(lcd_t *l, int cx, int cy, int r, uint16_t c) {
+  int64_t ar = r < 0 ? -(int64_t)r : r;
+  rcmd_t *k = rec_add(l, RC_CIRCLE, (int64_t)cy - ar - 1, (int64_t)cy + ar + 1);
+  if (k) {
+    k->u.p.x0 = cx;
+    k->u.p.y0 = cy;
+    k->u.p.x1 = r;
+    k->c = c;
+    return;
+  }
+  circle_draw(l, cx, cy, r, c);
+}
+
+static void circle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c) {
   for (int a = 0; a < 360; a++) {
     double x = js_round(cx + fmul(r, COS[a])), y = js_round(cy + fmul(r, SIN[a]));
-    if (x >= 0 && y >= 0 && x < l->w && y < l->h) l->fb[(size_t)y * l->w + (size_t)x] = c;
+    if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) l->fb[(size_t)y * l->w + (size_t)x] = c;
   }
 }
 
 void lcd_invert_rect(lcd_t *l, int x, int y, int w, int h) {
-  int64_t j0 = y > 0 ? y : 0, j1 = (int64_t)y + h, i0 = x > 0 ? x : 0, i1 = (int64_t)x + w;
-  if (j1 > l->h) j1 = l->h;
+  rcmd_t *k = rec_add(l, RC_INVERT, y, (int64_t)y + h - 1);
+  if (k) {
+    k->u.p.x0 = x;
+    k->u.p.y0 = y;
+    k->u.p.x1 = w;
+    k->u.p.y1 = h;
+    return;
+  }
+  invert_draw(l, x, y, w, h);
+}
+
+static void invert_draw(lcd_t *l, int x, int y, int w, int h) {
+  int64_t j0 = y > l->row0 ? y : l->row0, j1 = (int64_t)y + h, i0 = x > 0 ? x : 0, i1 = (int64_t)x + w;
+  if (j1 > l->row1) j1 = l->row1;
   if (i1 > l->w) i1 = l->w;
   for (int64_t j = j0; j < j1; j++) {
     uint16_t *p = l->fb + j * l->w;
@@ -480,28 +792,44 @@ static font_face_t *text_face(lcd_t *l, uint32_t flags) {
 }
 
 static void put_text(lcd_t *l, font_face_t *face, const char *s, int len, int64_t ox, int64_t oy, uint16_t c) {
-  const int W = l->w, H = l->h;
   double cx = (double)ox;
-  for (int k = 0; k < len;) {
-    const glyph_t *g = font_glyph(l->fonts, face, font_utf8_next(s, len, &k));
+  for (int i = 0; i < len;) {
+    const glyph_t *g = font_glyph(l->fonts, face, font_utf8_next(s, len, &i));
     l->st.glyphs++;
     if (g->a) {
       int64_t gx = (int64_t)js_round(cx + g->ox), gy = oy + g->oy;
-      for (int j = 0; j < g->h; j++) {
-        int64_t yy = gy + j;
-        if (yy < 0 || yy >= H) continue;
-        const uint8_t *m = g->a + j * g->w;
-        uint16_t *row = l->fb + yy * W;
-        for (int i = 0; i < g->w; i++) {
-          int a = m[i];
-          if (!a) continue;
-          int64_t xx = gx + i;
-          if (xx < 0 || xx >= W) continue;
-          row[xx] = a >= 250 ? c : lcd_blend565(row[xx], c, a);
+      rcmd_t *k = rec_add(l, RC_GLYPH, gy, gy + g->h - 1);
+      if (k) {
+        k->u.gl.x = gx;
+        k->u.gl.y = gy;
+        k->u.gl.g = *g;
+        k->c = c;
+        if (!l->rec->held) {                   /* the mask must outlive the font cache's evictions */
+          fonts_hold(l->fonts, true);
+          l->rec->held = true;
         }
+      } else {
+        glyph_blit(l, g, gx, gy, c);
       }
     }
     cx += g->adv;
+  }
+}
+
+static void glyph_blit(lcd_t *l, const glyph_t *g, int64_t gx, int64_t gy, uint16_t c) {
+  const int W = l->w;
+  for (int j = 0; j < g->h; j++) {
+    int64_t yy = gy + j;
+    if (yy < l->row0 || yy >= l->row1) continue;
+    const uint8_t *m = g->a + j * g->w;
+    uint16_t *row = l->fb + yy * W;
+    for (int i = 0; i < g->w; i++) {
+      int a = m[i];
+      if (!a) continue;
+      int64_t xx = gx + i;
+      if (xx < 0 || xx >= W) continue;
+      row[xx] = a >= 250 ? c : lcd_blend565(row[xx], c, a);
+    }
   }
 }
 

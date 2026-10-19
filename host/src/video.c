@@ -415,68 +415,102 @@ void video_scale_copy(const uint16_t *src, int sw, void *dst, int pitch, int bpp
   video_scale_copy_lut(src, sw, dst, pitch, bpp, dx, dy, dw, dh, xlut, ylut, NULL);
 }
 
-/* RGB565 spread over 32 bits as 00000GGGGGG00000RRRRR000000BBBBB (0x07E0F81F): room above each
- * field for the sum of up to 8 pixels, so the three channels add up in one integer */
+/* RGB565 spread over 32 bits as 00000GGGGGG00000RRRRR000000BBBBB (0x07E0F81F): room above each field
+ * for the sum of up to 16 pixels, so the three channels add up in one integer */
 #define SPREAD_MASK 0x07E0F81Fu
 static inline uint32_t spread565(uint16_t p) { return ((uint32_t)p | ((uint32_t)p << 16)) & SPREAD_MASK; }
 static inline uint16_t pack565(uint32_t v) { v &= SPREAD_MASK; return (uint16_t)(v | (v >> 16)); }
-/* the filter's spread rows (one display, filtered on the frame loop's thread: no allocation per frame) */
+/* video_deflicker_copy's spread lines (one display, filtered on the frame loop's thread: no allocation
+ * per frame), and a black line (only read) */
 #define DEFLICKER_MAXW 2048
-static uint32_t dfl_rows[3][DEFLICKER_MAXW];
+static uint32_t dfl_lines[3][DEFLICKER_MAXW], dfl_black[DEFLICKER_MAXW];
 
-void video_deflicker_copy(const uint16_t *src, int w, int h, void *dst, int pitch, int bpp, int strength) {
-  if (!src || !dst || w <= 0 || h <= 0 || (bpp != 16 && bpp != 32)) return;
-  if (strength <= 0) {
-    video_scale_copy(src, w, dst, pitch, bpp, 0, 0, w, h, NULL, NULL);
+/* picture line y spread: the sum of its `rows` source lines */
+static void dfl_line(uint32_t *o, const uint16_t *src, int w, int rows, int y) {
+  const uint16_t *s = src + (size_t)y * (size_t)rows * (size_t)w, *s2 = s + w;
+  if (rows == 2) for (int x = 0; x < w; x++) o[x] = spread565(s[x]) + spread565(s2[x]);
+  else for (int x = 0; x < w; x++) o[x] = spread565(s[x]);
+}
+
+/* one pixel of the same, for any line: black past the picture with pad, else its edge line */
+static inline uint32_t dfl_px(const uint16_t *src, int w, int h, int rows, int y, int x, bool pad) {
+  if (y < 0 || y >= h) {
+    if (pad) return 0;
+    y = y < 0 ? 0 : h - 1;
+  }
+  const uint16_t *s = src + (size_t)y * (size_t)rows * (size_t)w + (size_t)x;
+  return rows == 2 ? spread565(s[0]) + spread565(s[w]) : spread565(s[0]);
+}
+
+void video_deflicker_copy(const uint16_t *src, int w, int h, int rows, void *dst, int pitch, int bpp, int strength,
+                          bool pad) {
+  video_deflicker_lines(src, w, h, rows, dst, pitch, bpp, strength, pad, 0, h + 2, &dfl_lines[0][0]);
+}
+
+void video_deflicker_lines(const uint16_t *src, int w, int h, int rows, void *dst, int pitch, int bpp, int strength,
+                           bool pad, int line0, int line1, uint32_t *scratch) {
+  if (!src || !dst || w <= 0 || h <= 0 || (rows != 1 && rows != 2) || (bpp != 16 && bpp != 32)) return;
+  if (strength <= 0) pad = false;
+  int p = pad ? 1 : 0;
+  if (line0 < 0) line0 = 0;
+  if (line1 > h + 2 * p) line1 = h + 2 * p;
+  if (line0 >= line1) return;
+  if (strength <= 0 && rows == 1) {
+    video_scale_copy(src + (size_t)line0 * (size_t)w, w, (uint8_t *)dst + (size_t)line0 * (size_t)pitch, pitch, bpp, 0, 0,
+                     w, line1 - line0, NULL, NULL);
     return;
   }
-  /* full [1 2 1]/4 or light [1 6 1]/8, rounded: half the divisor added in each field */
-  int mid = strength >= 2 ? 2 : 6, shift = strength >= 2 ? 2 : 3;
-  uint32_t half = strength >= 2 ? 0x00401002u : 0x00802004u;
-  if (w <= DEFLICKER_MAXW) {
-    /* each source row spread once, into three rotating row buffers: a, b, c = rows y-1, y, y+1 (the
-     * top and bottom rows stand in for the row they lack: a or c is then b itself) */
-    uint32_t *a = dfl_rows[0], *b = a, *c = h > 1 ? dfl_rows[1] : a, *spare = dfl_rows[2];
-    for (int x = 0; x < w; x++) b[x] = spread565(src[x]);
-    if (h > 1) for (int x = 0; x < w; x++) c[x] = spread565(src[(size_t)w + (size_t)x]);
-    for (int y = 0; y < h; y++) {
-      uint8_t *row = (uint8_t *)dst + (size_t)y * (size_t)pitch;
+  /* each line e, m, e with the lines above and below: full [1 2 1]/4, light [1 6 1]/8, none [0 1 0];
+   * over the sum of `rows` source lines, so the divisor (2e + m) * rows is 1 .. 16, a power of two; half
+   * of it added in each field rounds */
+  uint32_t e = strength > 0 ? 1 : 0, m = strength >= 2 ? 2 : strength == 1 ? 6 : 1;
+  int shift = 0;
+  while ((1u << shift) < (2 * e + m) * (uint32_t)rows) shift++;
+  uint32_t hv = shift ? 1u << (shift - 1) : 0, half = hv | hv << 11 | hv << 21;
+  int y0 = line0 - p, y1 = line1 - p;              /* picture lines; -1 and h are the pad lines */
+  uint8_t *out = (uint8_t *)dst + (size_t)line0 * (size_t)pitch;
+  if (scratch && w <= DEFLICKER_MAXW) {
+    /* each picture line spread once, into ring[line % 3]: the lines y - 1, y, y + 1 are there */
+    uint32_t *ring[3] = { scratch, scratch + w, scratch + 2 * (size_t)w };
+    int next = y0 - 1 > 0 ? y0 - 1 : 0;
+    for (int y = y0; y < y1; y++, out += pitch) {
+      for (int need = y + 1 < h ? y + 1 : h - 1; next <= need; next++) dfl_line(ring[next % 3], src, w, rows, next);
+      const uint32_t *l[3];
+      for (int k = 0; k < 3; k++) {
+        int ly = y - 1 + k;
+        l[k] = ly >= 0 && ly < h ? ring[ly % 3] : pad ? dfl_black : ring[(ly < 0 ? 0 : h - 1) % 3];
+      }
+      const uint32_t *a = l[0], *b = l[1], *c = l[2];
       if (bpp == 16) {
-        uint16_t *d = (uint16_t *)row;
-        for (int x = 0; x < w; x++) d[x] = pack565((a[x] + b[x] * (uint32_t)mid + c[x] + half) >> shift);
+        uint16_t *d = (uint16_t *)out;
+        for (int x = 0; x < w; x++) d[x] = pack565((e * (a[x] + c[x]) + m * b[x] + half) >> shift);
       } else {
-        uint32_t *d = (uint32_t *)row;
-        for (int x = 0; x < w; x++) d[x] = rgb565_xrgb(pack565((a[x] + b[x] * (uint32_t)mid + c[x] + half) >> shift));
-      }
-      if (y + 1 >= h) break;
-      uint32_t *freed = a == b ? spare : a;          /* the buffer neither of the next a, b uses */
-      a = b;
-      b = c;
-      if (y + 2 < h) {
-        const uint16_t *s = src + (size_t)(y + 2) * (size_t)w;
-        for (int x = 0; x < w; x++) freed[x] = spread565(s[x]);
-        c = freed;
-      } else {
-        c = b;
+        uint32_t *d = (uint32_t *)out;
+        for (int x = 0; x < w; x++) d[x] = rgb565_xrgb(pack565((e * (a[x] + c[x]) + m * b[x] + half) >> shift));
       }
     }
     return;
   }
-  for (int y = 0; y < h; y++) {
-    const uint16_t *a = src + (size_t)(y > 0 ? y - 1 : 0) * (size_t)w;
-    const uint16_t *b = src + (size_t)y * (size_t)w;
-    const uint16_t *c = src + (size_t)(y < h - 1 ? y + 1 : h - 1) * (size_t)w;
-    uint8_t *row = (uint8_t *)dst + (size_t)y * (size_t)pitch;
-    if (bpp == 16) {
-      uint16_t *d = (uint16_t *)row;
-      for (int x = 0; x < w; x++)
-        d[x] = pack565((spread565(a[x]) + spread565(b[x]) * (uint32_t)mid + spread565(c[x]) + half) >> shift);
-    } else {
-      uint32_t *d = (uint32_t *)row;
-      for (int x = 0; x < w; x++)
-        d[x] = rgb565_xrgb(pack565((spread565(a[x]) + spread565(b[x]) * (uint32_t)mid + spread565(c[x]) + half) >> shift));
+  for (int y = y0; y < y1; y++, out += pitch)
+    for (int x = 0; x < w; x++) {
+      uint32_t v = (e * (dfl_px(src, w, h, rows, y - 1, x, pad) + dfl_px(src, w, h, rows, y + 1, x, pad)) +
+                    m * dfl_px(src, w, h, rows, y, x, pad) + half) >> shift;
+      if (bpp == 16) ((uint16_t *)out)[x] = pack565(v);
+      else ((uint32_t *)out)[x] = rgb565_xrgb(pack565(v));
     }
-  }
+}
+
+void video_set_pool(video_t *v, par_t *par) {
+  if (v) v->par = par;
+}
+
+void video_set_gpu(video_t *v, gpu_t *g) {
+  if (v) v->gpu = g;
+}
+
+int video_present_gpu(video_t *v, const rcmd_t *c, int n, uint16_t *shot) {
+  if (!v || !v->gpu || !v->ops->present_gpu) return 0;
+  return v->ops->present_gpu(v, c, n, shot);
 }
 
 void video_clear_buffer(void *dst, int pitch, int bpp, int w, int h) {
@@ -621,7 +655,7 @@ static int  none_wait(video_t *v, int timeout_ms, int64_t *t_us) { return video_
 static bool none_pending(const video_t *v) { return video_soft_pending(v); }
 static int  none_fd(const video_t *v) { (void)v; return -1; }
 static void none_close(video_t *v) { free(v); }
-static const video_ops_t none_ops = { none_present, none_wait, none_pending, none_fd, none_close, NULL };
+static const video_ops_t none_ops = { none_present, none_wait, none_pending, none_fd, none_close, NULL, NULL };
 
 video_t *video_none_open(const video_config_t *c, video_info_t *info, char *err, int errlen) {
   (void)err; (void)errlen;

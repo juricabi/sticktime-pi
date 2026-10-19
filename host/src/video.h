@@ -32,6 +32,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "gpu.h"
+#include "par.h"
 
 typedef struct video video_t;
 
@@ -42,11 +44,11 @@ typedef struct {
   const char *aspect;      /* "4:3" or "16:9": the shape of the goggles' / screen's picture
                             * (composite only; HDMI pixels are square, so the mode is the shape) */
   const char *av_mode;     /* "progressive" (240p/288p; NULL) or "interlaced" (480i/576i) */
-  const char *av_detail;   /* progressive composite: "high" (NULL) draws twice the lines (the
-                            * interlaced size, video_layout_double) for the plane to scale down;
-                            * "normal" draws the mode's lines */
-  const char *av_flicker;  /* interlaced composite: the flicker filter, "off" (NULL), "light" [1 6 1]/8
-                            * or "full" [1 2 1]/4 (video_deflicker_copy) */
+  const char *av_detail;   /* composite: "high" (NULL) draws twice the lines (and twice the width,
+                            * video_layout_double) for the plane to scale down (interlaced: the line
+                            * pairs averaged by video_deflicker_copy); "normal" draws the mode's lines */
+  const char *av_flicker;  /* interlaced composite: the flicker filter, "full" [1 2 1]/4 (NULL), "light"
+                            * [1 6 1]/8 or "off" (video_deflicker_copy) */
   const char *hdmi_mode;   /* "auto" (1280x720@60 if offered, else preferred), "WxH" or "WxH@Hz"
                             * (an "i" after H asks for an interlaced mode) */
   int margin_pct;          /* 0..20: black border for goggles that crop the picture */
@@ -147,6 +149,14 @@ int  video_snapshot_png(const uint16_t *fb, int w, int h, const char *path);
 /* encode RGB565 as PNG into a malloc'd buffer (web screenshots; thread-safe); NULL on failure */
 unsigned char *video_png_encode(const uint16_t *fb, int w, int h, int *len);
 void video_close(video_t *v);
+/* drawing = multi: present() may share its copy out among the pool's threads (NULL: on the caller's) */
+void video_set_pool(video_t *v, par_t *par);
+/* drawing = gpu: the GPU draws frames into the display's buffers (NULL: no more) */
+void video_set_gpu(video_t *v, gpu_t *g);
+/* present a frame drawn by the GPU from the recorded calls c[0 .. n - 1] (shot: a copy of it, or NULL).
+ * 1: it is queued like video_present's; 0: the GPU can't now (starting, the display down or CPU
+ * scaled): draw the calls on the CPU and video_present() them; -1: the GPU failed for good. */
+int  video_present_gpu(video_t *v, const rcmd_t *c, int n, uint16_t *shot);
 
 /* Test hooks (drm, for test_video_drm): "reinit" (a full re-init now), "hotplug" (probe the
  * connectors as after a uevent), "rmfb" (remove the front buffer under us), "disable" (switch
@@ -169,6 +179,7 @@ typedef struct {
   int  (*fd)(const video_t *v);
   void (*close)(video_t *v);
   int  (*debug)(video_t *v, const char *action);   /* optional */
+  int  (*present_gpu)(video_t *v, const rcmd_t *c, int n, uint16_t *shot);   /* optional: drm */
 } video_ops_t;
 struct video {
   const video_ops_t *ops;
@@ -183,6 +194,8 @@ struct video {
   bool down;
   void (*log_fn)(void *ud, const char *line);   /* video_config_t.log, NULL = stderr */
   void *log_ud;
+  par_t *par;              /* video_set_pool: copy the frame on several cores (drawing = multi) */
+  gpu_t *gpu;              /* video_set_gpu: the GPU draws the frames (drawing = gpu) */
 };
 
 /* helpers for backends (video.c) */
@@ -259,12 +272,21 @@ void video_scale_copy(const uint16_t *src, int sw, void *dst, int pitch, int bpp
 void video_scale_copy_lut(const uint16_t *src, int sw, void *dst, int pitch, int bpp,
                           int dx, int dy, int dw, int dh, const uint16_t *xlut, const uint16_t *ylut,
                           const uint32_t *pixlut);
-/* The flicker filter for interlaced video: copy src (w x h RGB565) 1:1 into dst (pitch bytes per row,
- * bpp 16 or 32), each row blended with the rows above and below it, so a 1-row line or edge reaches both
- * fields and stops twittering. strength 1: [1 6 1]/8 (light), 2: [1 2 1]/4 (full, as the GameCube's
- * 480i); 0: a plain copy. The top and bottom rows count themselves for the row they lack. dst is
- * only written. */
-void video_deflicker_copy(const uint16_t *src, int w, int h, void *dst, int pitch, int bpp, int strength);
+/* Interlaced video out of a frame: h lines of w pixels into dst (pitch bytes per line, bpp 16 or 32),
+ * line y from the source lines y * rows .. y * rows + rows - 1 of src (w x h * rows RGB565; rows 1, or 2
+ * for a doubled render: their average), blended with the lines above and below it by the flicker
+ * filter, so a 1-line line or edge reaches both fields and stops twittering: strength 1 [1 6 1]/8
+ * (light), 2 [1 2 1]/4 (full, as the GameCube's 480i), 0 none. pad: dst gets a line more above and below
+ * the picture (dst points at the one above), filtered against the black around it, so the picture's
+ * top and bottom edges are as soft as the rest; without pad the top and bottom lines count themselves
+ * for the line they lack. Each channel is rounded on its own; dst is only written. */
+void video_deflicker_copy(const uint16_t *src, int w, int h, int rows, void *dst, int pitch, int bpp, int strength,
+                          bool pad);
+/* the same for the output lines line0 .. line1 - 1 only (the pad line above, when there is one, is
+ * line 0; dst still points at line 0), with scratch for 3 * w spread pixels: one part of the work
+ * for each thread of a pool */
+void video_deflicker_lines(const uint16_t *src, int w, int h, int rows, void *dst, int pitch, int bpp, int strength,
+                           bool pad, int line0, int line1, uint32_t *scratch);
 /* fill the area outside the view black (both buffers, once after a mode set) */
 void video_clear_buffer(void *dst, int pitch, int bpp, int w, int h);
 /* RGB565 -> RGB888 with bit replication (like engine.js toRGBA) */

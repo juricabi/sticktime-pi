@@ -262,8 +262,8 @@
   const PLACED = new Set(['wifi_ssid', 'wifi_password', 'script',                   // set elsewhere: Join, the script list,
     'vtx_band', 'vtx_channel', 'vtx_freq', 'vtx_power', 'vtx_pit']);                // the VTX card's pickers
   const LABEL = {
-    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Progressive detail', av_flicker: 'Flicker filter', hdmi_mode: 'HDMI mode', margin: 'Border',
-    fonts: 'Text size', show_ip: 'Show the web address', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
+    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Picture detail', av_flicker: 'Flicker filter', hdmi_mode: 'HDMI mode', margin: 'Border',
+    fonts: 'Text size', show_ip: 'Show the web address', drawing: 'Drawing', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
     hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', stick_channels: 'Stick mapping', invert: 'Reverse', pause_channel: 'Pause switch',
     stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
     latency: 'Camera prediction', stick_mode: 'Stick mode', script: 'Script', stats: 'Timing stats', sd_write: 'The web page may change',
@@ -284,6 +284,7 @@
     music_source: { generated: 'Generated', songs: 'My songs' },
     audio_out: { auto: 'Auto', jack: 'Jack', hdmi: 'HDMI', off: 'Off' },
     show_ip: { auto: 'Auto', on: 'On', off: 'Off' },
+    drawing: { multi: 'All cores', gpu: 'GPU', single: 'One core' },
     hotspot: { auto: 'Auto', on: 'On', off: 'Off' },
     vtx: { off: 'Off', auto: 'Auto', smartaudio: 'SmartAudio', tramp: 'Tramp' },
     vtx_port: { gpio4: 'One pin: GPIO4, pin 7', gpio17: 'One pin: GPIO17, pin 11', gpio22: 'One pin: GPIO22, pin 15',
@@ -292,7 +293,8 @@
   };
   const HELP_MORE = {
     av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines, but they flicker.',
-    av_detail: 'High draws the picture with twice the lines and the Pi scales it down: sharper text and smoother edges, a few ms more work per frame.',
+    av_detail: 'High draws the picture with twice the lines (and twice as wide) and the Pi scales it down: smoother edges and sharper text, for a few ms more work per frame (most with interlaced).',
+    drawing: 'All cores draws each frame on all of the Pi\'s cores: the same picture in less time, which high detail on interlaced needs. GPU draws it on the graphics chip: the least work for the cores; edges may differ by a pixel. One core is how 0.2.5 drew.',
     av_flicker: 'Each line blended with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light keeps more detail, Full stops it completely (as a GameCube in 480i).',
     bluetooth: 'Off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards). Bluetooth shares the Pi\'s radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
@@ -309,7 +311,7 @@
     vtx_send_only: 'For a VTX whose answers can\'t be read: this page then can\'t show what the VTX is set to.',
   };
   // fields that only matter for one output
-  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', av_detail: (v) => v.video === 'av' && v.av_mode === 'progressive', av_flicker: (v) => v.video === 'av' && v.av_mode === 'interlaced', hdmi_mode: (v) => v.video === 'hdmi' };
+  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', av_detail: (v) => v.video === 'av', av_flicker: (v) => v.video === 'av' && v.av_mode === 'interlaced', hdmi_mode: (v) => v.video === 'hdmi' };
   const SLIDERS = new Set(['volume', 'music_volume', 'margin']);
   // the server's one-line help (no full stop), then ours
   function helpText(k) {

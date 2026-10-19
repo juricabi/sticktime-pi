@@ -64,7 +64,7 @@ WARN="-Wall -Wextra -Wno-unused-parameter"
 LUA_SRC="lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm
   lundump lvm lzio lauxlib lbaselib lbitlib lcorolib ldblib liolib lmathlib loslib lstrlib ltablib lutf8lib loadlib linit"
 # every module builds on every target; Linux-only ones compile to stubs elsewhere
-SRC="plat app lcd font etx settings input nav video video_png video_drm video_fb input_evdev wifi_proto input_wifi
+SRC="plat par gpu gpu_geom app lcd font etx settings input nav video video_png video_drm video_fb input_evdev wifi_proto input_wifi
   web web_api web_vtx scenario sys host audio dsp sfx sfx_dsp music music_voices music_fx songs vtx_proto vtx_table vtx vtx_soft"
 
 # compile "src.c obj.o flags" lines in parallel, only when the source (or a header) is newer
@@ -109,6 +109,19 @@ if [ "$WHAT" != tests ] && [ -f "$HERE/src/main.c" ]; then
   echo "  LD sticktime-pi$EXE"
   # shellcheck disable=SC2086
   $CC $CFLAGS -o "$OUT/sticktime-pi$EXE" "$OUT/obj/src/main.o" $SRC_OBJ $LUA_OBJ $LIBS
+  # the GPU helper (drawing = gpu): glibc and dynamic, as it loads Mesa's EGL and GLES at run time
+  GTFLAGS=skip
+  case "$TARGET" in
+    aarch64|x86_64-linux)
+      GTFLAGS=""
+      case "$CC" in *zig*) GTFLAGS="-target $(echo "$TARGET" | sed 's/-linux//')-linux-gnu.2.31" ;; esac ;;
+    native) [ -n "$EXE" ] || GTFLAGS="" ;;
+  esac
+  if [ "$GTFLAGS" != skip ]; then
+    echo "  LD sticktime-gpu"
+    # shellcheck disable=SC2086
+    $CC $GTFLAGS $OPT -g -std=gnu99 -Isrc $WARN -o "$OUT/sticktime-gpu" "$HERE/src/gpu_main.c" "$HERE/src/gpu_geom.c" -ldl -lm
+  fi
 fi
 
 if [ "$WHAT" != prog ]; then

@@ -50,6 +50,9 @@ const glyph_t *font_glyph(fonts_t *f, font_face_t *face, uint32_t cp);
 void font_measure(fonts_t *f, font_face_t *face, const char *s, int len, int *w, int *h);
 /* decode one UTF-8 code point at s[*i] (len bytes), advancing *i */
 uint32_t font_utf8_next(const char *s, int len, int *i);
+/* hold: glyphs the cache evicts keep their masks (a glyph_t copied before stays drawable) until
+ * fonts_hold(f, false) frees them; for the recorded drawing of a frame (lcd_flush) */
+void fonts_hold(fonts_t *f, bool hold);
 /* warm the cache for printable ASCII at every size of a class (startup, so frames don't allocate) */
 void fonts_warm(fonts_t *f, const font_class_t *cls);
 

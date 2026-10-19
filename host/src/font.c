@@ -132,26 +132,50 @@ struct fonts {
   uint8_t gamma[256];
   uint32_t tick;
   struct font_face face[MAX_FACES];
+  bool hold;                       /* fonts_hold: masks of evicted glyphs wait in grave */
+  uint8_t **grave;
+  int ngrave, capgrave;
 };
 
-static void glyph_free(glyph_t *g) {
-  free(g->a);
+static void glyph_free(fonts_t *f, glyph_t *g) {
+  if (g->a && f->hold) {
+    if (f->ngrave == f->capgrave) {
+      int cap = f->capgrave ? f->capgrave * 2 : 64;
+      uint8_t **m = realloc(f->grave, (size_t)cap * sizeof *m);
+      if (m) {
+        f->grave = m;
+        f->capgrave = cap;
+      }
+    }
+    /* no room: the mask is left allocated (a recorded glyph may still point at it) */
+    if (f->ngrave < f->capgrave) f->grave[f->ngrave++] = g->a;
+  } else {
+    free(g->a);
+  }
   memset(g, 0, sizeof *g);
 }
 
-static void xcache_clear(struct font_face *fc) {
+static void xcache_clear(fonts_t *f, struct font_face *fc) {
   for (int i = 0; i < XCACHE; i++) {
-    if (fc->x[i].cp != NO_CP) glyph_free(&fc->x[i].g);
+    if (fc->x[i].cp != NO_CP) glyph_free(f, &fc->x[i].g);
     fc->x[i].cp = NO_CP;
   }
   fc->xn = 0;
 }
 
-static void face_clear(struct font_face *fc) {
-  for (int i = 0; i < ASCII_N; i++) if (fc->have[i]) glyph_free(&fc->ascii[i]);
+static void face_clear(fonts_t *f, struct font_face *fc) {
+  for (int i = 0; i < ASCII_N; i++) if (fc->have[i]) glyph_free(f, &fc->ascii[i]);
   memset(fc->have, 0, sizeof fc->have);
-  xcache_clear(fc);
+  xcache_clear(f, fc);
   fc->used = false;
+}
+
+void fonts_hold(fonts_t *f, bool hold) {
+  if (!f) return;
+  f->hold = hold;
+  if (hold) return;
+  for (int i = 0; i < f->ngrave; i++) free(f->grave[i]);
+  f->ngrave = 0;
 }
 
 static unsigned char *read_all(const char *path, size_t *len) {
@@ -221,7 +245,10 @@ fonts_t *fonts_open_stub(float adv_px) {
 
 void fonts_close(fonts_t *f) {
   if (!f) return;
-  for (int i = 0; i < MAX_FACES; i++) face_clear(&f->face[i]);
+  f->hold = false;
+  for (int i = 0; i < MAX_FACES; i++) face_clear(f, &f->face[i]);
+  fonts_hold(f, false);
+  free(f->grave);
   free(f->ttf[0]);
   free(f->ttf[1]);
   free(f);
@@ -240,7 +267,7 @@ font_face_t *fonts_face(fonts_t *f, int px, bool bold) {
     if (!oldest || (uint32_t)(f->tick - fc->last_use) > (uint32_t)(f->tick - oldest->last_use)) oldest = fc;
   }
   struct font_face *fc = free_slot ? free_slot : oldest;
-  face_clear(fc);
+  face_clear(f, fc);
   fc->used = true;
   fc->px = px;
   fc->bold = bold;
@@ -421,7 +448,7 @@ const glyph_t *font_glyph(fonts_t *f, font_face_t *face, uint32_t cp) {
     h = (h + 1) & (XCACHE - 1);
   }
   if (fc->xn >= XCACHE_MAX) {
-    xcache_clear(fc);
+    xcache_clear(f, fc);
     h = (cp * 2654435761u) >> 24;
   }
   xslot_t *s = &fc->x[h];

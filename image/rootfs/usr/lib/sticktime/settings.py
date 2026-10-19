@@ -50,12 +50,13 @@ KEYS = (
     Key("tv", ENUM, "ntsc", "ntsc|pal|pal60|ntsc-j|pal-m|pal-n|ntsc-443|secam", False, True, "TV standard of the composite output"),
     Key("aspect", ENUM, "4:3", "4:3|16:9", False, False, "Shape of the picture in your goggles or screen"),
     Key("av_mode", ENUM, "progressive", "interlaced|progressive", False, False, "Composite: interlaced (480i/576i) or progressive (240p/288p)"),
-    Key("av_detail", ENUM, "high", "high|normal", False, False, "Progressive composite: high draws twice the lines and the Pi scales them down (sharper), normal draws 240p/288p"),
-    Key("av_flicker", ENUM, "off", "off|light|full", False, False, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)"),
+    Key("av_detail", ENUM, "high", "high|normal", False, False, "Composite: high draws twice the lines and the Pi scales them down (smoother edges, sharper text), normal draws the mode's lines"),
+    Key("av_flicker", ENUM, "full", "off|light|full", False, False, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)"),
     Key("hdmi_mode", STRING, "auto", "", False, False, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz"),
     Key("margin", INT, "0", "0|20", False, False, "Black border in percent, for goggles that cut off the edges"),
     Key("fonts", ENUM, "auto", "auto|std|sml|lrg|pc|hd", False, False, "Text size: auto, or the fonts of a radio screen class"),
     Key("show_ip", ENUM, "auto", "auto|on|off", True, False, "Show the web address on the main menu"),
+    Key("drawing", ENUM, "multi", "single|multi|gpu", True, False, "Drawing the picture: multi (on all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest; edges may differ by a pixel) or single (one core)"),
     Key("wifi_ssid", STRING, "", "", False, False, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)"),
     Key("wifi_password", SECRET, "", "", False, False, "WiFi password (empty for an open network)"),
     Key("wifi_country", STRING, "US", "", False, False, "Two-letter country code for WiFi (US, GB, DE, HR, ...)"),
@@ -118,10 +119,10 @@ TEMPLATE = (
     "aspect = 4:3\n"
     "# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines, thin lines flicker)\n"
     "av_mode = progressive\n"
-    "# progressive av: high (drawn with twice the lines, scaled down by the Pi: sharper text and edges) or normal\n"
+    "# av: high (drawn with twice the lines, scaled down by the Pi: smoother edges, sharper text) or normal\n"
     "av_detail = high\n"
     "# interlaced av: the flicker filter blends each line with its neighbours: off, light, full (no flicker)\n"
-    "av_flicker = off\n"
+    "av_flicker = full\n"
     "# hdmi: auto (1280x720 if the screen offers it, else its preferred mode), or e.g. 1920x1080, 1280x720@60\n"
     "hdmi_mode = auto\n"
     "# black border in percent, for goggles that cut off the edges of the picture (0-20)\n"
@@ -130,6 +131,8 @@ TEMPLATE = (
     "fonts = auto\n"
     "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n"
     "show_ip = auto\n"
+    "# drawing the picture: multi (all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest), single (one core)\n"
+    "drawing = multi\n"
     "\n"
     "# ---- WiFi -----------------------------------------------------------------------\n"
     "# your network; 2.4 GHz is best next to 5.8 GHz video (and the ELRS module is 2.4 GHz only)\n"

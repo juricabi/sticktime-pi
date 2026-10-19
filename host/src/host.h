@@ -61,6 +61,12 @@ typedef struct host {
   fonts_t *fonts;
   font_class_t fcls;
   lcd_t lcd;
+  par_t *par;                  /* drawing = multi: the threads that draw and copy out the frame */
+  par_t *drawing_pool;         /* the pool in use (NULL: one core), for the log */
+  gpu_t *gpu;                  /* drawing = gpu: the helper that draws the frames */
+  bool gpu_said, gpu_given_up; /* its renderer logged; it failed (until drawing changes) */
+  uint16_t *gpu_shot;          /* a frame the GPU drew, for the web page's screenshot */
+  bool drawing_said;
   etx_t *etx;
   etx_config_t ecfg;
   video_t *video;

@@ -197,7 +197,7 @@ static void fb_close(video_t *v) {
   free(f);
 }
 
-static const video_ops_t fb_ops = { fb_present, fb_wait, fb_pending, fb_fd, fb_close, NULL };
+static const video_ops_t fb_ops = { fb_present, fb_wait, fb_pending, fb_fd, fb_close, NULL, NULL };
 
 static uint32_t chan(unsigned c8, const struct fb_bitfield *b) {
   if (!b->length) return 0;

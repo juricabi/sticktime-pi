@@ -8,12 +8,13 @@
   X("tv",               SK_ENUM,   "ntsc",        "ntsc|pal|pal60|ntsc-j|pal-m|pal-n|ntsc-443|secam",  false, true,  "TV standard of the composite output") \
   X("aspect",           SK_ENUM,   "4:3",         "4:3|16:9",                                          false, false, "Shape of the picture in your goggles or screen") \
   X("av_mode",          SK_ENUM,   "progressive", "interlaced|progressive",                            false, false, "Composite: interlaced (480i/576i) or progressive (240p/288p)") \
-  X("av_detail",        SK_ENUM,   "high",        "high|normal",                                       false, false, "Progressive composite: high draws twice the lines and the Pi scales them down (sharper), normal draws 240p/288p") \
-  X("av_flicker",       SK_ENUM,   "off",         "off|light|full",                                    false, false, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)") \
+  X("av_detail",        SK_ENUM,   "high",        "high|normal",                                       false, false, "Composite: high draws twice the lines and the Pi scales them down (smoother edges, sharper text), normal draws the mode's lines") \
+  X("av_flicker",       SK_ENUM,   "full",        "off|light|full",                                    false, false, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)") \
   X("hdmi_mode",        SK_STRING, "auto",        "",                                                  false, false, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz") \
   X("margin",           SK_INT,    "0",           "0|20",                                              false, false, "Black border in percent, for goggles that cut off the edges") \
   X("fonts",            SK_ENUM,   "auto",        "auto|std|sml|lrg|pc|hd",                            false, false, "Text size: auto, or the fonts of a radio screen class") \
   X("show_ip",          SK_ENUM,   "auto",        "auto|on|off",                                       true,  false, "Show the web address on the main menu") \
+  X("drawing",          SK_ENUM,   "multi",       "single|multi|gpu",                                  true,  false, "Drawing the picture: multi (on all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest; edges may differ by a pixel) or single (one core)") \
   X("wifi_ssid",        SK_STRING, "",            "",                                                  false, false, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)") \
   X("wifi_password",    SK_SECRET, "",            "",                                                  false, false, "WiFi password (empty for an open network)") \
   X("wifi_country",     SK_STRING, "US",          "",                                                  false, false, "Two-letter country code for WiFi (US, GB, DE, HR, ...)") \
@@ -75,10 +76,10 @@
 "aspect = 4:3\n" \
 "# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines, thin lines flicker)\n" \
 "av_mode = progressive\n" \
-"# progressive av: high (drawn with twice the lines, scaled down by the Pi: sharper text and edges) or normal\n" \
+"# av: high (drawn with twice the lines, scaled down by the Pi: smoother edges, sharper text) or normal\n" \
 "av_detail = high\n" \
 "# interlaced av: the flicker filter blends each line with its neighbours: off, light, full (no flicker)\n" \
-"av_flicker = off\n" \
+"av_flicker = full\n" \
 "# hdmi: auto (1280x720 if the screen offers it, else its preferred mode), or e.g. 1920x1080, 1280x720@60\n" \
 "hdmi_mode = auto\n" \
 "# black border in percent, for goggles that cut off the edges of the picture (0-20)\n" \
@@ -87,6 +88,8 @@
 "fonts = auto\n" \
 "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n" \
 "show_ip = auto\n" \
+"# drawing the picture: multi (all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest), single (one core)\n" \
+"drawing = multi\n" \
 "\n" \
 "# ---- WiFi -----------------------------------------------------------------------\n" \
 "# your network; 2.4 GHz is best next to 5.8 GHz video (and the ELRS module is 2.4 GHz only)\n" \

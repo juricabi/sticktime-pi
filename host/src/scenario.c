@@ -127,6 +127,7 @@ static int l_shot(lua_State *L) {
   char path[1024];
   snprintf(path, sizeof path, "%s/%s.png", S->png_dir, name);
   plat_mkdirs(S->png_dir);
+  lcd_flush(&S->h.lcd);
   if (video_snapshot_png(S->h.lcd.fb, S->h.lcd.w, S->h.lcd.h, path) != 0) return luaL_error(L, "can't write %s", path);
   return 0;
 }
@@ -134,12 +135,14 @@ static int l_shot(lua_State *L) {
 static int l_pixel(lua_State *L) {
   int x = (int)luaL_checkinteger(L, 1), y = (int)luaL_checkinteger(L, 2);
   if (x < 0 || y < 0 || x >= S->h.lcd.w || y >= S->h.lcd.h) return luaL_error(L, "pixel off screen");
+  lcd_flush(&S->h.lcd);
   lua_pushinteger(L, S->h.lcd.fb[y * S->h.lcd.w + x]);
   return 1;
 }
 
 static int l_hash(lua_State *L) {
   uint32_t hsh = 2166136261u;
+  lcd_flush(&S->h.lcd);
   const uint8_t *p = (const uint8_t *)S->h.lcd.fb;
   size_t n = (size_t)S->h.lcd.w * (size_t)S->h.lcd.h * 2;
   for (size_t i = 0; i < n; i++) { hsh ^= p[i]; hsh *= 16777619u; }

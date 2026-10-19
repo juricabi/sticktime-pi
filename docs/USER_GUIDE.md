@@ -105,13 +105,17 @@ eyes. What helps:
   the brightest thing in view. Overcast is the softest.
 - On the AV output the text has a black outline (like Betaflight's OSD), readable over sky and grass alike.
 - **Progressive** (`av_mode = progressive`, 240p / 288p) is the default since 0.2.5: no flicker of thin lines
-  and text. With `av_detail = high` (the default) the game draws twice the lines and the Pi scales them down:
-  sharper text and smoother edges, for a few ms more work per frame; `normal` draws 240p / 288p as they are.
-  Interlaced (480i / 576i) has twice the lines, but thin lines and text flicker. A card from before 0.2.5
-  keeps interlaced: web page → Video → Composite lines → Progressive.
-- Staying with interlaced? `av_flicker = light` or `full` (web page → Video → Flicker filter) blends each line
-  with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light
-  keeps more detail, Full stops it completely, at a little vertical softness (as a GameCube does in 480i).
+  and text. Interlaced (480i / 576i) has twice the lines, but without the flicker filter below thin lines and
+  text flicker. A card from before 0.2.5 keeps interlaced: web page → Video → Composite lines → Progressive.
+- **Picture detail** (`av_detail = high`, the default): the game draws twice the lines (and twice as wide) and
+  the Pi scales them down: smoother edges and sharper text, for a few ms more work per frame. Since 0.2.6 also
+  with interlaced, where it is the most work (four times the pixels of progressive). `normal` draws one line
+  per line of the mode.
+- Staying with interlaced? The flicker filter (`av_flicker`, web page → Video → Flicker filter) blends each line
+  with the lines above and below it, so a thin line or text lands in both fields and stops flickering: **Full**
+  (the default since 0.2.6) stops it completely at a little vertical softness, as a GameCube does in 480i;
+  Light keeps more detail; Off is interlaced as before. It also softens the picture's top and bottom edges
+  into the border, and with high detail it works on the averaged line pairs.
 - `tv = ntsc` (or `pal60`) refreshes at 60 Hz: a little less delay and smoother than PAL's 50 Hz. Most analog
   goggles show both. PAL has more lines, so slightly sharper text.
 - Blacks grey, or dark areas crushed? Switch between `tv = ntsc` and `tv = ntsc-j` (the same signal without

@@ -522,6 +522,19 @@ static void test_layout_double(void) {
     video_layout(c[i].w, c[i].h, true, c[i].aspect, c[i].margin, 0, 0, &a);
     CHECK(l.view_x == a.view_x && l.view_y == a.view_y && l.view_w == a.view_w && l.view_h == a.view_h);
   }
+  /* every mode, shape and border: exactly twice the area's lines, so an interlaced mode's line pairs
+   * average 1:1 onto its lines (video_deflicker_copy), within the filter's line buffers */
+  static const int lines[] = { 240, 288, 480, 576 };
+  for (int i = 0; i < 4; i++)
+    for (int k = 0; k < 2; k++)
+      for (int margin = 0; margin <= 20; margin++) {
+        video_layout_t l, a;
+        const char *aspect = k ? "16:9" : "4:3";
+        CHECK_INT(video_layout_double(720, lines[i], aspect, margin, &l), 0);
+        video_layout(720, lines[i], true, aspect, margin, 0, 0, &a);
+        CHECK(l.render_h == 2 * l.view_h && l.render_w <= 2048);
+        CHECK(l.view_x == a.view_x && l.view_y == a.view_y && l.view_w == a.view_w && l.view_h == a.view_h);
+      }
   video_layout_t l;
   CHECK_INT(video_layout_double(0, 240, "4:3", 0, &l), -1);
   CHECK(l.render_w == 640 && l.render_h == 480);
@@ -1352,66 +1365,104 @@ static void test_none_backend(void) {
   video_close(v);
 }
 
-/* the flicker filter: a 1-row white line on black spreads over three rows, each channel rounded on
- * its own; a flat colour stays as it is; the edge rows count themselves for the row they lack */
+/* the flicker filter: a 1-line white line on black spreads over three lines, each channel rounded on
+ * its own; a flat colour stays as it is; the edge lines count themselves for the line they lack, or with
+ * pad spread into a line of the border; a doubled render's line pairs are averaged first */
 static void test_deflicker(void) {
   enum { W = 3, H = 5 };
-  uint16_t src[W * H], out[W * H];
+  uint16_t src[W * H * 2], out[W * (H + 2)];
   uint32_t out32[W * H];
   memset(src, 0, sizeof src);
   for (int x = 0; x < W; x++) src[2 * W + x] = 0xFFFF;
   /* full [1 2 1]/4: R and B (31 + 2) >> 2 = 8 beside the line, (62 + 2) >> 2 = 16 on it; G 16 and 32 */
-  video_deflicker_copy(src, W, H, out, W * 2, 16, 2);
+  video_deflicker_copy(src, W, H, 1, out, W * 2, 16, 2, false);
   static const uint16_t full[H] = { 0, 0x4208, 0x8410, 0x4208, 0 };
   for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], full[y]);
   /* light [1 6 1]/8: (31 + 4) >> 3 = 4 beside, (186 + 4) >> 3 = 23 on it; G 8 and 47 */
-  video_deflicker_copy(src, W, H, out, W * 2, 16, 1);
+  video_deflicker_copy(src, W, H, 1, out, W * 2, 16, 1, false);
   static const uint16_t light[H] = { 0, 0x2104, 0xBDF7, 0x2104, 0 };
   for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], light[y]);
   /* 32 bpp: the same pixels, as XRGB8888 */
-  video_deflicker_copy(src, W, H, out32, W * 4, 32, 2);
+  video_deflicker_copy(src, W, H, 1, out32, W * 4, 32, 2, false);
   CHECK_INT(out32[2 * W] & 0xFFFFFF, 0x848284);                  /* 16 / 32 / 16, bits replicated */
   CHECK_INT(out32[0] & 0xFFFFFF, 0);
-  /* a flat colour is unchanged by both */
-  for (int i = 0; i < W * H; i++) src[i] = 0x9A5B;
-  for (int s = 1; s <= 2; s++) {
-    video_deflicker_copy(src, W, H, out, W * 2, 16, s);
-    CHECK(!memcmp(out, src, sizeof src));
-  }
-  /* edges: a white top row keeps (2 + 1) / 4 of itself, its neighbour gets 1 / 4 */
+  /* doubled: the line is source line 4 of 10, half of output line 2: full (62 + 4) >> 3 = 8 on it,
+   * (31 + 4) >> 3 = 4 beside (G 16 and 8); none averages the pair: (31 + 1) >> 1 = 16 */
+  memset(src, 0, sizeof src);
+  for (int x = 0; x < W; x++) src[4 * W + x] = 0xFFFF;
+  video_deflicker_copy(src, W, H, 2, out, W * 2, 16, 2, false);
+  static const uint16_t full2[H] = { 0, 0x2104, 0x4208, 0x2104, 0 };
+  for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], full2[y]);
+  video_deflicker_copy(src, W, H, 2, out, W * 2, 16, 0, true);   /* no filter: no border lines */
+  static const uint16_t none2[H] = { 0, 0, 0x8410, 0, 0 };
+  for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], none2[y]);
+  /* a flat colour is unchanged by all */
+  for (int i = 0; i < W * H * 2; i++) src[i] = 0x9A5B;
+  for (int rows = 1; rows <= 2; rows++)
+    for (int s = 0; s <= 2; s++) {
+      memset(out, 0, sizeof out);
+      video_deflicker_copy(src, W, H, rows, out, W * 2, 16, s, false);
+      CHECK(!memcmp(out, src, sizeof out[0] * W * H));
+    }
+  /* edges: a white top line keeps (2 + 1) / 4 of itself, its neighbour gets 1 / 4; with pad the
+   * border line above gets 1 / 4 and the line itself 2 / 4, the bottom border line nothing */
   memset(src, 0, sizeof src);
   for (int x = 0; x < W; x++) src[x] = 0xFFFF;
-  video_deflicker_copy(src, W, H, out, W * 2, 16, 2);
+  video_deflicker_copy(src, W, H, 1, out, W * 2, 16, 2, false);
   CHECK_INT(out[0] >> 11, (31 * 3 + 2) >> 2);
   CHECK_INT(out[W] >> 11, (31 + 2) >> 2);
-  /* strength 0: a plain copy; a row pitch wider than the picture */
+  memset(out, 0xAA, sizeof out);
+  video_deflicker_copy(src, W, H, 1, out, W * 2, 16, 2, true);
+  static const uint16_t padded[H + 2] = { 0x4208, 0x8410, 0x4208, 0, 0, 0, 0 };
+  for (int y = 0; y < H + 2; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], padded[y]);
+  /* strength 0: a plain copy; a line pitch wider than the picture */
   src[W + 1] = 0x1234;
   uint16_t wide[(W + 2) * H];
   memset(wide, 0xAA, sizeof wide);
-  video_deflicker_copy(src, W, H, wide, (W + 2) * 2, 16, 0);
+  video_deflicker_copy(src, W, H, 1, wide, (W + 2) * 2, 16, 0, false);
   CHECK_INT(wide[(W + 2) + 1], 0x1234);
   CHECK_INT(wide[W], 0xAAAA);                                    /* past the picture: untouched */
-  /* any picture: the result is each channel's (a + m b + c + d / 2) / d, rows clamped at the edges, for
-   * every height (the rotating row buffers) and for a width past them (the plain loop) */
-  static uint16_t rs[2100 * 7], ro[2100 * 7];
+  /* bad arguments write nothing */
+  memset(out, 0xAA, sizeof out);
+  video_deflicker_copy(src, W, H, 3, out, W * 2, 16, 2, false);
+  video_deflicker_copy(src, W, 0, 1, out, W * 2, 16, 2, false);
+  video_deflicker_copy(src, W, H, 1, out, W * 2, 24, 2, false);
+  CHECK_INT(out[0], 0xAAAA);
+  /* any picture: each channel's (e (a + c) + m b + d / 2) / d over the line sums, d = (2e + m) rows; lines
+   * clamped at the edges, or black past them with pad; for every height (the rotating line buffers) and
+   * for a width past them (the plain loop) */
+  static uint16_t rs[2100 * 14], ro[2100 * 9];
   uint32_t seed = 12345;
   for (size_t i = 0; i < sizeof rs / sizeof rs[0]; i++) { seed = seed * 1103515245u + 12345u; rs[i] = (uint16_t)(seed >> 16); }
   static const int dims[][2] = { { 37, 1 }, { 37, 2 }, { 37, 3 }, { 37, 7 }, { 2100, 3 } };
-  for (size_t k = 0; k < sizeof dims / sizeof dims[0]; k++) {
-    int w = dims[k][0], h = dims[k][1];
-    for (int s = 1; s <= 2; s++) {
-      int m = s == 2 ? 2 : 6, dv = s == 2 ? 4 : 8, bad = 0;
-      video_deflicker_copy(rs, w, h, ro, w * 2, 16, s);
-      for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-        uint16_t a = rs[(y > 0 ? y - 1 : 0) * w + x], b = rs[y * w + x], c = rs[(y < h - 1 ? y + 1 : h - 1) * w + x];
-        int r = ((a >> 11) + m * (b >> 11) + (c >> 11) + dv / 2) / dv;
-        int g = (((a >> 5) & 63) + m * ((b >> 5) & 63) + ((c >> 5) & 63) + dv / 2) / dv;
-        int bl = ((a & 31) + m * (b & 31) + (c & 31) + dv / 2) / dv;
-        if (ro[y * w + x] != (uint16_t)((r << 11) | (g << 5) | bl)) bad++;
-      }
-      CHECK_INT(bad, 0);
-    }
-  }
+  for (size_t k = 0; k < sizeof dims / sizeof dims[0]; k++)
+    for (int rows = 1; rows <= 2; rows++)
+      for (int s = 0; s <= 2; s++)
+        for (int pad = 0; pad <= 1; pad++) {
+          int w = dims[k][0], h = dims[k][1], bad = 0;
+          int e = s > 0, m = s == 2 ? 2 : s == 1 ? 6 : 1, dv = (2 * e + m) * rows, p = pad && s > 0;
+          video_deflicker_copy(rs, w, h, rows, ro, w * 2, 16, s, pad);
+          for (int y = -p; y < h + p; y++)
+            for (int x = 0; x < w; x++) {
+              int sum[3][3];                     /* [line y-1, y, y+1][R, G, B] */
+              for (int j = 0; j < 3; j++) {
+                int ly = y - 1 + j;
+                sum[j][0] = sum[j][1] = sum[j][2] = 0;
+                if ((ly < 0 || ly >= h) && p) continue;
+                ly = ly < 0 ? 0 : ly >= h ? h - 1 : ly;
+                for (int r = 0; r < rows; r++) {
+                  uint16_t px = rs[(ly * rows + r) * w + x];
+                  sum[j][0] += px >> 11;
+                  sum[j][1] += (px >> 5) & 63;
+                  sum[j][2] += px & 31;
+                }
+              }
+              int ch[3];
+              for (int c = 0; c < 3; c++) ch[c] = (e * (sum[0][c] + sum[2][c]) + m * sum[1][c] + dv / 2) / dv;
+              if (ro[(y + p) * w + x] != (uint16_t)((ch[0] << 11) | (ch[1] << 5) | ch[2])) bad++;
+            }
+          CHECK_INT(bad, 0);
+        }
 }
 
 /* STICKTIME_DT from the deadlines: whole refresh periods */

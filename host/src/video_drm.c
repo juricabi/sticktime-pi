@@ -81,7 +81,7 @@ typedef struct {
   char device[64], tv[16], aspect[8], hdmi_mode[32];
   int out, margin, cfg_rw, cfg_rh, wait_ms;
   bool progressive, sharp, filter_set;
-  bool detail_high;                /* av_detail = high: a progressive composite mode draws twice its lines */
+  bool detail_high;                /* av_detail = high: a composite mode draws twice its lines */
   bool doubled;                    /* the render size is such a doubled one */
   int flicker;                     /* av_flicker on an interlaced mode: 0 off, 1 light, 2 full */
   /* device */
@@ -97,6 +97,12 @@ typedef struct {
   int rw, rh;                      /* render size: fixed once chosen */
   video_layout_t lay;
   bool hw_scale, cpu_scale;        /* cpu_scale: mode-size buffers + LUTs (or offset 1:1 copy) */
+  int field_rows;                  /* interlaced composite: the frame goes out through video_deflicker_copy,
+                                    * this many render lines (1, 2 doubled) per mode line; 0: copied plainly */
+  bool field_pad;                  /* ... with a line more above and below the picture */
+  uint32_t *field_scratch;         /* video_deflicker_lines' spread lines, 3 * rw for each pool thread */
+  size_t field_scratch_n;
+  uint32_t buf_gen, gpu_buf_gen;   /* buf[] replaced (apply_mode), and the set the GPU was given */
   dbuf_t buf[NBUF], black, steal;
   uint16_t *xlut, *ylut;
   int front, pending;
@@ -646,6 +652,13 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
   video_layout(mw, mh, composite, d->aspect, d->margin, d->rw, d->rh, &lay);
   bool full = lay.view_x == 0 && lay.view_y == 0 && lay.view_w == mw && lay.view_h == mh;
   bool exact = full && d->rw == mw && d->rh == mh;
+  /* interlaced composite: one buffer line per mode line through the flicker filter, a doubled render's
+   * line pairs averaged on the way (the plane then scales across only); the filter reaches a line into
+   * the border above and below the picture when there is one */
+  int frows = 0;
+  if (composite && mode_il(m))
+    frows = d->rh == lay.view_h ? (d->flicker ? 1 : 0) : d->rh == 2 * lay.view_h ? 2 : 0;
+  bool fpad = frows && d->flicker && lay.view_y >= 1 && lay.view_y + lay.view_h < mh;
   uint32_t plane = d->plane_id && crtc_idx == d->crtc_idx ? d->plane_id : find_primary_plane(d->fd, crtc_idx);
   if (plane && d->bpp == 16) {
     bool known, has = plane_has_format(d->fd, plane, DRM_FORMAT_RGB565, &known);
@@ -658,8 +671,10 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
   for (int attempt = 0; attempt < 3; attempt++) {
     /* attempt 0: HVS scaling (or exact 1:1); then CPU scaling into mode-size buffers */
     bool hw = !exact && !d->hw_scale_broken && attempt == 0;
+    int rows = hw || exact ? frows : 0, pad = hw && fpad ? 1 : 0;
     dbuf_t nb[NBUF] = { { 0 } }, nblack = { 0 };
-    uint32_t bw = hw || exact ? (uint32_t)d->rw : (uint32_t)mw, bh = hw || exact ? (uint32_t)d->rh : (uint32_t)mh;
+    uint32_t bw = hw || exact ? (uint32_t)d->rw : (uint32_t)mw;
+    uint32_t bh = rows ? (uint32_t)(lay.view_h + 2 * pad) : hw || exact ? (uint32_t)d->rh : (uint32_t)mh;
     bool need_black = hw && ((int)bw < mw || (int)bh < mh);   /* SETCRTC's fb must cover the mode [4.10] */
     int e = create_set(d, nb, &nblack, bw, bh, need_black ? (uint32_t)mw : 0, (uint32_t)mh);
     if (e == -ENOMEM || e == -ENOSPC) {        /* CMA short: free the old set first */
@@ -694,15 +709,16 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
     if (hw) {
       struct drm_mode_set_plane sp = {
         .plane_id = plane, .crtc_id = crtc_id, .fb_id = nb[0].fb_id, .flags = 0,
-        .crtc_x = lay.view_x, .crtc_y = lay.view_y, .crtc_w = (uint32_t)lay.view_w, .crtc_h = (uint32_t)lay.view_h,
-        .src_x = 0, .src_y = 0, .src_w = (uint32_t)d->rw << 16, .src_h = (uint32_t)d->rh << 16,
+        .crtc_x = lay.view_x, .crtc_y = lay.view_y - pad, .crtc_w = (uint32_t)lay.view_w,
+        .crtc_h = (uint32_t)(lay.view_h + 2 * pad), .src_x = 0, .src_y = 0, .src_w = (uint32_t)d->rw << 16, .src_h = bh << 16,
       };
       e = plane ? xioctl(d->fd, DRM_IOCTL_MODE_SETPLANE, &sp) : -ENOENT;
       if (e) {
         /* the plane can't scale or position (vkms, simple drivers): CPU scaling from now on */
         video_log(&d->base, "hardware scaling unavailable (%s): CPU scaling", strerror(-e));
         if (d->doubled) video_log(&d->base, "av_detail = high needs hardware scaling: av_detail = normal draws as sharp for less work");
-        if (d->flicker) video_log(&d->base, "av_flicker needs hardware scaling: the picture goes out unfiltered");
+        if (d->flicker && composite && mode_il(m))
+          video_log(&d->base, "av_flicker needs hardware scaling: the picture goes out unfiltered");
         d->hw_scale_broken = true;
         if (e == -EACCES) {
           destroy_all(d, nb, &nblack);
@@ -727,6 +743,9 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
     d->xlut = d->ylut = NULL;
     d->hw_scale = hw;
     d->cpu_scale = !hw && !exact;
+    d->buf_gen++;
+    d->field_rows = rows;
+    d->field_pad = pad;
     if (d->cpu_scale) {
       if (lay.view_w != d->rw) d->xlut = malloc(sizeof(uint16_t) * (size_t)lay.view_w);
       if (lay.view_h != d->rh) d->ylut = malloc(sizeof(uint16_t) * (size_t)lay.view_h);
@@ -849,11 +868,12 @@ static int drm_setup(drm_t *d, int flags, bool first) {
   if (cls == CLS_COMPOSITE) composite_cands(d, c, &cands);
   else hdmi_cands(d, c, &cands);
   if (!d->rw) {
-    /* the render size is chosen once, from the mode we aim for; a progressive composite mode with
-     * av_detail = high draws twice its lines and the plane scales them down (supersampled) */
+    /* the render size is chosen once, from the mode we aim for; a composite mode with av_detail = high
+     * draws twice its lines (supersampled): the plane scales them down, and on an interlaced mode the
+     * flicker filter averages the line pairs first */
     video_layout_t l;
     const video_mode_t *m0 = &cands.m[0];
-    d->doubled = cls == CLS_COMPOSITE && d->detail_high && !mode_il(m0) && !d->cfg_rw;
+    d->doubled = cls == CLS_COMPOSITE && d->detail_high && !d->cfg_rw;
     if (d->doubled)
       video_layout_double(m0->hdisplay, m0->vdisplay, d->aspect, d->margin, &l);
     else
@@ -1220,13 +1240,41 @@ static void service(drm_t *d, int64_t now) {
 
 /* ================================================================ ops */
 
+typedef struct {
+  drm_t *d;
+  const uint16_t *fb;
+  void *map;
+  int pitch, lines, parts;
+} field_job_t;
+
+static void field_part(void *ctx, int part) {
+  const field_job_t *j = ctx;
+  const drm_t *d = j->d;
+  video_deflicker_lines(j->fb, d->rw, d->lay.view_h, d->field_rows, j->map, j->pitch, d->bpp, d->flicker, d->field_pad,
+                        (int)((int64_t)j->lines * part / j->parts), (int)((int64_t)j->lines * (part + 1) / j->parts),
+                        d->field_scratch + (size_t)part * 3 * (size_t)d->rw);
+}
+
 static void copy_frame(drm_t *d, int b, const uint16_t *fb) {
   dbuf_t *B = &d->buf[b];
   if (!B->map) return;
-  /* interlaced composite with av_flicker: each row blended with its neighbours on the way out, when
-   * the rows go 1:1 onto mode lines (the plane scales across only); CPU scaling copies plainly */
-  if (d->flicker && d->composite && mode_il(&d->mode) && !d->cpu_scale && d->rh == d->lay.view_h)
-    video_deflicker_copy(fb, d->rw, d->rh, B->map, (int)B->pitch, d->bpp, d->flicker);
+  /* interlaced composite: each line blended with its neighbours (av_flicker) on the way out, a doubled
+   * render's line pairs averaged (apply_mode), shared out among the pool's threads (drawing = multi);
+   * CPU scaling copies plainly */
+  if (d->field_rows) {
+    field_job_t j = { d, fb, B->map, (int)B->pitch, d->lay.view_h + 2 * d->field_pad, par_threads(d->base.par) };
+    size_t need = (size_t)j.parts * 3 * (size_t)d->rw;
+    if (j.parts > 1 && need > d->field_scratch_n) {            /* once, or when the pool changes */
+      uint32_t *s = realloc(d->field_scratch, need * sizeof *s);
+      if (s) {
+        d->field_scratch = s;
+        d->field_scratch_n = need;
+      }
+    }
+    if (j.parts > 1 && need <= d->field_scratch_n) par_run(d->base.par, j.parts, field_part, &j);
+    else video_deflicker_copy(fb, d->rw, d->lay.view_h, d->field_rows, B->map, (int)B->pitch, d->bpp, d->flicker,
+                              d->field_pad);
+  }
   else if (d->cpu_scale)
     video_scale_copy(fb, d->rw, B->map, (int)B->pitch, d->bpp, d->lay.view_x, d->lay.view_y, d->lay.view_w,
                      d->lay.view_h, d->xlut, d->ylut);
@@ -1335,6 +1383,48 @@ static int drm_present(video_t *v, const uint16_t *fb) {
   return 0;
 }
 
+/* drawing = gpu: the buffers, as dma-bufs, to the GPU helper (with how frames go into them) */
+static int gpu_target(drm_t *d) {
+  int fds[NBUF], n = 0, e = 0;
+  for (; n < NBUF; n++) {
+    struct drm_prime_handle ph = { .handle = d->buf[n].handle, .flags = DRM_CLOEXEC | DRM_RDWR };
+    if ((e = xioctl(d->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &ph))) break;
+    fds[n] = ph.fd;
+  }
+  if (!e) {
+    const dbuf_t *b = &d->buf[0];
+    e = gpu_set_target(d->base.gpu, fds, NBUF, (int)b->w, (int)b->h, (int)b->pitch,
+                       d->bpp == 16 ? DRM_FORMAT_RGB565 : DRM_FORMAT_XRGB8888, d->rw, d->rh, d->field_rows,
+                       d->field_pad, d->field_rows ? d->flicker : 0);
+  } else {
+    video_log(&d->base, "GPU drawing: the buffers can't be shared (%s)", strerror(-e));
+  }
+  for (int i = 0; i < n; i++) close(fds[i]);
+  return e ? -1 : 0;
+}
+
+static int drm_present_gpu(video_t *v, const rcmd_t *c, int n, uint16_t *shot) {
+  drm_t *d = (drm_t *)v;
+  int st = gpu_poll(v->gpu);
+  if (st <= 0) return st;
+  service(d, plat_now_us());
+  if (!d->base.down && d->pending >= 0) wait_flip(d, (int)(flip_timeout_us(d) / 1000) + 1);
+  for (int tries = 0; tries < 2; tries++) {
+    /* the GPU draws what the plane shows as it is (CPU scaling copies on the CPU) */
+    if (d->base.down || !d->active || d->pending >= 0 || d->cpu_scale) return 0;
+    if (d->gpu_buf_gen != d->buf_gen) {
+      if (gpu_target(d)) return -1;
+      d->gpu_buf_gen = d->buf_gen;
+    }
+    int b = d->front == 0 ? 1 : 0;
+    if (gpu_draw(v->gpu, c, n, b, shot)) return -1;
+    int e = flip(d, b);
+    if (!e) return 1;
+    recover(d, "page flip failed", e);
+  }
+  return 0;
+}
+
 static int drm_wait(video_t *v, int timeout_ms, int64_t *t_us) {
   drm_t *d = (drm_t *)v;
   service(d, plat_now_us());
@@ -1377,6 +1467,7 @@ static void drm_close(video_t *v) {
   if (d->nl_fd >= 0) close(d->nl_fd);
   free(d->xlut);
   free(d->ylut);
+  free(d->field_scratch);
   free(d);
 }
 
@@ -1432,7 +1523,7 @@ static int drm_debug(video_t *v, const char *a) {
   return -1;
 }
 
-static const video_ops_t drm_ops = { drm_present, drm_wait, drm_pending, drm_fd, drm_close, drm_debug };
+static const video_ops_t drm_ops = { drm_present, drm_wait, drm_pending, drm_fd, drm_close, drm_debug, drm_present_gpu };
 
 static void cfg_str(char *dst, size_t n, const char *src, const char *def) {
   plat_strlcpy(dst, src && *src ? src : def, n);
@@ -1465,7 +1556,7 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
   d->progressive = !strcmp(tmp, "progressive") || !strcmp(tmp, "240p") || !strcmp(tmp, "288p");
   cfg_str(tmp, sizeof tmp, c->av_detail, "high");
   d->detail_high = !strcmp(tmp, "high");
-  cfg_str(tmp, sizeof tmp, c->av_flicker, "off");
+  cfg_str(tmp, sizeof tmp, c->av_flicker, "full");
   d->flicker = !strcmp(tmp, "full") ? 2 : !strcmp(tmp, "light") ? 1 : 0;
   if (c->scale_filter && *c->scale_filter) {
     cfg_str(tmp, sizeof tmp, c->scale_filter, "smooth");
@@ -1500,7 +1591,7 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
       video_layout_t l;
       bool av = d->out != OUT_HDMI, p625 = video_tv_625(d->tv);
       int mh = d->progressive ? (p625 ? 288 : 240) : (p625 ? 576 : 480);
-      d->doubled = av && d->progressive && d->detail_high && !d->cfg_rw;
+      d->doubled = av && d->detail_high && !d->cfg_rw;
       if (d->doubled) video_layout_double(720, mh, d->aspect, d->margin, &l);
       else if (av) video_layout(720, mh, true, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
       else video_layout(1280, 720, false, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);

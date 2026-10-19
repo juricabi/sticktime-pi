@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 #define W 480
 #define H 272
@@ -177,6 +178,24 @@ static void test_rects(void) {
     CHECK_INT(px(&l, 3, 3), want);
     CHECK_INT(px(&l, 4, 3), 0x4208);
   }
+  /* big translucent rects and long runs go through per-colour tables: still lcd_blend565 for every
+   * pixel of a random picture, every opacity, and short runs beside them */
+  static uint16_t before[W * H];
+  for (int opa = 1; opa <= 14; opa++) {
+    for (int i = 0; i < W * H; i++) l.fb[i] = (uint16_t)rnd();
+    memcpy(before, l.fb, sizeof before);
+    uint16_t c = (uint16_t)rnd();
+    int bad = 0, a = (15 - opa) * 17;
+    lcd_fill_rect(&l, 7, 3, W - 20, H - 10, c, opa);                    /* one table for the rect */
+    lcd_hline(&l, 0, H - 2, W, c, opa);                                 /* a table for the run */
+    lcd_hline(&l, 0, H - 1, 100, c, opa);                               /* short: blended per pixel */
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+        bool in = (x >= 7 && x < W - 13 && y >= 3 && y < H - 7) || y == H - 2 || (y == H - 1 && x < 100);
+        bad += px(&l, x, y) != (in ? lcd_blend565(before[y * W + x], c, a) : before[y * W + x]);
+      }
+    CHECK_INT(bad, 0);
+  }
   /* opacity is masked like the Lua API does (opt(6) & 15) */
   lcd_clear(&l, 0x4208);
   lcd_fill_rect(&l, 0, 0, 4, 4, 0xFFE0, 16);       /* 16 & 15 = 0: opaque */
@@ -322,6 +341,17 @@ static void test_lines(void) {
     CHECK_INT(px(&l, 100, 100), 0xFFFF);
     CHECK_INT(px(&l, 100 + ends[k][0], 100 + ends[k][1]), 0xFFFF);
   }
+  /* level solid lines are filled as one run: the pixels between the ends that are on the screen */
+  for (int k = 0; k < 400; k++) {
+    int x1 = rnd_in(-60, W + 60), x2 = rnd_in(-60, W + 60), y = rnd_in(-3, H + 2);
+    lcd_clear(&l, 0);
+    lcd_line(&l, x1, y, x2, y, 0xFF, 0x07E0);
+    int lo = x1 < x2 ? x1 : x2, hi = x1 < x2 ? x2 : x1, n = 0;
+    bool on = y >= 0 && y < H && hi >= 0 && lo < W;
+    if (on) n = (hi > W - 1 ? W - 1 : hi) - (lo < 0 ? 0 : lo) + 1;
+    CHECK_INT(count_color(&l, 0x07E0), n);
+    if (on) CHECK(px(&l, lo < 0 ? 0 : lo, y) == 0x07E0 && px(&l, hi > W - 1 ? W - 1 : hi, y) == 0x07E0);
+  }
   /* a point */
   lcd_clear(&l, 0);
   lcd_line(&l, 5, 6, 5, 6, 0xFF, 0xFFFF);
@@ -347,7 +377,7 @@ static void test_lines(void) {
   lcd_line(&l, W, 0, W + 50, H, 0xFF, 0xFFFF);
   lcd_line(&l, 0, H, W, H + 10, 0xFF, 0xFFFF);
   CHECK_INT(count_color(&l, 0), W * H);
-  CHECK_INT(l.st.lines, 1 + 512 + 8 + 3 + 4 + 3);
+  CHECK_INT(l.st.lines, 1 + 512 + 8 + 400 + 3 + 4 + 3);
 
   /* the API rejects ends beyond W / H (not W - 1 / H - 1), keeps negative ones */
   memset(&l.st, 0, sizeof l.st);
@@ -687,6 +717,118 @@ static void test_text_roboto(void) {
   fonts_close(f);
 }
 
+/* drawing = multi: the calls recorded and drawn in bands on a pool give the same pixels and counts as
+ * drawing at once, for every kind of call (text with Roboto: glyph masks), frame after frame */
+static const char *const REC_TEXT[] = { "StickTime", "Gr\xC3\xBC\xC3\x9F" "e 25\xC2\xB0", "Lap 3/3  1:02.45", "\xC5\xBD" "aba \xC4\x8D" "ok",
+                                        "", "W", "Race (3 laps, 2 AI)" };
+
+static void rec_call(lcd_t *l, const int *v) {
+  uint16_t c = (uint16_t)v[5];
+  switch (v[0]) {
+    case 0: lcd_fill_rect(l, v[1], v[2], v[3], v[4], c, v[6]); break;
+    case 1: lcd_hline(l, v[1], v[2], v[3], c, v[6]); break;
+    case 2: lcd_line(l, v[1], v[2], v[3] * 3 - 200, v[4] * 2 - 100, (uint8_t)v[7], c); break;
+    case 3: lcd_tri(l, v[1], v[2], v[3] * 2 - 100, v[4], v[8], v[9], c, v[6]); break;
+    case 4: lcd_point(l, v[1], v[2], c); break;
+    case 5: lcd_filled_circle(l, v[1], v[2], v[3] / 6, c); break;
+    case 6: lcd_circle(l, v[1], v[2], v[3] / 6, c); break;
+    case 7: lcd_invert_rect(l, v[1], v[2], v[3], v[4]); break;
+    case 8: lcd_draw_text(l, v[1], v[2], REC_TEXT[v[7] % 7], -1, (uint32_t)v[10], NULL, NULL); break;
+    case 9: lcd_draw_number(l, v[1], v[2], v[3] * 37 - 900, (uint32_t)v[10]); break;
+    case 10: lcd_draw_rectangle(l, v[1], v[2], v[3], v[4], (uint32_t)v[10], v[7] & 7, v[6]); break;
+    case 11: lcd_draw_gauge(l, v[1], v[2], v[3], v[4] / 8 + 1, v[8], v[9] % 50, (uint32_t)v[10]); break;
+    case 12: lcd_draw_line_api(l, v[1], v[2], v[3] * 2, v[4] * 2, v[7], (uint32_t)v[10]); break;
+    case 13: lcd_draw_timer(l, v[1], v[2], v[3] * 61, (uint32_t)v[10]); break;
+    default: lcd_clear(l, c); break;
+  }
+}
+
+static void test_recorded(void) {
+  char err[256];
+  fonts_t *f = fonts_open("host/fonts", err, sizeof err);
+  CHECK(f != NULL);
+  if (!f) return;
+  font_class_t cls;
+  font_class_for(&cls, W, H, NULL);
+  par_t *pool = par_open(4);
+  CHECK(pool != NULL);
+  lcd_t a, b;
+  lcd_init(&a, W, H, f, &cls);
+  lcd_init(&b, W, H, f, &cls);
+  CHECK_INT(lcd_set_pool(&b, pool), 0);
+  int bad = 0;
+  for (int frame = 0; frame < 60; frame++) {
+    memset(&a.st, 0, sizeof a.st);
+    memset(&b.st, 0, sizeof b.st);
+    int calls = rnd_in(1, 400);
+    for (int n = 0; n < calls; n++) {
+      int v[11];
+      v[0] = rnd_in(0, 99) < 2 ? 14 : rnd_in(0, 13);                   /* clears now and then */
+      v[1] = rnd_in(-60, W + 60);
+      v[2] = rnd_in(-60, H + 60);
+      v[3] = rnd_in(-80, 300);
+      v[4] = rnd_in(-80, 300);
+      v[5] = (int)(rnd() & 0xFFFF);
+      v[6] = rnd_in(0, 15);
+      v[7] = rnd_in(0, 255);
+      v[8] = rnd_in(-60, W + 60);
+      v[9] = rnd_in(-60, H + 60);
+      v[10] = (int)((rnd() & (LCDF_INVERS | LCDF_VCENTER | LCDF_CENTER | LCDF_RIGHT | LCDF_SHADOWED)) |
+                    ((uint32_t)rnd_in(0, 7) << 8) | (rnd() & 1 ? LCDF_RGB | (rnd() << 16) : (uint32_t)rnd_in(0, 30) << 16));
+      rec_call(&a, v);
+      rec_call(&b, v);
+    }
+    lcd_flush(&b);
+    bad += memcmp(a.fb, b.fb, sizeof *a.fb * W * H) != 0;
+    bad += memcmp(&a.st, &b.st, sizeof a.st) != 0;
+  }
+  CHECK_INT(bad, 0);
+  /* lines: a band starts at its first step of the line (any slope, direction, pattern, partly off) */
+  for (int k = 0; k < 3000; k++) {
+    if (k % 300 == 0) {
+      lcd_clear(&a, 0);
+      lcd_clear(&b, 0);
+    }
+    int x1 = rnd_in(-200, W + 200), y1 = rnd_in(-200, H + 200), x2 = rnd_in(-200, W + 200), y2 = rnd_in(-200, H + 200);
+    uint8_t pat = k & 1 ? 0xFF : (uint8_t)rnd();
+    uint16_t c = (uint16_t)(rnd() | 1);
+    lcd_line(&a, x1, y1, x2, y2, pat, c);
+    lcd_line(&b, x1, y1, x2, y2, pat, c);
+    if (k % 300 == 299) {
+      lcd_flush(&b);
+      bad += memcmp(a.fb, b.fb, sizeof *a.fb * W * H) != 0;
+    }
+  }
+  CHECK_INT(bad, 0);
+  /* more code points than a face's cache holds, in one frame: glyphs evicted while recorded are drawn */
+  char many[3000];
+  int len = 0;
+  for (uint32_t cp = 0x400; cp < 0x400 + 400; cp++) {
+    many[len++] = (char)(0xC0 | (cp >> 6));
+    many[len++] = (char)(0x80 | (cp & 63));
+  }
+  lcd_clear(&a, 0);
+  lcd_clear(&b, 0);
+  for (int k = 0; k < 6; k++) {
+    lcd_draw_text(&a, -k * 700, k * 40, many, len, ((uint32_t)k << 8) | (12u << 16), NULL, NULL);
+    lcd_draw_text(&b, -k * 700, k * 40, many, len, ((uint32_t)k << 8) | (12u << 16), NULL, NULL);
+  }
+  lcd_flush(&b);
+  CHECK(!memcmp(a.fb, b.fb, sizeof *a.fb * W * H));
+  CHECK(count_color(&b, 0) < W * H);
+  /* dropping the pool draws what was recorded; drawing goes on at once */
+  lcd_fill_rect(&a, 10, 10, 50, 50, 0xF800, 0);
+  lcd_fill_rect(&b, 10, 10, 50, 50, 0xF800, 0);
+  CHECK_INT(lcd_set_pool(&b, NULL), 0);
+  CHECK(!memcmp(a.fb, b.fb, sizeof *a.fb * W * H));
+  lcd_line(&b, 0, 0, W - 1, H - 1, 0xFF, 0x07E0);
+  CHECK_INT(px(&b, W - 1, H - 1), 0x07E0);
+  lcd_free(&a);
+  lcd_free(&b);
+  par_close(pool);
+  fonts_close(f);
+}
+
 int main(void) {
   test_colors();
   test_blend();
@@ -695,5 +837,6 @@ int main(void) {
   test_tri_circle_ref();
   test_text_stub();
   test_text_roboto();
+  test_recorded();
   T_DONE();
 }

@@ -135,7 +135,8 @@ static void check_string(const char *call, const args_t *a, const char *want_hex
 }
 
 /* replay one call file on one screen; returns the number of failures */
-static int replay(const char *name, const char *text, size_t tlen, float adv, int W, int H, const char *cls_name) {
+static int replay(const char *name, const char *text, size_t tlen, float adv, int W, int H, const char *cls_name,
+                  par_t *pool) {
   char path[512], err[256];
   int fails = 0;
   snprintf(path, sizeof path, GOLD "/%s.%dx%d.bin", name, W, H);
@@ -158,6 +159,7 @@ static int replay(const char *name, const char *text, size_t tlen, float adv, in
   if (strcmp(cls.name, cls_name)) { fprintf(stderr, "class %s for %dx%d, engine.js uses %s\n", cls.name, W, H, cls_name); fails++; }
   lcd_t l;
   lcd_init(&l, W, H, f, &cls);
+  if (pool) lcd_set_pool(&l, pool);              /* drawing = multi: recorded, drawn in bands */
 
   char *buf = malloc(tlen + 1);
   memcpy(buf, text, tlen);
@@ -196,6 +198,7 @@ static int replay(const char *name, const char *text, size_t tlen, float adv, in
 
     if (!strcmp(c, "snap")) {
       if (frame >= nref) { fprintf(stderr, "%s: more frames than the reference\n", where); fails++; break; }
+      lcd_flush(&l);
       if (memcmp(l.fb, ref + frame * (fsize / 2), fsize)) {
         const uint16_t *r = ref + frame * (fsize / 2);
         int nd = 0, first = -1;
@@ -269,6 +272,7 @@ static int replay(const char *name, const char *text, size_t tlen, float adv, in
   next:
     if (nl) line = nl + 1;
   }
+  lcd_flush(&l);
   if (!fails) {
     if (frame + 1 != nref) { fprintf(stderr, "%s %dx%d: %d frames, engine.js %d\n", name, W, H, (int)frame + 1, (int)nref); fails++; }
     else if (memcmp(l.fb, ref + frame * (fsize / 2), fsize)) {
@@ -316,6 +320,8 @@ int main(void) {
     lcd_init(&rb, 640, 480, real_fonts, &lrg);
   }
   int files = 0, frames_ok = 0;
+  par_t *pool = par_open(4);
+  CHECK(pool != NULL);
   for (char *line = strtok(index, "\n"); line; line = strtok(NULL, "\n")) {
     if (*line == '#' || !*line) continue;
     char name[128];
@@ -342,18 +348,24 @@ int main(void) {
       if (!strncmp(p, "adv", 3) && (p[3] == ' ' || p[3] == '\t')) adv = strtof(p + 3, NULL);
       break;
     }
-    int f1 = replay(name, text, tlen, adv, 480, 272, "std");
-    int f2 = replay(name, text, tlen, adv, 640, 480, "lrg");
+    /* drawn at once, and recorded and drawn in bands on four threads */
+    int f1 = replay(name, text, tlen, adv, 480, 272, "std", NULL);
+    int f2 = replay(name, text, tlen, adv, 640, 480, "lrg", NULL);
+    int f3 = replay(name, text, tlen, adv, 480, 272, "std", pool);
+    int f4 = replay(name, text, tlen, adv, 640, 480, "lrg", pool);
     CHECK_INT(f1, 0);
     CHECK_INT(f2, 0);
-    frames_ok += !f1 + !f2;
+    CHECK_INT(f3, 0);
+    CHECK_INT(f4, 0);
+    frames_ok += !f1 + !f2 + !f3 + !f4;
     files++;
     free(text);
   }
   CHECK(files > 0);
   CHECK_INT(str_bad, 0);
   printf("%d call files, %d of %d screen replays identical to engine.js, %d drawNumber/drawTimer strings checked\n",
-         files, frames_ok, 2 * files, str_checks);
+         files, frames_ok, 4 * files, str_checks);
+  par_close(pool);
   if (real_fonts) {
     lcd_free(&ra);
     lcd_free(&rb);
