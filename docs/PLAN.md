@@ -72,7 +72,7 @@ per frame:
   `performance` (set by the setup script), no swap.
 - Inputs: ask ELRS for `interval=4000` (250 Hz; configurable, ELRS allows ≥ 1000 µs). USB HID polls at 1 ms.
 - `STICKTIME_LAT`: try 0 first (frames show quickly), then the measured sample-to-mid-scanout time. Pick by feel and slow-motion video.
-- `STICKTIME_DT`: the color game (after 1.8.0) steps its simulation by it. From the 10 ms `getTime()` ticks
+- `STICKTIME_DT`: the color game (1.9.0 and later) steps its simulation by it. From the 10 ms `getTime()` ticks
   alone, 60 Hz frames step 0.6 ms unevenly on average and at times 3 ms (micro-judder in fast turns); with it
   the steps are even. `STICKTIME_AV = true` (set before the script loads when the output is composite): the
   game outlines its HUD text, and its Colors setting's Auto is the natural Summer look.
