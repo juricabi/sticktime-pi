@@ -238,6 +238,7 @@ int lcd_init(lcd_t *l, int w, int h, fonts_t *fonts, const font_class_t *cls) {
   l->h = h;
   l->row0 = 0;
   l->row1 = h;
+  l->line_w = 1;
   l->fonts = fonts;
   if (cls) l->cls = *cls;
   else font_class_for(&l->cls, w, h, NULL);
@@ -327,6 +328,7 @@ static rcmd_t *rec_add(lcd_t *l, int op, int64_t ylo, int64_t yhi) {
   }
   rcmd_t *k = &r->cmd[r->n++];
   k->op = (uint8_t)op;
+  k->w = 1;
   k->ylo = ylo < 0 ? 0 : ylo > l->h ? l->h : (int)ylo;
   k->yhi = yhi < 0 ? -1 : yhi > l->h - 1 ? l->h - 1 : (int)yhi;
   return k;
@@ -531,18 +533,25 @@ void lcd_fill_rect(lcd_t *l, int x, int y, int w, int h, uint16_t c, int opa) {
 }
 
 void lcd_point(lcd_t *l, int x, int y, uint16_t c) {
-  rcmd_t *k = rec_add(l, RC_POINT, y, y);
+  rcmd_t *k = rec_add(l, RC_POINT, y, (int64_t)y + l->line_w - 1);
   if (k) {
     k->u.p.x0 = x;
     k->u.p.y0 = y;
     k->c = c;
+    k->w = (uint8_t)l->line_w;
     return;
   }
   point_px(l, x, y, c);
 }
 
+static void pixel(lcd_t *l, int64_t x, int64_t y, uint16_t c) {
+  if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) l->fb[(size_t)y * (size_t)l->w + (size_t)x] = c;
+}
+
+/* a point: line_w square */
 static void point_px(lcd_t *l, int x, int y, uint16_t c) {
-  if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) l->fb[(size_t)y * l->w + x] = c;
+  for (int j = 0; j < l->line_w; j++)
+    for (int i = 0; i < l->line_w; i++) pixel(l, (int64_t)x + i, (int64_t)y + j, c);
 }
 
 /* Liang-Barsky in doubles, like engine.js */
@@ -570,7 +579,7 @@ void lcd_line(lcd_t *l, int x1, int y1, int x2, int y2, uint8_t pat, uint16_t c)
   /* the clipped ends lie on the screen (to within rounding), so they fit an int */
   int ax = (int)js_round(x1 + fmul(t0, dx)), ay = (int)js_round(y1 + fmul(t0, dy));
   int bx = (int)js_round(x1 + fmul(t1, dx)), by = (int)js_round(y1 + fmul(t1, dy));
-  rcmd_t *k = rec_add(l, RC_LINE, ay < by ? ay : by, ay < by ? by : ay);
+  rcmd_t *k = rec_add(l, RC_LINE, ay < by ? ay : by, (int64_t)(ay < by ? by : ay) + l->line_w - 1);
   if (k) {
     k->u.p.x0 = ax;
     k->u.p.y0 = ay;
@@ -578,24 +587,27 @@ void lcd_line(lcd_t *l, int x1, int y1, int x2, int y2, uint8_t pat, uint16_t c)
     k->u.p.y1 = by;
     k->pat = pat;
     k->c = c;
+    k->w = (uint8_t)l->line_w;
     return;
   }
   line_px(l, ax, ay, bx, by, pat, c);
 }
 
-/* Bresenham from the clipped, rounded ends; pixels in row0..row1 */
+/* Bresenham from the clipped, rounded ends; pixels in row0..row1. line_w 2: each pixel with the one below
+ * it (a line that runs more across than up) or right of it (more up), that is the line twice, one
+ * pixel apart across it */
 static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint16_t c) {
-  const int W = l->w, Y0 = l->row0, Y1 = l->row1;
+  const int W = l->w, Y0 = l->row0, Y1 = l->row1, T = l->line_w > 1;
   int ddx = bx - ax, ddy = by - ay;
   int adx = abs(ddx), ady = abs(ddy), sx = (ddx > 0) - (ddx < 0), sy = (ddy > 0) - (ddy < 0);
   int ex = ady >> 1, ey = adx >> 1, px = ax, py = ay;
   if (!ady && pat == 0xFF) {
     /* solid and level: the same pixels as below, as one run */
-    if (py < Y0 || py >= Y1) return;
     int lo = ax < bx ? ax : bx, hi = ax < bx ? bx : ax;
     if (lo < 0) lo = 0;
     if (hi > W - 1) hi = W - 1;
-    if (lo <= hi) fill16(l->fb + (size_t)py * W + lo, c, hi - lo + 1);
+    for (int y = py; y <= py + T; y++)
+      if (y >= Y0 && y < Y1 && lo <= hi) fill16(l->fb + (size_t)y * W + lo, c, hi - lo + 1);
     return;
   }
   /* A band draws only the steps that land in its rows, starting at the first of them: after k steps the
@@ -604,13 +616,14 @@ static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint1
   if (adx >= ady) {
     int64_t k0 = 0, k1 = adx, h0 = adx >> 1;
     if (ady) {
-      /* py = ay + sy * floor((h0 + k * ady) / adx): that floor must be in D..E */
-      int64_t D = sy > 0 ? Y0 - ay : ay - (Y1 - 1), E = sy > 0 ? Y1 - 1 - ay : ay - Y0;
+      /* py = ay + sy * floor((h0 + k * ady) / adx): that floor must be in D..E (rows Y0 - T .. Y1 - 1: a
+       * pixel's partner below may be in the band) */
+      int64_t D = sy > 0 ? Y0 - T - ay : ay - (Y1 - 1), E = sy > 0 ? Y1 - 1 - ay : ay - (Y0 - T);
       if (E < 0 || D > ady) return;
       if (D > 0) k0 = (D * adx - h0 + ady - 1) / ady;
       int64_t last = ((E + 1) * adx - 1 - h0) / ady;
       if (last < k1) k1 = last;
-    } else if (ay < Y0 || ay >= Y1) {
+    } else if (ay < Y0 - T || ay >= Y1) {
       return;
     }
     if (k0 > k1) return;
@@ -619,7 +632,10 @@ static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint1
     py = ay + (adx ? sy * (int)(q / adx) : 0);
     ey = adx ? (int)(q % adx) : 0;
     for (int64_t i = k0; i <= k1; i++) {
-      if (((1 << (px & 7)) & pat) && px >= 0 && px < W && py >= Y0 && py < Y1) l->fb[(size_t)py * W + px] = c;
+      if (((1 << (px & 7)) & pat) && px >= 0 && px < W) {
+        if (py >= Y0 && py < Y1) l->fb[(size_t)py * W + px] = c;
+        if (T && py + 1 >= Y0 && py + 1 < Y1) l->fb[(size_t)(py + 1) * W + px] = c;
+      }
       ey += ady;
       if (ey >= adx) { ey -= adx; py += sy; }
       px += sx;
@@ -635,7 +651,10 @@ static void line_px(lcd_t *l, int ax, int ay, int bx, int by, uint8_t pat, uint1
     px = ax + sx * (int)(q / ady);
     ex = (int)(q % ady);
     for (int64_t i = k0; i <= k1; i++) {
-      if (((1 << (py & 7)) & pat) && px >= 0 && px < W && py >= Y0 && py < Y1) l->fb[(size_t)py * W + px] = c;
+      if (((1 << (py & 7)) & pat) && py >= Y0 && py < Y1) {
+        if (px >= 0 && px < W) l->fb[(size_t)py * W + px] = c;
+        if (T && px + 1 >= 0 && px + 1 < W) l->fb[(size_t)py * W + px + 1] = c;
+      }
       ex += adx;
       if (ex >= ady) { ex -= ady; px += sx; }
       py += sy;
@@ -737,12 +756,13 @@ static void fcircle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c) {
 
 void lcd_circle(lcd_t *l, int cx, int cy, int r, uint16_t c) {
   int64_t ar = r < 0 ? -(int64_t)r : r;
-  rcmd_t *k = rec_add(l, RC_CIRCLE, (int64_t)cy - ar - 1, (int64_t)cy + ar + 1);
+  rcmd_t *k = rec_add(l, RC_CIRCLE, (int64_t)cy - ar - 1, (int64_t)cy + ar + l->line_w);
   if (k) {
     k->u.p.x0 = cx;
     k->u.p.y0 = cy;
     k->u.p.x1 = r;
     k->c = c;
+    k->w = (uint8_t)l->line_w;
     return;
   }
   circle_draw(l, cx, cy, r, c);
@@ -751,7 +771,11 @@ void lcd_circle(lcd_t *l, int cx, int cy, int r, uint16_t c) {
 static void circle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c) {
   for (int a = 0; a < 360; a++) {
     double x = js_round(cx + fmul(r, COS[a])), y = js_round(cy + fmul(r, SIN[a]));
-    if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) l->fb[(size_t)y * l->w + (size_t)x] = c;
+    if (l->line_w > 1) {
+      if (x > -2 && y > -2 && x < l->w && y < l->h) point_px(l, (int)x, (int)y, c);
+    } else if (x >= 0 && y >= l->row0 && x < l->w && y < l->row1) {
+      l->fb[(size_t)y * l->w + (size_t)x] = c;
+    }
   }
 }
 
@@ -779,7 +803,7 @@ static void invert_draw(lcd_t *l, int x, int y, int w, int h) {
 
 void lcd_draw_rectangle(lcd_t *l, int x, int y, int w, int h, uint32_t flags, int t, int opa) {
   uint16_t c = lcd_color_of(flags);
-  int64_t X = x, Y = y, Wd = w, Ht = h, T = t;
+  int64_t X = x, Y = y, Wd = w, Ht = h, T = (int64_t)t * l->line_w;
   opa &= 15;
   fill_rect64(l, X, Y, T, Ht, c, opa);
   fill_rect64(l, X + Wd - T, Y, T, Ht, c, opa);

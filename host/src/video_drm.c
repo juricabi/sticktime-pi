@@ -806,6 +806,7 @@ static void fill_info(drm_t *d) {
   plat_strlcpy(i->backend, "drm", sizeof i->backend);
   i->render_w = d->rw;
   i->render_h = d->rh;
+  i->detail = d->doubled ? 2 : 1;
   plat_strlcpy(i->device, d->path, sizeof i->device);
   i->composite = d->composite;
   snprintf(i->connector, sizeof i->connector, "%s-%u", conn_type_name(d->conn_type), d->conn_type_id);
@@ -1083,6 +1084,7 @@ static int read_events(drm_t *d) {
             /* adaptive margin [5.3]: missed although queued in time -> more margin */
             int64_t T = d->base.period_us;
             if (nv > 1 && d->flip_on_time) {
+              d->base.late_on_time++;
               d->base.margin_us += 250;
               d->good_flips = 0;
             } else if (nv == 1 && ++d->good_flips >= 100) {

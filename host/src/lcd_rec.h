@@ -11,6 +11,7 @@ enum { RC_CLEAR, RC_HLINE, RC_RECT, RC_LINE, RC_TRI, RC_POINT, RC_FCIRCLE, RC_CI
 
 typedef struct {
   uint8_t op, opa, pat;            /* opa 0..15 (0 opaque), pat: a line's 8-bit pattern */
+  uint8_t w;                       /* lines, points, circles: pixels wide (lcd_t.line_w) */
   uint16_t c;                      /* RGB565 */
   int ylo, yhi;                    /* the rows it can touch (ylo > yhi: none) */
   union {

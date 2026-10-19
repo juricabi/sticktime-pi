@@ -257,6 +257,18 @@ static void on_quit(int sig) {
   quit_flag = 1;
 }
 
+void sys_exec_self(char **argv) {
+#ifdef __linux__
+  sigset_t none;
+  sigemptyset(&none);
+  sigprocmask(SIG_SETMASK, &none, NULL);
+  for (int fd = 3; fd < 1024; fd++) close(fd);
+  execv(argv[0] && argv[0][0] == '/' ? argv[0] : "/proc/self/exe", argv);
+#else
+  (void)argv;
+#endif
+}
+
 volatile int *sys_quit_flag(void) {
 #ifdef __linux__
   struct sigaction sa;

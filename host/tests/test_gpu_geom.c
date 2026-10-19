@@ -129,6 +129,22 @@ int main(void) {
     }
   }
   CHECK_INT(bad_exact, 0);
+  /* lines and points 2 wide (a doubled render), as lcd.c draws them, give or take ties */
+  {
+    int d2 = 0, px2 = 0;
+    l.line_w = 2;
+    for (int it = 0; it < 300; it++) {
+      for (int i = 0; i < 4; i++) A[i] = i % 2 ? rnd_in(-40, H + 40) : rnd_in(-40, W + 40);
+      K = record(d_line);
+      if (K.op == 255) continue;
+      K.w = 2;
+      d2 += differ(&K, d_line);
+      for (int i = 0; i < W * H; i++) px2 += l.fb[i] != 0;
+    }
+    l.line_w = 1;
+    CHECK(d2 * 25 < px2);
+    printf("2 wide lines: %d of %d pixels differ\n", d2, px2);
+  }
   /* lines: ties at exactly half a pixel may go the other way */
   CHECK(line_diff * 50 < line_px);
   /* triangles: Adafruit's rows take both ends, the GPU the centers inside: their edges */

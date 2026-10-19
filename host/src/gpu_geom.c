@@ -82,11 +82,12 @@ static int glyph(gmesh_t *m, int64_t gx, int64_t gy, const glyph_t *g, uint16_t 
   return 0;
 }
 
-/* a solid line from the clipped, rounded ends: one pixel across, along the line from end pixel to end
- * pixel (the pixel centers within half a pixel of the line: what Bresenham picks, give or take a tie) */
-static int line(gmesh_t *m, int ax, int ay, int bx, int by, uint16_t c) {
+/* a solid line from the clipped, rounded ends: w pixels across (the extra ones below or right, as lcd.c
+ * draws them), along the line from end pixel to end pixel (the pixel centers within half a pixel of
+ * the line: what Bresenham picks, give or take a tie) */
+static int line(gmesh_t *m, int ax, int ay, int bx, int by, uint16_t c, int w) {
   int adx = abs(bx - ax), ady = abs(by - ay);
-  if (!adx && !ady) return rect(m, ax, ay, ax + 1, ay + 1, c, 255, false);
+  if (!adx && !ady) return rect(m, ax, ay, ax + w, ay + w, c, 255, false);
   uint8_t rgba[4];
   color(c, 255, rgba);
   float x[4], y[4];
@@ -95,34 +96,34 @@ static int line(gmesh_t *m, int ax, int ay, int bx, int by, uint16_t c) {
     float s = (float)(by - ay) / (float)(bx - ax), yl = ay + 0.5f - 0.5f * s, yr = by + 0.5f + 0.5f * s;
     x[0] = (float)ax; y[0] = yl - 0.5f;
     x[1] = (float)bx + 1; y[1] = yr - 0.5f;
-    x[2] = (float)bx + 1; y[2] = yr + 0.5f;
-    x[3] = (float)ax; y[3] = yl + 0.5f;
+    x[2] = (float)bx + 1; y[2] = yr + 0.5f + (float)(w - 1);
+    x[3] = (float)ax; y[3] = yl + 0.5f + (float)(w - 1);
   } else {
     if (ay > by) { int t = ax; ax = bx; bx = t; t = ay; ay = by; by = t; }
     float s = (float)(bx - ax) / (float)(by - ay), xt = ax + 0.5f - 0.5f * s, xb = bx + 0.5f + 0.5f * s;
     x[0] = xt - 0.5f; y[0] = (float)ay;
-    x[1] = xt + 0.5f; y[1] = (float)ay;
-    x[2] = xb + 0.5f; y[2] = (float)by + 1;
+    x[1] = xt + 0.5f + (float)(w - 1); y[1] = (float)ay;
+    x[2] = xb + 0.5f + (float)(w - 1); y[2] = (float)by + 1;
     x[3] = xb - 0.5f; y[3] = (float)by + 1;
   }
   return quad4(m, x, y, rgba, false);
 }
 
-/* a patterned line: its pixels as lcd.c's Bresenham sets them */
-static int dotted(gmesh_t *m, int ax, int ay, int bx, int by, uint8_t pat, uint16_t c, int W, int H) {
+/* a patterned line: its pixels as lcd.c's Bresenham sets them (w wide) */
+static int dotted(gmesh_t *m, int ax, int ay, int bx, int by, uint8_t pat, uint16_t c, int W, int H, int w) {
   int ddx = bx - ax, ddy = by - ay;
   int adx = abs(ddx), ady = abs(ddy), sx = (ddx > 0) - (ddx < 0), sy = (ddy > 0) - (ddy < 0);
   int ex = ady >> 1, ey = adx >> 1, px = ax, py = ay;
   if (adx >= ady) {
     for (int i = 0; i <= adx; i++) {
-      if (((1 << (px & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H && rect(m, px, py, px + 1, py + 1, c, 255, false)) return -1;
+      if (((1 << (px & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H && rect(m, px, py, px + 1, py + w, c, 255, false)) return -1;
       ey += ady;
       if (ey >= adx) { ey -= adx; py += sy; }
       px += sx;
     }
   } else {
     for (int i = 0; i <= ady; i++) {
-      if (((1 << (py & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H && rect(m, px, py, px + 1, py + 1, c, 255, false)) return -1;
+      if (((1 << (py & 7)) & pat) && px >= 0 && px < W && py >= 0 && py < H && rect(m, px, py, px + w, py + 1, c, 255, false)) return -1;
       ex += adx;
       if (ex >= ady) { ex -= ady; px += sx; }
       py += sy;
@@ -172,15 +173,15 @@ int gmesh_build(gmesh_t *m, const rcmd_t *c, int n, int W, int H) {
         if (a) e = rect(m, (double)k->u.r.x, (double)k->u.r.y, (double)(k->u.r.x + k->u.r.w), (double)(k->u.r.y + k->u.r.h), k->c, a, false);
         break;
       case RC_LINE:
-        if (k->pat == 0xFF) e = line(m, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->c);
-        else if (k->pat) e = dotted(m, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->pat, k->c, W, H);
+        if (k->pat == 0xFF) e = line(m, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->c, k->w > 1 ? k->w : 1);
+        else if (k->pat) e = dotted(m, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->pat, k->c, W, H, k->w > 1 ? k->w : 1);
         break;
       case RC_TRI:
         if (a) e = tri(m, k, k->c, a);
         break;
       case RC_POINT:
-        if (k->u.p.x0 >= 0 && k->u.p.y0 >= 0 && k->u.p.x0 < W && k->u.p.y0 < H)
-          e = rect(m, k->u.p.x0, k->u.p.y0, k->u.p.x0 + 1, k->u.p.y0 + 1, k->c, 255, false);
+        if (k->u.p.x0 > -k->w && k->u.p.y0 > -k->w && k->u.p.x0 < W && k->u.p.y0 < H)
+          e = rect(m, k->u.p.x0, k->u.p.y0, k->u.p.x0 + (k->w > 1 ? k->w : 1), k->u.p.y0 + (k->w > 1 ? k->w : 1), k->c, 255, false);
         break;
       case RC_FCIRCLE: {                         /* lcd.c's rows */
         int64_t cx = k->u.p.x0, cy = k->u.p.y0, r = k->u.p.x1;
@@ -194,7 +195,8 @@ int gmesh_build(gmesh_t *m, const rcmd_t *c, int n, int W, int H) {
       case RC_CIRCLE:
         for (int d = 0; d < 360 && !e; d++) {
           double x = floor(k->u.p.x0 + k->u.p.x1 * cos(d * M_PI / 180) + 0.5), y = floor(k->u.p.y0 + k->u.p.x1 * sin(d * M_PI / 180) + 0.5);
-          if (x >= 0 && y >= 0 && x < W && y < H) e = rect(m, x, y, x + 1, y + 1, k->c, 255, false);
+          int w = k->w > 1 ? k->w : 1;
+          if (x > -w && y > -w && x < W && y < H) e = rect(m, x, y, x + w, y + w, k->c, 255, false);
         }
         break;
       case RC_INVERT:

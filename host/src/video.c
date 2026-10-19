@@ -582,6 +582,8 @@ void video_note_shown(video_t *v, int64_t t_us, int64_t phase_us, uint32_t vblan
   v->flips++;
   v->last_vblank_us = t_us;
   v->phase_us = phase_us;
+  if (phase_us - t_us < 100000 && t_us - phase_us < 100000)
+    v->lag_us = v->lag_us ? (v->lag_us * 15 + (phase_us - t_us)) / 16 : phase_us - t_us;
 }
 
 void video_soft_queue(video_t *v, int64_t now_us) {
@@ -637,6 +639,8 @@ void video_get_stats(const video_t *v, video_stats_t *st) {
   st->period_us = v->period_us;
   st->last_vblank_us = v->last_vblank_us;
   st->margin_us = v->margin_us;
+  st->event_lag_us = v->lag_us;
+  st->late_on_time = v->late_on_time;
   st->flips = v->flips;
   st->missed = v->missed;
   st->reinits = v->reinits;

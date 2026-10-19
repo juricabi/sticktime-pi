@@ -59,7 +59,10 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
 Times in ms, averaged over the last couple of seconds: `run_ms` the game's run() with its drawing (and, on
 interlaced composite with drawing = multi, the copy out, which it then makes band by band), `present_ms`
 the copy into the display's buffer and queueing it, `wait_ms` from then until the frame's vblank (what
-`budget_ms`, the pacer's head start, and `margin_ms`, the display's adaptive safety margin, leave over),
+`budget_ms`, the pacer's head start, and `margin_ms`, the display's adaptive safety margin, leave over;
+`late_on_time` counts frames queued before that margin that still missed, which grow it, and `event_lag_ms`
+is a flip event's arrival minus its vblank stamp: negative on a Pi 4's composite, whose stamp is the first
+picture line after the blanking gap the event comes at the start of),
 `latency_ms` from the stick sample to the middle of the frame's scanout (≈ run + present + wait + half a
 refresh). State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
 page (states as in `GET /api/vtx`; `text` is `off` when VTX control is off). `system.throttled`: the firmware's

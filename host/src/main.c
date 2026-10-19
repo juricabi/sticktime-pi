@@ -27,6 +27,7 @@
 #include "vtx.h"
 #include "web.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -239,9 +240,15 @@ int main(int argc, char **argv) {
   }
   web_sync_system(&app);
   device_loop(&h, a.frames);
-  app_log(&app, "stopping");
+  /* the web page's Restart, or a setting that needs one (not a stop from systemd): start again at once */
+  bool again = h.quit && !*sys_quit_flag() && !a.frames;
+  app_log(&app, again ? "restarting" : "stopping");
   web_stop();
   sys_console_restore();   /* console first, then video (fbcon takes the display back while we are DRM master) */
   host_close(&h);
+  if (again) {
+    sys_exec_self(argv);
+    app_log(&app, "can't start again (%s): systemd will", strerror(errno));
+  }
   return 0;
 }

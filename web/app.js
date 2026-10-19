@@ -845,7 +845,7 @@
     // done -> on screen: the frame starts that much earlier than its work needs (the pacer's and the display's margins)
     waitMs: (s) => num(s.wait_ms, 2) + ' ms' + (isNum(s.margin_ms) ? ' · margin ' + num(s.margin_ms, 1) + ' ms' : ''),
     latencyParts: (s) => (isNum(s.latency_ms) && isNum(g(s, 'frame_ms', 'avg'))
-      ? 'Latency: game + copy + waiting + half a refresh (' + num(g(s, 'frame_ms', 'avg') / 2, 1) + ' ms) while the picture goes out.' : ''),
+      ? 'Latency = game + copy + waiting + half a refresh (' + num(g(s, 'frame_ms', 'avg') / 2, 1) + ' ms): the screen draws the picture line by line over a whole refresh, so its top line shows when the frame goes out and its middle, which latency counts to, half a refresh later. Waiting holds the screen\'s blanking gap between pictures (about 2.8 ms on NTSC composite) and the safety margin.' : ''),
     frames: (s) => (isNum(s.frames) ? s.frames.toLocaleString() : '–'),
     missed: (s) => (isNum(s.missed) ? s.missed.toLocaleString() : '–'),
     luaKb: (s) => (isNum(g(s, 'game', 'lua_kb')) ? g(s, 'game', 'lua_kb') + ' KB' : '–'),

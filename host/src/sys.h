@@ -35,6 +35,11 @@ int  sys_console_reset(const char *tty);
  * already set restores the console and terminates at once (a hung loop can still be stopped).
  * SIGPIPE is ignored (sockets). */
 volatile int *sys_quit_flag(void);
+/* Start this program again in place, after its own clean shutdown: the same process, so systemd sees no
+ * restart (its restart delay, which grows with every restart up to 30 s, is for crashes). Every file
+ * descriptor but 0, 1, 2 is closed and the signals unblocked first; the program is the file it was
+ * started as (argv[0] when absolute: an update replaces that file). Returns only when that fails. */
+void sys_exec_self(char **argv);
 /* CPU temperature in degrees C, NaN when unknown */
 double sys_cpu_temp(void);
 /* The firmware's throttling flags, as vcgencmd get_throttled (bit 0 under-voltage now, 1 frequency

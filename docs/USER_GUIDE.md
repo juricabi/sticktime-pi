@@ -198,6 +198,30 @@ Open the address from the menu on a phone or PC on the same network:
   script, see [The three editions](#the-three-editions)), latency,
 - **Updates**: game and StickTime Pi updates with rollback, **System**: name, SSH, password, restart, log.
 
+### Latency and frame times
+
+**Latency** on the Status page is the time from reading your sticks to the picture being on the screen,
+counted to the **middle** of the picture. It adds up as the **Frame times** card shows:
+
+- **Game (Lua + drawing)**: the game's step and drawing its picture (on interlaced composite with
+  Drawing on multi-core, also the copy out through the flicker filter).
+- **Copy to the screen**: the picture into the display's buffer.
+- **Waiting for the refresh**: the frame is done and waits for its picture to start going out. That holds
+  the screen's blanking gap between two pictures (about 2.8 ms on NTSC composite: the Pi hands a frame over
+  before the gap, the first picture line comes after it), a safety margin before the gap (shown beside it;
+  it grows by itself when frames handed over in time still miss), and the head start the Pi gives each
+  frame so its slowest frames make it too (at double detail the game's work swings a lot from frame to
+  frame, so the quick ones wait longer). Less waiting means less latency, but a frame that misses shows
+  the last picture again (a stutter).
+- **Half a refresh** (8.3 ms at 60 Hz, 10 ms at 50 Hz): composite video, and the VTX to your goggles, sends
+  the picture line by line over a whole refresh. The top line shows at the refresh, the middle half a
+  refresh later, the bottom a whole refresh later.
+
+For example 5.8 + 0.2 + 7.0 + 8.3 ≈ 21 ms: the frame was ready and on its way after 13 ms, its top line
+shows then, its middle at 21 ms, its bottom at 30 ms. Every 60 Hz screen scans like this; only the game,
+the copy and the waiting can get shorter. Double detail (Picture detail = high) makes the game step longer,
+so the frame starts sooner and latency grows with it; PAL's 50 Hz adds 1.7 ms to the half refresh.
+
 ## 7. Sound
 
 The motor sound, the beeps and the music play on the jack's audio contacts (or HDMI). Music: generated

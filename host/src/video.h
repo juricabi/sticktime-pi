@@ -78,6 +78,8 @@ typedef struct {
   bool hw_scaling;         /* drm: the plane scales/positions the picture (SETPLANE); false: the
                             * CPU scales into mode-size buffers, or the render size is the mode */
   bool connected;          /* a display is (probably) there: false for HDMI "blind" mode */
+  int detail;              /* 2: the render has twice the lines (and width) of the picture (av_detail = high on
+                            * composite), the plane scales it down; else 1 (or 0) */
   char connector[24];      /* "Composite-1", "HDMI-A-1", "Virtual-1", "fb0", "" */
   char device[32];         /* "/dev/dri/card1", "/dev/fb0", "" */
   char desc[128];          /* e.g. "Composite-1 720x480i 59.94 Hz, NTSC 4:3, render 640x480" */
@@ -133,6 +135,9 @@ typedef struct {
   uint32_t missed;         /* refreshes that showed an old frame again (late frames) */
   uint32_t reinits;        /* recoveries (full re-initializations) */
   bool down;               /* no display right now (drm: waiting to recover) */
+  int64_t event_lag_us;    /* a flip's event arrival minus its vblank stamp, average (negative: the stamp is the
+                            * first picture line, after the blanking the event comes at the start of) */
+  uint32_t late_on_time;   /* frames queued before the deadline that still missed their vblank */
 } video_stats_t;
 void    video_get_stats(const video_t *v, video_stats_t *st);
 int64_t video_period_us(const video_t *v);
@@ -216,6 +221,8 @@ struct video {
   void (*log_fn)(void *ud, const char *line);   /* video_config_t.log, NULL = stderr */
   void *log_ud;
   par_t *par;              /* video_set_pool: copy the frame on several cores (drawing = multi) */
+  int64_t lag_us;          /* event arrival - vblank stamp, averaged (video_note_shown) */
+  uint32_t late_on_time;   /* (drm's adaptive margin) */
   gpu_t *gpu;              /* video_set_gpu: the GPU draws the frames (drawing = gpu) */
 };
 

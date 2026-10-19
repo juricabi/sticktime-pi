@@ -38,6 +38,9 @@ typedef struct {
   font_class_t cls;
   lcd_stats_t st;                 /* reset by the caller each frame */
   int row0, row1;                 /* the rows drawn: 0, h (a band while lcd_flush plays a recording) */
+  int line_w;                     /* 1, or 2 on a doubled render (av_detail = high): lines, points and
+                                   * rectangle borders twice as wide, so scaled down they weigh as much as
+                                   * on a normal one (a 1 pixel line would fade to a quarter) */
   struct lcd_rec *rec;            /* lcd_set_pool: the drawing calls since the last lcd_flush */
 } lcd_t;
 

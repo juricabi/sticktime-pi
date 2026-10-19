@@ -44,6 +44,8 @@ typedef struct {
   float wait_ms;                            /* the frame done (drawn and copied) -> its vblank, average */
   float margin_ms;                          /* the display's safety margin before a vblank (adaptive) */
   float budget_ms;                          /* the pacer's: a frame starts this long before its deadline */
+  float event_lag_ms;                       /* a flip's event arrives this long after its vblank (average) */
+  uint32_t late_on_time;                    /* frames queued in time that still missed (the margin grows) */
   uint32_t frames, missed;                  /* missed: frames that took more than one refresh */
   int game_state;                           /* GS_* */
   bool game_loaded;

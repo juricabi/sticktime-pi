@@ -384,6 +384,7 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
     return -1;
   }
   fonts_warm(h->fonts, &h->fcls);
+  h->lcd.line_w = h->vinfo.detail > 1 ? 2 : 1;   /* lines keep their weight on a doubled render */
   apply_drawing(h);
 
   /* inputs */
@@ -795,6 +796,8 @@ void host_publish(host_t *h, int64_t now) {
     video_stats_t vs;
     video_get_stats(h->video, &vs);
     st.margin_ms = (float)(vs.margin_us / 1000.0);
+    st.event_lag_ms = (float)(vs.event_lag_us / 1000.0);
+    st.late_on_time = vs.late_on_time;
   }
   st.frames = s->frames;
   st.missed = s->missed;

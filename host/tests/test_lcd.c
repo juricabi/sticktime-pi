@@ -352,6 +352,40 @@ static void test_lines(void) {
     CHECK_INT(count_color(&l, 0x07E0), n);
     if (on) CHECK(px(&l, lo < 0 ? 0 : lo, y) == 0x07E0 && px(&l, hi > W - 1 ? W - 1 : hi, y) == 0x07E0);
   }
+  /* line_w 2 (a doubled render): the line, and the same line a pixel below it (running more across than
+   * up) or right of it (more up); a point is 2 x 2 */
+  {
+    lcd_t t1, t2;
+    lcd_init(&t1, W, H, NULL, NULL);
+    lcd_init(&t2, W, H, NULL, NULL);
+    t2.line_w = 2;
+    int bad = 0;
+    for (int k = 0; k < 500; k++) {
+      int x1 = rnd_in(2, W - 3), y1 = rnd_in(2, H - 3), x2 = rnd_in(2, W - 3), y2 = rnd_in(2, H - 3);
+      uint8_t pat = k % 3 ? 0xFF : (uint8_t)rnd();
+      bool across = abs(x2 - x1) >= abs(y2 - y1);
+      lcd_clear(&t1, 0);
+      lcd_clear(&t2, 0);
+      lcd_line(&t1, x1, y1, x2, y2, pat, 0xFFFF);
+      for (int y = 0; y < H; y++)                         /* the line's pixels, and their partners */
+        for (int x = 0; x < W; x++)
+          if (t1.fb[y * W + x] == 0xFFFF) {
+            int px = across ? x : x + 1, py = across ? y + 1 : y;
+            if (px < W && py < H && t1.fb[py * W + px] != 0xFFFF) t1.fb[py * W + px] = 0x0001;
+          }
+      for (int i = 0; i < W * H; i++) if (t1.fb[i] == 0x0001) t1.fb[i] = 0xFFFF;
+      lcd_line(&t2, x1, y1, x2, y2, pat, 0xFFFF);
+      bad += memcmp(t1.fb, t2.fb, sizeof *t1.fb * W * H) != 0;
+    }
+    CHECK_INT(bad, 0);
+    lcd_clear(&t2, 0);
+    lcd_point(&t2, 10, 20, 0xFFFF);
+    lcd_point(&t2, W - 1, H - 1, 0xFFFF);                 /* its partners off the screen */
+    CHECK_INT(count_color(&t2, 0xFFFF), 5);
+    CHECK(px(&t2, 11, 21) == 0xFFFF && px(&t2, 12, 20) == 0);
+    lcd_free(&t1);
+    lcd_free(&t2);
+  }
   /* a point */
   lcd_clear(&l, 0);
   lcd_line(&l, 5, 6, 5, 6, 0xFF, 0xFFFF);
@@ -803,6 +837,7 @@ static void test_recorded(void) {
   for (int frame = 0; frame < 60; frame++) {
     memset(&a.st, 0, sizeof a.st);
     memset(&b.st, 0, sizeof b.st);
+    a.line_w = b.line_w = frame % 3 == 2 ? 2 : 1;        /* a doubled render's lines too */
     int calls = rnd_in(1, 400);
     for (int n = 0; n < calls; n++) {
       int v[11];
