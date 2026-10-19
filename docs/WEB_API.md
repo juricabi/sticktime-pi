@@ -57,7 +57,10 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
  "vtx":{"state":"ready","text":"SmartAudio 2.1 · R1 5658 MHz · 25 mW"}}
 ```
 State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
-page (states as in `GET /api/vtx`; `text` is `off` when VTX control is off).
+page (states as in `GET /api/vtx`; `text` is `off` when VTX control is off). `system.throttled`: the firmware's
+throttling flags in hex, as `vcgencmd get_throttled` prints them (bit 0 under-voltage now, 1 frequency capped,
+2 throttled, 3 soft temperature limit; bits 16-19 the same since boot), read from the firmware's mailbox
+(`/dev/vcio`) where the kernel has no `get_throttled` file (6.12); `""` when unknown (not a Pi).
 
 `GET /api/sticks` → `{"sources":[{"kind":"wifi","name":"...","live":true,"rate_hz":250,"nch":16,"ch":[16 ints]}],"active":0,"sticks":{...}}`
 (poll it about 20 times a second). `GET /api/sticks/stream` → `text/event-stream`, one `data: <same JSON>` event

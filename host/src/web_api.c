@@ -721,17 +721,8 @@ static void r_status(web_conn_t *c) {
   web_hostname(host, sizeof host);
   network_mode(iface, ssid, sizeof ssid, mode, sizeof mode);
   char throttled[24] = "";
-#ifdef __linux__
-  {
-    size_t tl;
-    char *t = read_small("/sys/devices/platform/soc/soc:firmware/get_throttled", 64, &tl);
-    if (t) {
-      unsigned long v = strtoul(t, NULL, 16);
-      snprintf(throttled, sizeof throttled, "0x%lx", v);
-      free(t);
-    }
-  }
-#endif
+  uint32_t tf;
+  if (sys_throttled(&tf) == 0) snprintf(throttled, sizeof throttled, "0x%lx", (unsigned long)tf);
 
   sb_t b;
   sb_init(&b, 8192);

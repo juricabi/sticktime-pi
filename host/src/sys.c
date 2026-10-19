@@ -182,6 +182,29 @@ double sys_cpu_temp(void) {
   return ok ? v / 1000.0 : NAN;
 }
 
+#define VCIO_PROPERTY _IOWR(100, 0, char *)   /* the firmware's mailbox property call (vcio driver) */
+#define TAG_GET_THROTTLED 0x00030046
+
+int sys_throttled(uint32_t *flags) {
+  FILE *f = fopen("/sys/devices/platform/soc/soc:firmware/get_throttled", "r");
+  if (f) {
+    unsigned long v = 0;
+    int ok = fscanf(f, "%lx", &v) == 1;
+    fclose(f);
+    if (ok) { *flags = (uint32_t)v; return 0; }
+  }
+  int fd = open("/dev/vcio", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  /* a message: its size, request code 0, the tag (id, value size, request size 0, the value), end tag 0 */
+  uint32_t m[8] __attribute__((aligned(16))) = { sizeof m, 0, TAG_GET_THROTTLED, 4, 0, 0, 0, 0 };
+  int r = ioctl(fd, VCIO_PROPERTY, m);
+  close(fd);
+  /* the firmware answered (0x80000000) and filled the tag in (bit 31 of its size word) */
+  if (r < 0 || m[1] != 0x80000000u || !(m[4] & 0x80000000u)) return -1;
+  *flags = m[5];
+  return 0;
+}
+
 void sys_ip_address(char *ip, size_t iplen, char *iface, size_t ifacelen) {
   if (ip && iplen) ip[0] = 0;
   if (iface && ifacelen) iface[0] = 0;
@@ -214,6 +237,7 @@ bool sys_console_is_graphics(void) { return false; }
 bool sys_console_foreground(void) { return true; }
 int  sys_console_reset(const char *tty) { (void)tty; return -1; }
 double sys_cpu_temp(void) { return NAN; }
+int sys_throttled(uint32_t *flags) { (void)flags; return -1; }
 void sys_ip_address(char *ip, size_t iplen, char *iface, size_t ifacelen) {
   if (ip && iplen) plat_strlcpy(ip, "127.0.0.1", iplen);
   if (iface && ifacelen) plat_strlcpy(iface, "lo", ifacelen);

@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* SCHED_FIFO at prio for the calling thread (0 = leave), mlockall, pin to cpu (-1 = leave).
  * Failures are reported in msg (not fatal). */
@@ -36,6 +37,10 @@ int  sys_console_reset(const char *tty);
 volatile int *sys_quit_flag(void);
 /* CPU temperature in degrees C, NaN when unknown */
 double sys_cpu_temp(void);
+/* The firmware's throttling flags, as vcgencmd get_throttled (bit 0 under-voltage now, 1 frequency
+ * capped, 2 throttled, 3 soft temperature limit; bits 16-19 the same since boot): from the sysfs file
+ * of older kernels, else the firmware's mailbox (/dev/vcio; kernel 6.12 has no such file). 0 ok, -1 unknown */
+int sys_throttled(uint32_t *flags);
 /* first IPv4 address of a non-loopback interface ("" when none); iface gets its name */
 void sys_ip_address(char *ip, size_t iplen, char *iface, size_t ifacelen);
 
