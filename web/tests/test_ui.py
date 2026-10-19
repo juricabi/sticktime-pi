@@ -370,6 +370,9 @@ class UiTest(unittest.TestCase):
         self.assertNotIn("ghp_secret123", p.content())
         # Change, then Cancel: nothing to save; an empty change isn't sent either
         p.click(f"{gt} button:has-text('Change')")
+        # the settings read back after the save landing now (a slow Pi) leaves the field open
+        p.evaluate("stp.forms.forEach((f) => { if (!f.autosave) f.render(); })")
+        self.assertTrue(p.is_visible("#f-updates-github_token"), "a refresh closed the field opened with Change")
         p.fill("#f-updates-github_token", "other")
         p.click(f"{gt} button:has-text('Cancel')")
         self.assertTrue(p.is_hidden('form[data-form="updates"] .savebar'))
