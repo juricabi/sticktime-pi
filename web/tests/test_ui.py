@@ -1219,6 +1219,8 @@ class UiTest(unittest.TestCase):
     def test_tracks_page(self):
         (self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks" / "C3.TXT").write_text("Lowercase Slot\n1 123 4 0\n")
         (self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks" / "c4.txt").write_text("not a track")
+        (self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks" / "c5.txt").write_text("Big One\n2 973733 7 3\n")
+        (self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks" / "c6.txt").write_text("Future\n3 5 6 0\n")
         p = self.open("tracks")
         p.wait_for_function(LOADED["tracks"])
         self.assertEqual(p.eval_on_selector_all(".launch a", "els => els.map((e) => e.getAttribute('href'))"),
@@ -1228,6 +1230,8 @@ class UiTest(unittest.TestCase):
         self.assertEqual(rows[1], "c2 empty track 10")
         self.assertEqual(rows[2], "c3 Lowercase Slot track 11 Download")
         self.assertEqual(rows[3], "c4 the game can't read it track 12 Download")
+        self.assertEqual(rows[4], "c5 Big One track 13 Download")            # format 2 (StickTime 1.8.0)
+        self.assertEqual(rows[5], "c6 the game can't read it track 14 Download")
         self.assertEqual(p.get_attribute("#slotList li:nth-child(3) a", "href"), "/api/sd/SCRIPTS/TOOLS/StickTimeTracks/C3.TXT")
         (self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks" / "c2.txt").write_text("Fresh One\n1 5 6 0\n")
         p.click("#slotsBtn")

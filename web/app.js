@@ -1425,8 +1425,9 @@
         else {
           try {
             const t = await api('GET', '/api/sd/' + TRACKS + '/' + encodeURIComponent(e.name));
+            // formats 1 and 2 (StickTime 1.8.0's bigger tracks), as the color game lists them
             const m = /^\s*([^\r\n]+)[\r\n]+\s*(\d+)\s+\d+/.exec(String(t));
-            if (m && m[2] === '1') name = m[1].trim().slice(0, 16); else bad = 'the game can\'t read it';
+            if (m && (m[2] === '1' || m[2] === '2')) name = m[1].trim().slice(0, 16); else bad = 'the game can\'t read it';
           } catch (err) { bad = err.message; }
         }
       }
