@@ -156,6 +156,7 @@
     <!-- ============================================================ Sticks -->
     <section class="page" id="p-sticks" data-page="sticks" aria-labelledby="h-sticks" hidden>
       <header class="page-head"><h1 id="h-sticks" tabindex="-1">Sticks</h1><p class="lead">Your radio's sticks as the Pi sees them. Move them: the bars follow.</p></header>
+      <div class="alert info" id="btOff" role="status" hidden><svg class="i"><use href="#i-sticks"/></svg><div><span id="btOffText">Bluetooth is off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards).</span> Turn it on under <b>Bluetooth</b> in the settings below (it takes a restart of the Pi).</div></div>
       <div class="alert warn input-warn" id="inputWarnSticks" role="status" hidden><svg class="i"><use href="#i-warn"/></svg><div><span class="input-warn-text"></span> <button class="btn sm" type="button" data-action="input-auto">Use auto</button></div></div>
       <section class="card" aria-labelledby="h-mixed">
         <div class="card-head"><h2 id="h-mixed">What the game gets</h2><span class="pill" id="liveSrc">–</span></div>
@@ -192,10 +193,10 @@
       </section>
       <section class="card" aria-labelledby="h-vset">
         <h2 id="h-vset">Settings</h2>
-        <form class="settings" data-form="video" data-keys="video,tv,aspect,av_mode,av_detail,hdmi_mode,margin,fonts,show_ip" novalidate></form>
+        <form class="settings" data-form="video" data-keys="video,tv,aspect,av_mode,av_detail,av_flicker,hdmi_mode,margin,fonts,show_ip" novalidate></form>
         <ul class="explain">
           <li><span class="flag reboot">after reboot</span> AV ↔ HDMI and the TV standard: the Pi sets up its video output when it starts. Save, then Reboot now (about 30 s; it may restart once more by itself to switch the output).</li>
-          <li><span class="flag restart">restarts the game</span> Shape, composite lines, progressive detail, HDMI mode, border and text size: the game restarts in a second or two.</li>
+          <li><span class="flag restart">restarts the game</span> Shape, composite lines, progressive detail, flicker filter, HDMI mode, border and text size: the game restarts in a second or two.</li>
           <li><span class="flag live">at once</span> The rest applies while you fly.</li>
         </ul>
         <p class="note">Wiring for AV: the 3.5 mm jack's sleeve (the last ring) is video, the ring before it ground. A TV's yellow input works too. If nothing shows after a change, plug in HDMI, or edit <code>sticktime.txt</code> on the SD card from a PC.</p>

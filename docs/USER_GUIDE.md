@@ -109,6 +109,9 @@ eyes. What helps:
   sharper text and smoother edges, for a few ms more work per frame; `normal` draws 240p / 288p as they are.
   Interlaced (480i / 576i) has twice the lines, but thin lines and text flicker. A card from before 0.2.5
   keeps interlaced: web page → Video → Composite lines → Progressive.
+- Staying with interlaced? `av_flicker = light` or `full` (web page → Video → Flicker filter) blends each line
+  with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light
+  keeps more detail, Full stops it completely, at a little vertical softness (as a GameCube does in 480i).
 - `tv = ntsc` (or `pal60`) refreshes at 60 Hz: a little less delay and smoother than PAL's 50 Hz. Most analog
   goggles show both. PAL has more lines, so slightly sharper text.
 - Blacks grey, or dark areas crushed? Switch between `tv = ntsc` and `tv = ntsc-j` (the same signal without
@@ -158,6 +161,10 @@ ExpressLRS Lua → BLE Joystick (ESP32 modules). The Pi pairs automatically (`bl
 ExpressLRS 4.x (it shows as "ELRS Joystick") and 3.x ("ExpressLRS Joystick") put the channels on different
 axes; the Pi knows both, so CH1-CH7 show as on the radio (CH8 usually doesn't come through: Linux drops the
 second slider; CH9-CH16 arrive as buttons, on or off).
+
+`bluetooth = off` (web page → Sticks → Bluetooth, then a restart of the Pi) switches Bluetooth off altogether: no Bluetooth
+device can connect, not the ELRS BLE joystick, a gamepad or a keyboard, and the Sticks page says so. Bluetooth
+shares the Pi's radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.
 
 ### Which channel is which stick
 The web page's **Sticks** tab shows every channel of every source live: move a stick and watch its bar.

@@ -83,7 +83,7 @@ and `"<key>_set": true` when the file has a value.
 sent as empty is left unchanged unless the body has `<key>_clear = 1`) →
 `{"ok":true,"saved":["tv"],"reboot":true,"restart":false}` or 400 `{"error":"BadRequest","message":"...","fields":{"tv":"must be one of ..."}}`
 (nothing is saved when any field is invalid). Unknown keys are kept in the file. Live keys apply at once; keys
-that need the host restarted (`video` → `aspect`, `av_mode`, `av_detail`, `hdmi_mode`, `margin`, `fonts`) restart the
+that need the host restarted (`video` → `aspect`, `av_mode`, `av_detail`, `av_flicker`, `hdmi_mode`, `margin`, `fonts`) restart the
 service; `reboot` keys need `POST /api/reboot` (the app offers it).
 
 ## The game's SD card

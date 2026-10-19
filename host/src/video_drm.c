@@ -83,6 +83,7 @@ typedef struct {
   bool progressive, sharp, filter_set;
   bool detail_high;                /* av_detail = high: a progressive composite mode draws twice its lines */
   bool doubled;                    /* the render size is such a doubled one */
+  int flicker;                     /* av_flicker on an interlaced mode: 0 off, 1 light, 2 full */
   /* device */
   int fd;
   char path[32], driver[32];
@@ -701,6 +702,7 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
         /* the plane can't scale or position (vkms, simple drivers): CPU scaling from now on */
         video_log(&d->base, "hardware scaling unavailable (%s): CPU scaling", strerror(-e));
         if (d->doubled) video_log(&d->base, "av_detail = high needs hardware scaling: av_detail = normal draws as sharp for less work");
+        if (d->flicker) video_log(&d->base, "av_flicker needs hardware scaling: the picture goes out unfiltered");
         d->hw_scale_broken = true;
         if (e == -EACCES) {
           destroy_all(d, nb, &nblack);
@@ -1221,7 +1223,11 @@ static void service(drm_t *d, int64_t now) {
 static void copy_frame(drm_t *d, int b, const uint16_t *fb) {
   dbuf_t *B = &d->buf[b];
   if (!B->map) return;
-  if (d->cpu_scale)
+  /* interlaced composite with av_flicker: each row blended with its neighbours on the way out, when
+   * the rows go 1:1 onto mode lines (the plane scales across only); CPU scaling copies plainly */
+  if (d->flicker && d->composite && mode_il(&d->mode) && !d->cpu_scale && d->rh == d->lay.view_h)
+    video_deflicker_copy(fb, d->rw, d->rh, B->map, (int)B->pitch, d->bpp, d->flicker);
+  else if (d->cpu_scale)
     video_scale_copy(fb, d->rw, B->map, (int)B->pitch, d->bpp, d->lay.view_x, d->lay.view_y, d->lay.view_w,
                      d->lay.view_h, d->xlut, d->ylut);
   else if (d->bpp == 16 && B->pitch == (uint32_t)d->rw * 2)
@@ -1459,6 +1465,8 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
   d->progressive = !strcmp(tmp, "progressive") || !strcmp(tmp, "240p") || !strcmp(tmp, "288p");
   cfg_str(tmp, sizeof tmp, c->av_detail, "high");
   d->detail_high = !strcmp(tmp, "high");
+  cfg_str(tmp, sizeof tmp, c->av_flicker, "off");
+  d->flicker = !strcmp(tmp, "full") ? 2 : !strcmp(tmp, "light") ? 1 : 0;
   if (c->scale_filter && *c->scale_filter) {
     cfg_str(tmp, sizeof tmp, c->scale_filter, "smooth");
     d->filter_set = true;

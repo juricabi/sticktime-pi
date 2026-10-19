@@ -249,7 +249,7 @@
   const S = { values: null, keys: [], byKey: new Map(), warnings: '', error: '' };
   const SECRET = (k) => k && k.kind === 'secret';
   // the host restarts for these (the server's "restart" flag; this list only for a server without it)
-  const RESTART = new Set(['aspect', 'av_mode', 'av_detail', 'hdmi_mode', 'margin', 'fonts', 'audio_out']);
+  const RESTART = new Set(['aspect', 'av_mode', 'av_detail', 'av_flicker', 'hdmi_mode', 'margin', 'fonts', 'audio_out']);
   const restarts = (k) => (typeof k.restart === 'boolean' ? k.restart : RESTART.has(k.key));
   // how a saved key takes effect: at once, after a reboot, by a restart of the game, or when a helper
   // next runs (the updater's keys): no flag then
@@ -262,7 +262,7 @@
   const PLACED = new Set(['wifi_ssid', 'wifi_password', 'script',                   // set elsewhere: Join, the script list,
     'vtx_band', 'vtx_channel', 'vtx_freq', 'vtx_power', 'vtx_pit']);                // the VTX card's pickers
   const LABEL = {
-    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Progressive detail', hdmi_mode: 'HDMI mode', margin: 'Border',
+    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Progressive detail', av_flicker: 'Flicker filter', hdmi_mode: 'HDMI mode', margin: 'Border',
     fonts: 'Text size', show_ip: 'Show the web address', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
     hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', stick_channels: 'Stick mapping', invert: 'Reverse', pause_channel: 'Pause switch',
     stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
@@ -277,6 +277,7 @@
     tv: { ntsc: 'NTSC', pal: 'PAL', pal60: 'PAL-60', 'ntsc-j': 'NTSC-J (Japan)', 'pal-m': 'PAL-M (Brazil)', 'pal-n': 'PAL-N', 'ntsc-443': 'NTSC 4.43', secam: 'SECAM' },
     av_mode: { interlaced: 'Interlaced', progressive: 'Progressive' },
     av_detail: { high: 'High', normal: 'Normal' },
+    av_flicker: { off: 'Off', light: 'Light', full: 'Full' },
     fonts: { auto: 'Auto', std: 'Standard radio (480×272)', sml: 'Small radio', lrg: 'Large radio (800×480)', pc: 'PC (1280×720)', hd: 'HD (1920×1080)' },
     input: { auto: 'Auto: the last one that moved', wifi: 'ELRS / Crossfire WiFi', usb: 'USB radio', bluetooth: 'Bluetooth', gamepad: 'Gamepad', joystick: 'Joystick', keyboard: 'Keyboard' },
     sd_write: { game: 'Tracks + game', tracks: 'Tracks only', all: 'Everything', off: 'Nothing' },
@@ -292,6 +293,8 @@
   const HELP_MORE = {
     av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines, but they flicker.',
     av_detail: 'High draws the picture with twice the lines and the Pi scales it down: sharper text and smoother edges, a few ms more work per frame.',
+    av_flicker: 'Each line blended with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light keeps more detail, Full stops it completely (as a GameCube in 480i).',
+    bluetooth: 'Off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards). Bluetooth shares the Pi\'s radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
     channel_order: 'AETR for ELRS and most radios; TAER for some Spektrum and Futaba setups.',
     stick_channels: 'Detect asks you to move each stick in turn. Gamepads and the keyboard keep their own layout.',
@@ -306,7 +309,7 @@
     vtx_send_only: 'For a VTX whose answers can\'t be read: this page then can\'t show what the VTX is set to.',
   };
   // fields that only matter for one output
-  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', av_detail: (v) => v.video === 'av' && v.av_mode === 'progressive', hdmi_mode: (v) => v.video === 'hdmi' };
+  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', av_detail: (v) => v.video === 'av' && v.av_mode === 'progressive', av_flicker: (v) => v.video === 'av' && v.av_mode === 'interlaced', hdmi_mode: (v) => v.video === 'hdmi' };
   const SLIDERS = new Set(['volume', 'music_volume', 'margin']);
   // the server's one-line help (no full stop), then ours
   function helpText(k) {
@@ -864,17 +867,27 @@
   // another source does (the game gets no sticks then), with a button for auto.
   const fixedInput = () => { const v = S.values && typeof S.values.input === 'string' ? S.values.input : ''; return v && v !== 'auto' ? v : ''; };
   const ignoredSrc = (x) => !!fixedInput() && !!x && x.kind !== fixedInput();
+  const btOff = () => !!S.values && S.values.bluetooth === 'off';
   function inputWarn(srcs) {
     const f = fixedInput();
     const live = (Array.isArray(srcs) ? srcs : []).filter((x) => x && typeof x === 'object' && x.live);
     const ign = f && !live.some((x) => x.kind === f) ? live : [];
     const names = ign.map((x) => (x.name || KIND[x.kind] || String(x.kind)) + ' (' + (KIND[x.kind] || String(x.kind)) + ')');
-    const text = names.length ? 'Stick source is set to ' + (KIND[f] || f) + ': ' + (names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are' : names[0] + ' is') + ' ignored.' : '';
+    const btLive = live.some((x) => x.kind === 'bluetooth');
+    const text = f === 'bluetooth' && btOff() && !btLive ? 'Stick source is set to Bluetooth, but Bluetooth is off: the game gets no sticks.'
+      : names.length ? 'Stick source is set to ' + (KIND[f] || f) + ': ' + (names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are' : names[0] + ' is') + ' ignored.' : '';
     for (const el of $$('.input-warn')) {
       if (el.hidden !== !text) el.hidden = !text;
       const t = $('.input-warn-text', el);
       if (t && t.textContent !== text) t.textContent = text;
     }
+    // Bluetooth off: say so where the sources are, so a missing Bluetooth device isn't a mystery. It is
+    // applied at boot: while a Bluetooth device still sends, it is only the saved setting
+    const bt = $('#btOff'), btText = $('#btOffText');
+    if (bt && bt.hidden !== !btOff()) bt.hidden = !btOff();
+    const say = btLive ? 'Bluetooth is set to off: after the next restart of the Pi no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards).'
+      : 'Bluetooth is off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards).';
+    if (btText && btText.textContent !== say) btText.textContent = say;
   }
   const latestSources = () => (page === 'sticks' && sticksData && Array.isArray(sticksData.sources) ? sticksData.sources : g(lastStatus, 'input', 'sources'));
   document.addEventListener('settings', () => inputWarn(latestSources()));
@@ -991,7 +1004,7 @@
     $('#gimL .gdot').style.transform = 'translate(' + pos(m[0][0]) * R + 'px,' + -pos(m[0][1]) * R + 'px)';
     $('#gimR .gdot').style.transform = 'translate(' + pos(m[1][0]) * R + 'px,' + -pos(m[1][1]) * R + 'px)';
     const srcs = Array.isArray(d.sources) ? d.sources : [];
-    const sig = JSON.stringify(srcs.map((s) => [s.kind, s.name, s.nch]));
+    const sig = JSON.stringify([btOff(), srcs.map((s) => [s.kind, s.name, s.nch])]);
     if (sig !== srcCards.sig) {
       srcCards.sig = sig;
       srcCards.cards = srcs.map((s) => {
@@ -1005,7 +1018,9 @@
         return { card, bars, dot, rate, active, ign };
       });
       $('#srcCards').replaceChildren(...srcCards.cards.map((c) => c.card));
-      if (!srcs.length) $('#srcCards').append(h('section', { class: 'card' }, h('p', { class: 'note', text: 'No stick source yet. Plug in a radio by USB (as a joystick), start the ELRS or Crossfire module\'s WiFi, or pair a Bluetooth gamepad.' })));
+      if (!srcs.length) $('#srcCards').append(h('section', { class: 'card' }, h('p', { class: 'note', text: btOff()
+        ? 'No stick source yet. Plug in a radio by USB (as a joystick) or start the ELRS or Crossfire module\'s WiFi (Bluetooth is off).'
+        : 'No stick source yet. Plug in a radio by USB (as a joystick), start the ELRS or Crossfire module\'s WiFi, or pair a Bluetooth gamepad.' })));
     }
     srcs.forEach((s, i) => {
       const c = srcCards.cards[i];

@@ -1352,6 +1352,68 @@ static void test_none_backend(void) {
   video_close(v);
 }
 
+/* the flicker filter: a 1-row white line on black spreads over three rows, each channel rounded on
+ * its own; a flat colour stays as it is; the edge rows count themselves for the row they lack */
+static void test_deflicker(void) {
+  enum { W = 3, H = 5 };
+  uint16_t src[W * H], out[W * H];
+  uint32_t out32[W * H];
+  memset(src, 0, sizeof src);
+  for (int x = 0; x < W; x++) src[2 * W + x] = 0xFFFF;
+  /* full [1 2 1]/4: R and B (31 + 2) >> 2 = 8 beside the line, (62 + 2) >> 2 = 16 on it; G 16 and 32 */
+  video_deflicker_copy(src, W, H, out, W * 2, 16, 2);
+  static const uint16_t full[H] = { 0, 0x4208, 0x8410, 0x4208, 0 };
+  for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], full[y]);
+  /* light [1 6 1]/8: (31 + 4) >> 3 = 4 beside, (186 + 4) >> 3 = 23 on it; G 8 and 47 */
+  video_deflicker_copy(src, W, H, out, W * 2, 16, 1);
+  static const uint16_t light[H] = { 0, 0x2104, 0xBDF7, 0x2104, 0 };
+  for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) CHECK_INT(out[y * W + x], light[y]);
+  /* 32 bpp: the same pixels, as XRGB8888 */
+  video_deflicker_copy(src, W, H, out32, W * 4, 32, 2);
+  CHECK_INT(out32[2 * W] & 0xFFFFFF, 0x848284);                  /* 16 / 32 / 16, bits replicated */
+  CHECK_INT(out32[0] & 0xFFFFFF, 0);
+  /* a flat colour is unchanged by both */
+  for (int i = 0; i < W * H; i++) src[i] = 0x9A5B;
+  for (int s = 1; s <= 2; s++) {
+    video_deflicker_copy(src, W, H, out, W * 2, 16, s);
+    CHECK(!memcmp(out, src, sizeof src));
+  }
+  /* edges: a white top row keeps (2 + 1) / 4 of itself, its neighbour gets 1 / 4 */
+  memset(src, 0, sizeof src);
+  for (int x = 0; x < W; x++) src[x] = 0xFFFF;
+  video_deflicker_copy(src, W, H, out, W * 2, 16, 2);
+  CHECK_INT(out[0] >> 11, (31 * 3 + 2) >> 2);
+  CHECK_INT(out[W] >> 11, (31 + 2) >> 2);
+  /* strength 0: a plain copy; a row pitch wider than the picture */
+  src[W + 1] = 0x1234;
+  uint16_t wide[(W + 2) * H];
+  memset(wide, 0xAA, sizeof wide);
+  video_deflicker_copy(src, W, H, wide, (W + 2) * 2, 16, 0);
+  CHECK_INT(wide[(W + 2) + 1], 0x1234);
+  CHECK_INT(wide[W], 0xAAAA);                                    /* past the picture: untouched */
+  /* any picture: the result is each channel's (a + m b + c + d / 2) / d, rows clamped at the edges, for
+   * every height (the rotating row buffers) and for a width past them (the plain loop) */
+  static uint16_t rs[2100 * 7], ro[2100 * 7];
+  uint32_t seed = 12345;
+  for (size_t i = 0; i < sizeof rs / sizeof rs[0]; i++) { seed = seed * 1103515245u + 12345u; rs[i] = (uint16_t)(seed >> 16); }
+  static const int dims[][2] = { { 37, 1 }, { 37, 2 }, { 37, 3 }, { 37, 7 }, { 2100, 3 } };
+  for (size_t k = 0; k < sizeof dims / sizeof dims[0]; k++) {
+    int w = dims[k][0], h = dims[k][1];
+    for (int s = 1; s <= 2; s++) {
+      int m = s == 2 ? 2 : 6, dv = s == 2 ? 4 : 8, bad = 0;
+      video_deflicker_copy(rs, w, h, ro, w * 2, 16, s);
+      for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        uint16_t a = rs[(y > 0 ? y - 1 : 0) * w + x], b = rs[y * w + x], c = rs[(y < h - 1 ? y + 1 : h - 1) * w + x];
+        int r = ((a >> 11) + m * (b >> 11) + (c >> 11) + dv / 2) / dv;
+        int g = (((a >> 5) & 63) + m * ((b >> 5) & 63) + ((c >> 5) & 63) + dv / 2) / dv;
+        int bl = ((a & 31) + m * (b & 31) + (c & 31) + dv / 2) / dv;
+        if (ro[y * w + x] != (uint16_t)((r << 11) | (g << 5) | bl)) bad++;
+      }
+      CHECK_INT(bad, 0);
+    }
+  }
+}
+
 /* STICKTIME_DT from the deadlines: whole refresh periods */
 static void test_frame_dt(void) {
   const int64_t P = 16683, t = 5000000;
@@ -1438,6 +1500,7 @@ int main(void) {
   test_snapshot();
   test_png_backend();
   test_none_backend();
+  test_deflicker();
   test_frame_dt();
   test_dispatch();
   rm_tree(tmpdir);

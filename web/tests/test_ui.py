@@ -48,7 +48,7 @@ MOBILE = {"width": 390, "height": 844}
 LOADED = {
     "status": "document.querySelector('[data-f=fps]').textContent !== '–' && !document.getElementById('shotImg').hidden",
     "sticks": "document.querySelectorAll('#srcCards .src-card').length === 2",
-    "video": "document.querySelectorAll('form[data-form=video] .field').length === 9",
+    "video": "document.querySelectorAll('form[data-form=video] .field').length === 10",
     "wifi": "document.querySelectorAll('#netList li').length === 4",
     "sound": "document.querySelectorAll('#songList li .name').length >= 2",
     "tracks": "document.querySelectorAll('#slotList li').length === 8",
@@ -578,6 +578,38 @@ class UiTest(unittest.TestCase):
         p.evaluate("location.hash = '#status'")                     # the back button: leaving the page closes it
         p.wait_for_selector("#detectDlg", state="hidden")
         p.wait_for_selector("#p-status", state="visible")
+
+    def test_bluetooth_off(self):
+        # bluetooth = off: the Sticks page says no Bluetooth device can connect (not only controllers), and a
+        # stick source set to Bluetooth gets nothing, whatever else sends
+        self.pi.file_values["bluetooth"] = "off"
+        self.pi.file_values["input"] = "bluetooth"
+        p = self.open("sticks")
+        p.wait_for_selector("#btOff", state="visible")
+        self.assertIn("no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards)", p.inner_text("#btOff"))
+        self.assertEqual(p.get_attribute("#btOff", "role"), "status")
+        p.wait_for_selector("#inputWarnSticks", state="visible")
+        self.assertEqual(p.inner_text("#inputWarnSticks .input-warn-text"),
+                         "Stick source is set to Bluetooth, but Bluetooth is off: the game gets no sticks.")
+        self.assertIn("shares the Pi's radio with WiFi", p.inner_text("#f-sticks-bluetooth-help"))
+        self.no_sideways_scroll("the Bluetooth notice")
+        p.click("#inputWarnSticks button:has-text('Use auto')")
+        p.wait_for_selector("#inputWarnSticks", state="hidden")
+        self.assertTrue(p.is_visible("#btOff"))                          # still off: still said
+        self.pi.file_values["bluetooth"] = "on"
+        p.reload()
+        p.wait_for_function(LOADED["sticks"])
+        self.until(lambda: p.is_hidden("#btOff"), what="no notice with Bluetooth on")
+        # off is saved but the Pi not restarted: a Bluetooth joystick still sends, so it isn't "no sticks"
+        self.pi.file_values["bluetooth"] = "off"
+        self.pi.file_values["input"] = "bluetooth"
+        bt = json.dumps({"sources": [{"kind": "bluetooth", "name": "ELRS Joystick", "live": True, "rate_hz": 100, "nch": 8,
+                                      "ch": [0] * 16}], "active": 0, "sticks": {"ail": 0, "ele": 0, "thr": -1024, "rud": 0}})
+        p.route("**/api/sticks/stream", lambda r: r.fulfill(status=200, content_type="text/event-stream", body="data: " + bt + "\n\n"))
+        p.route("**/api/sticks", lambda r: r.fulfill(status=200, content_type="application/json", body=bt))
+        p.reload()
+        self.until(lambda: "after the next restart of the Pi" in p.inner_text("#btOff"), what="off from the next restart")
+        self.assertTrue(p.is_hidden("#inputWarnSticks"))
 
     def test_fixed_source_ignores_the_others(self):
         # Stick source = Bluetooth while only the ELRS WiFi joystick sends: the game gets nothing, the page says why

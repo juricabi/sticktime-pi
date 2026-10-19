@@ -331,6 +331,8 @@ video_t *video_fb_open(const video_config_t *c, video_info_t *info, char *err, i
   int crw = c->render_w > 0 && c->render_h > 0 && c->render_w <= 8192 && c->render_h <= 8192 ? c->render_w : 0;
   int crh = crw ? c->render_h : 0;
   video_layout(f->w, f->h, composite, c->aspect, c->margin_pct, crw, crh, &f->lay);
+  if (c->av_flicker && *c->av_flicker && strcmp(c->av_flicker, "off"))
+    video_log(&f->base, "av_flicker works with KMS (vc4) only: not on %s", f->path);
   f->rw = f->lay.render_w;
   f->rh = f->lay.render_h;
   if (f->lay.view_w != f->rw && !(f->xlut = malloc(sizeof(uint16_t) * (size_t)f->lay.view_w))) FAIL("out of memory");

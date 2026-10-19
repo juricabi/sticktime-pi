@@ -51,6 +51,7 @@ KEYS = (
     Key("aspect", ENUM, "4:3", "4:3|16:9", False, False, "Shape of the picture in your goggles or screen"),
     Key("av_mode", ENUM, "progressive", "interlaced|progressive", False, False, "Composite: interlaced (480i/576i) or progressive (240p/288p)"),
     Key("av_detail", ENUM, "high", "high|normal", False, False, "Progressive composite: high draws twice the lines and the Pi scales them down (sharper), normal draws 240p/288p"),
+    Key("av_flicker", ENUM, "off", "off|light|full", False, False, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)"),
     Key("hdmi_mode", STRING, "auto", "", False, False, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz"),
     Key("margin", INT, "0", "0|20", False, False, "Black border in percent, for goggles that cut off the edges"),
     Key("fonts", ENUM, "auto", "auto|std|sml|lrg|pc|hd", False, False, "Text size: auto, or the fonts of a radio screen class"),
@@ -69,7 +70,7 @@ KEYS = (
     Key("stick_menus", BOOL, "on", "", True, False, "Fly the menus with the sticks"),
     Key("wifi_module_ip", STRING, "", "", True, False, "ELRS/Crossfire WiFi module IP (empty: find it by its broadcast)"),
     Key("wifi_interval_us", INT, "4000", "1000|100000", True, False, "WiFi joystick packet interval in microseconds (4000 = 250 Hz)"),
-    Key("bluetooth", BOOL, "on", "", False, False, "Pair ELRS BLE joysticks and gamepads automatically"),
+    Key("bluetooth", BOOL, "on", "", False, False, "Bluetooth: ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect, and steadier WiFi)"),
     Key("latency", STRING, "0", "", True, False, "Camera prediction in seconds (STICKTIME_LAT): 0 = off"),
     Key("stick_mode", INT, "2", "1|4", True, False, "Your radio's stick mode (what getStickMode() tells the game)"),
     Key("script", STRING, "/SCRIPTS/TOOLS/StickTime.lua", "", True, False, "The tool script to run (SD path)"),
@@ -119,6 +120,8 @@ TEMPLATE = (
     "av_mode = progressive\n"
     "# progressive av: high (drawn with twice the lines, scaled down by the Pi: sharper text and edges) or normal\n"
     "av_detail = high\n"
+    "# interlaced av: the flicker filter blends each line with its neighbours: off, light, full (no flicker)\n"
+    "av_flicker = off\n"
     "# hdmi: auto (1280x720 if the screen offers it, else its preferred mode), or e.g. 1920x1080, 1280x720@60\n"
     "hdmi_mode = auto\n"
     "# black border in percent, for goggles that cut off the edges of the picture (0-20)\n"
@@ -157,7 +160,8 @@ TEMPLATE = (
     "wifi_module_ip =\n"
     "# how often the module sends the sticks, in microseconds: 4000 = 250 Hz (ELRS allows 1000 and up)\n"
     "wifi_interval_us = 4000\n"
-    "# pair ELRS BLE joysticks and Bluetooth gamepads automatically: on, off\n"
+    "# Bluetooth: on (ELRS BLE joysticks and Bluetooth gamepads pair automatically) or off (no Bluetooth device\n"
+    "# can connect, and Bluetooth stops sharing the Pi's radio with WiFi)\n"
     "bluetooth = on\n"
     "\n"
     "# ---- Game -----------------------------------------------------------------------\n"

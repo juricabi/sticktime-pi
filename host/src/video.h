@@ -45,6 +45,8 @@ typedef struct {
   const char *av_detail;   /* progressive composite: "high" (NULL) draws twice the lines (the
                             * interlaced size, video_layout_double) for the plane to scale down;
                             * "normal" draws the mode's lines */
+  const char *av_flicker;  /* interlaced composite: the flicker filter, "off" (NULL), "light" [1 6 1]/8
+                            * or "full" [1 2 1]/4 (video_deflicker_copy) */
   const char *hdmi_mode;   /* "auto" (1280x720@60 if offered, else preferred), "WxH" or "WxH@Hz"
                             * (an "i" after H asks for an interlaced mode) */
   int margin_pct;          /* 0..20: black border for goggles that crop the picture */
@@ -257,6 +259,12 @@ void video_scale_copy(const uint16_t *src, int sw, void *dst, int pitch, int bpp
 void video_scale_copy_lut(const uint16_t *src, int sw, void *dst, int pitch, int bpp,
                           int dx, int dy, int dw, int dh, const uint16_t *xlut, const uint16_t *ylut,
                           const uint32_t *pixlut);
+/* The flicker filter for interlaced video: copy src (w x h RGB565) 1:1 into dst (pitch bytes per row,
+ * bpp 16 or 32), each row blended with the rows above and below it, so a 1-row line or edge reaches both
+ * fields and stops twittering. strength 1: [1 6 1]/8 (light), 2: [1 2 1]/4 (full, as the GameCube's
+ * 480i); 0: a plain copy. The top and bottom rows count themselves for the row they lack. dst is
+ * only written. */
+void video_deflicker_copy(const uint16_t *src, int w, int h, void *dst, int pitch, int bpp, int strength);
 /* fill the area outside the view black (both buffers, once after a mode set) */
 void video_clear_buffer(void *dst, int pitch, int bpp, int w, int h);
 /* RGB565 -> RGB888 with bit replication (like engine.js toRGBA) */
