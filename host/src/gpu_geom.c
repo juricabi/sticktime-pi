@@ -87,7 +87,7 @@ static int glyph(gmesh_t *m, int64_t gx, int64_t gy, const glyph_t *g, uint16_t 
  * the line: what Bresenham picks, give or take a tie) */
 static int line(gmesh_t *m, int ax, int ay, int bx, int by, uint16_t c, int w) {
   int adx = abs(bx - ax), ady = abs(by - ay);
-  if (!adx && !ady) return rect(m, ax, ay, ax + w, ay + w, c, 255, false);
+  if (!adx && !ady) return rect(m, ax, ay, ax + 1, ay + w, c, 255, false);   /* lcd.c: the pixel and the one below */
   uint8_t rgba[4];
   color(c, 255, rgba);
   float x[4], y[4];
@@ -184,11 +184,14 @@ int gmesh_build(gmesh_t *m, const rcmd_t *c, int n, int W, int H) {
           e = rect(m, k->u.p.x0, k->u.p.y0, k->u.p.x0 + (k->w > 1 ? k->w : 1), k->u.p.y0 + (k->w > 1 ? k->w : 1), k->c, 255, false);
         break;
       case RC_FCIRCLE: {                         /* lcd.c's rows */
-        int64_t cx = k->u.p.x0, cy = k->u.p.y0, r = k->u.p.x1;
-        for (int64_t dy = -r; dy <= r && !e; dy++) {
-          if (cy + dy < 0 || cy + dy >= H) continue;
-          int64_t dx = (int64_t)floor(sqrt((double)r * r - (double)dy * dy));
-          e = rect(m, (double)(cx - dx), (double)(cy + dy), (double)(cx + dx + 1), (double)(cy + dy + 1), k->c, 255, false);
+        int64_t cx = k->u.p.x0, cy = k->u.p.y0, r = k->u.p.x1, lo = -r, hi = r;
+        if (lo < -cy) lo = -cy;                  /* only the rows on the screen (as lcd.c) */
+        if (hi > H - 1 - cy) hi = H - 1 - cy;
+        for (int64_t dy = lo; dy <= hi && !e; dy++) {
+          int64_t dx = (int64_t)floor(sqrt((double)r * r - (double)dy * dy)), x0 = cx - dx, x1 = cx + dx + 1;
+          if (x0 < -1) x0 = -1;
+          if (x1 > W + 1) x1 = W + 1;
+          e = rect(m, (double)x0, (double)(cy + dy), (double)x1, (double)(cy + dy + 1), k->c, 255, false);
         }
         break;
       }

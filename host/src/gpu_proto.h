@@ -1,9 +1,13 @@
 /* drawing = gpu: the host (gpu.c) and the GPU helper (gpu_main.c, the program sticktime-gpu) talk over
  * one UNIX seqpacket socket, a gpu_msg_t per message, and share one memory block (GPU_SHM_*).
  *
- *   host -> helper   HELLO (the shared memory is fd 4, the socket fd 3, from the start)
+ *   host -> helper   HELLO (the shared memory is fd 4, the socket fd 3, from the start), with the sizes of
+ *                    rcmd_t and gpu_msg_t: two programs that don't share them don't start, with the sizes of
+ *                    rcmd_t and gpu_msg_t: two programs that don't share them don't start
  *   helper -> host   READY (text: the GL renderer) or ERROR (text: why)
- *   host -> helper   TARGET + the display buffers as dma-buf fds (SCM_RIGHTS): where frames go
+ *   host -> helper   TARGET + the display buffers as dma-buf fds (SCM_RIGHTS): where frames go; with nbuf
+ *                    0 the helper lets go of the ones it has (before the display makes new ones); with nbuf
+ *                    0 the helper lets go of the ones it has (before the display makes new ones)
  *   helper -> host   DONE or ERROR
  *   host -> helper   FRAME: ncmd recorded calls (lcd_rec.h) at GPU_SHM_CMD, their glyph masks in the
  *                    atlas at GPU_SHM_ATLAS (a glyph's g.a = atlas x | y << 16); drawn into buffer buf
@@ -39,6 +43,7 @@ typedef struct {
   /* DONE */
   float gpu_ms;
   char text[160];                  /* READY: the GL renderer; ERROR: why */
+  uint32_t cmd_size, msg_size;     /* HELLO: sizeof(rcmd_t), sizeof(gpu_msg_t) */
 } gpu_msg_t;
 
 #define GPU_SHM_CMD 0u

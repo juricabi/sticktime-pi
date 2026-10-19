@@ -105,6 +105,7 @@ typedef intptr_t GLsizeiptr;
 #define GL_UNPACK_ALIGNMENT 0x0CF5
 #define GL_PACK_ALIGNMENT 0x0D05
 #define GL_NO_ERROR 0
+#define GL_DITHER 0x0BD0
 
 #define GLFN(X) \
   X(void, glGenFramebuffers, (GLsizei, GLuint *)) X(void, glDeleteFramebuffers, (GLsizei, const GLuint *)) \
@@ -300,6 +301,8 @@ static int tex_fbo(GLuint *tex, GLuint *fbo, int w, int h, bool linear) {
     glBindFramebuffer(GL_FRAMEBUFFER, *fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+      glClearColor(0, 0, 0, 1);                  /* a frame that doesn't start with a clear draws on black */
+      glClear(GL_COLOR_BUFFER_BIT);
       glGetError();
       return 0;
     }
@@ -331,6 +334,10 @@ static int gl_init(char *renderer, size_t n) {
     return -1;
   }
   snprintf(renderer, n, "%s", (const char *)glGetString(GL_RENDERER));
+  if (strstr(renderer, "llvmpipe") || strstr(renderer, "softpipe") || strstr(renderer, "Software")) {
+    snprintf(err, sizeof err, "no GPU driver (only %s, on the CPU)", renderer);
+    return -1;
+  }
   static const char *const sa[] = { "p", "t", "c" }, *const fa[] = { "p" };
   if (!(prog_scene = program(VS_SCENE, FS_SCENE, sa, 3)) || !(prog_field = program(VS_FULL, FS_FIELD, fa, 1))) return -1;
   u_scene_s = glGetUniformLocation(prog_scene, "s");
@@ -354,6 +361,7 @@ static int gl_init(char *renderer, size_t n) {
   glGenBuffers(1, &vbo);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glPixelStorei(GL_PACK_ALIGNMENT, 4);
+  glDisable(GL_DITHER);                          /* (on by default: noise in RGB565) */
   if (glGetError() != GL_NO_ERROR) {
     snprintf(err, sizeof err, "GL setup failed");
     return -1;
@@ -379,8 +387,12 @@ static void drop_targets(void) {
  * frames go through glReadPixels into the buffers mapped instead */
 static int set_target(const gpu_msg_t *m, const int *fds, int nfd) {
   drop_targets();
+  if (m->nbuf == 0 && nfd == 0) return 0;      /* let go of them: the display makes new ones */
+  int bpp = m->fourcc == DRM_FORMAT_XRGB8888 ? 4 : 2;
   if (m->nbuf < 1 || m->nbuf > GPU_MAX_BUF || nfd != m->nbuf || m->w < 1 || m->h < 1 || m->rw < 1 || m->rh < 1 ||
-      m->rw > 4096 || m->rh > 4096 || (m->rows == 0 && (m->w != m->rw || m->h != m->rh)) || m->rows < 0 || m->rows > 2 ||
+      m->rw > 4096 || m->rh > 4096 || (size_t)m->rw * (size_t)m->rh * 2 > GPU_SHM_READ_MAX ||
+      m->pad < 0 || m->pad > 1 || m->pitch < m->w * bpp ||
+      (m->rows == 0 && (m->w != m->rw || m->h != m->rh)) || m->rows < 0 || m->rows > 2 ||
       (m->rows && (m->w != m->rw || m->h - 2 * m->pad < 1 || (m->h - 2 * m->pad) * m->rows != m->rh)) ||
       (m->fourcc != DRM_FORMAT_RGB565 && m->fourcc != DRM_FORMAT_XRGB8888)) {
     for (int i = 0; i < nfd; i++) close(fds[i]);
@@ -596,6 +608,7 @@ static int recv_msg(int sock, gpu_msg_t *m, int *fds, int *nfd) {
   do r = recvmsg(sock, &h, MSG_CMSG_CLOEXEC);
   while (r < 0 && errno == EINTR);
   *nfd = 0;
+  if (r < 0) return -1;
   for (struct cmsghdr *c = CMSG_FIRSTHDR(&h); c; c = CMSG_NXTHDR(&h, c))
     if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
       int n = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
@@ -694,6 +707,10 @@ int main(int argc, char **argv) {
   gpu_msg_t m;
   int fds[GPU_MAX_BUF], nfd;
   if (recv_msg(sock, &m, fds, &nfd) || m.type != GM_HELLO || m.proto != GPU_PROTO) return 1;
+  if (m.cmd_size != sizeof(rcmd_t) || m.msg_size != sizeof(gpu_msg_t)) {
+    send_msg(sock, GM_ERROR, 0, 0, "sticktime-gpu doesn't belong to this sticktime-pi (another version)");
+    return 1;
+  }
   char renderer[128] = "";
   if (gl_init(renderer, sizeof renderer)) {
     send_msg(sock, GM_ERROR, 0, 0, err);
@@ -705,7 +722,7 @@ int main(int argc, char **argv) {
     if (m.type == GM_QUIT) break;
     if (m.type == GM_TARGET) {
       if (set_target(&m, fds, nfd)) send_msg(sock, GM_ERROR, 0, 0, err);
-      else send_msg(sock, GM_DONE, 0, 0, direct ? "direct" : "read back");
+      else send_msg(sock, GM_DONE, 0, 0, !m.nbuf ? "dropped" : direct ? "direct" : "read back");
     } else if (m.type == GM_FRAME) {
       float ms = 0;
       if (frame(&m, &ms)) send_msg(sock, GM_ERROR, m.frame, 0, err);

@@ -44,7 +44,8 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
 ```json
 {"version":"0.1.0","game_version":"1.7.2","uptime_ms":123456,
  "fps":60.0,"frame_ms":{"avg":16.7,"max":17.1},"run_ms":{"avg":3.1,"p95":4.0},"present_ms":0.6,
- "latency_ms":9.8,"wait_ms":1.2,"margin_ms":0.5,"budget_ms":4.1,"frames":7400,"missed":3,
+ "latency_ms":9.8,"wait_ms":1.2,"margin_ms":0.5,"budget_ms":4.1,"event_lag_ms":-2.6,"late_on_time":0,
+ "frames":7400,"missed":3,
  "game":{"state":1,"state_name":"menu","loaded":true,"error":"","lua_kb":812},
  "video":{"desc":"Composite-1 720x480i 59.94 Hz, NTSC 4:3, render 640x480","render_w":640,"render_h":480},
  "input":{"active":0,"kind":"wifi","live":true,
@@ -56,15 +57,16 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
  "system":{"cpu_temp":51.2,"throttled":"0x0"},
  "vtx":{"state":"ready","text":"SmartAudio 2.1 · R1 5658 MHz · 25 mW"}}
 ```
-Times in ms, averaged over the last couple of seconds: `run_ms` the game's run() with its drawing (and, on
-interlaced composite with drawing = multi, the copy out, which it then makes band by band), `present_ms`
-the copy into the display's buffer and queueing it, `wait_ms` from then until the frame's vblank (what
-`budget_ms`, the pacer's head start, and `margin_ms`, the display's adaptive safety margin, leave over;
-`late_on_time` counts frames queued before that margin that still missed, which grow it, and `event_lag_ms`
-is a flip event's arrival minus its vblank stamp: negative on a Pi 4's composite, whose stamp is the first
-picture line after the blanking gap the event comes at the start of),
-`latency_ms` from the stick sample to the middle of the frame's scanout (≈ run + present + wait + half a
-refresh). State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
+Averaged over the last couple of seconds (ms): `run_ms` the game's run() with its drawing (on interlaced
+composite with drawing = multi also the copy out, made band by band, so `present_ms` is then near 0; with
+drawing = gpu the GPU's drawing is in `present_ms` instead), `present_ms` the copy into the display's buffer
+and queueing it, `wait_ms` from then until the frame's vblank stamp, `latency_ms` from the stick sample to the
+middle of the frame's scanout (≈ run + present + wait + half a refresh). Current values (ms): `budget_ms` the
+pacer's head start (a frame starts this long before its deadline), `margin_ms` the display's adaptive safety
+margin before a vblank. `event_lag_ms`: a flip event's arrival minus its vblank stamp, a running average;
+negative on a Pi 4's composite output, where the event comes at the start of the blanking gap and the stamp
+is the first picture line after it. `late_on_time`: frames queued in time that still missed their vblank,
+since the program started (each one grows `margin_ms`). State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
 page (states as in `GET /api/vtx`; `text` is `off` when VTX control is off). `system.throttled`: the firmware's
 throttling flags in hex, as `vcgencmd get_throttled` prints them (bit 0 under-voltage now, 1 frequency capped,
 2 throttled, 3 soft temperature limit; bits 16-19 the same since boot), read from the firmware's mailbox
@@ -91,7 +93,7 @@ and `"<key>_set": true` when the file has a value.
 sent as empty is left unchanged unless the body has `<key>_clear = 1`) →
 `{"ok":true,"saved":["tv"],"reboot":true,"restart":false}` or 400 `{"error":"BadRequest","message":"...","fields":{"tv":"must be one of ..."}}`
 (nothing is saved when any field is invalid). Unknown keys are kept in the file. Live keys apply at once; keys
-that need the host restarted (`video` → `aspect`, `av_mode`, `av_detail`, `av_flicker`, `hdmi_mode`, `margin`, `fonts`) restart the
+that need the host restarted (`video` → `aspect`, `av_mode`, `av_detail`, `av_flicker`, `hdmi_mode`, `margin`, `fonts`; `audio_out`) restart the
 service; `reboot` keys need `POST /api/reboot` (the app offers it).
 
 ## The game's SD card

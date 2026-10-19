@@ -2,9 +2,11 @@
 """Make the app package the updater installs: sticktime-pi-app-<ver>.tar.gz (+ .sha256).
 
     python tools/make_app_package.py --bin build/aarch64-edgetx/sticktime-pi --ver 0.2.1 [--out dist]
+        [--gpu build/aarch64-edgetx/sticktime-gpu]
     python tools/make_app_package.py --lib-dir DIR      (only lib/'s files, for image/build.sh)
 
-It holds bin/sticktime-pi, web/ (without web/tests/), fonts/ when the updater installs them, lib/
+It holds bin/sticktime-pi (and bin/sticktime-gpu, the GPU drawing helper, when given), web/ (without
+web/tests/), fonts/ when the updater installs them, lib/
 (the system scripts, see lib_files), VERSION and SHA256SUMS. The updater's own check
 (stupdate.app.validate_app_tar) must accept it, else this fails. The release workflow
 (.github/workflows/image.yml) and the boot test's update check use it.
@@ -54,9 +56,17 @@ def lib_files():
     return out
 
 
-def build(binary, ver, mtime, lib_extra=None):
-    """lib_extra: {rel: bytes or None} changes to lib/ (the boot test's sync check)"""
+def _aarch64(b):
+    return len(b) >= 64 and b[:4] == b"\x7fELF" and b[4] == 2 and b[5] == 1 and int.from_bytes(b[18:20], "little") == 183
+
+
+def build(binary, ver, mtime, lib_extra=None, gpu=None):
+    """lib_extra: {rel: bytes or None} changes to lib/ (the boot test's sync check); gpu: the GPU helper"""
     files = {"bin/sticktime-pi": _read(binary)}
+    if gpu:
+        files["bin/sticktime-gpu"] = _read(gpu)
+        if not _aarch64(files["bin/sticktime-gpu"]):
+            raise ValueError("%s isn't a 64-bit ARM program" % gpu)
     lib = lib_files()
     for rel, b in (lib_extra or {}).items():
         if b is None:
@@ -96,6 +106,7 @@ def main():
     ap.add_argument("--ver", help="the version (digits and dots)")
     ap.add_argument("--out", default="dist", help="output folder")
     ap.add_argument("--lib-dir", help="only write lib/'s files into this folder (image/build.sh)")
+    ap.add_argument("--gpu", help="the GPU drawing helper sticktime-gpu (aarch64, glibc), for bin/")
     a = ap.parse_args()
     if a.lib_dir:
         for rel, b in lib_files().items():
@@ -108,7 +119,7 @@ def main():
     if not a.bin or not a.ver:
         ap.error("--bin and --ver are needed (or --lib-dir)")
     mtime = int(os.environ.get("SOURCE_DATE_EPOCH") or 0) or 1700000000
-    data, n = build(a.bin, a.ver, mtime)
+    data, n = build(a.bin, a.ver, mtime, gpu=a.gpu)
     os.makedirs(a.out, exist_ok=True)
     name = f"sticktime-pi-app-{a.ver}.tar.gz"
     with open(os.path.join(a.out, name), "wb") as f:

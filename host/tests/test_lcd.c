@@ -178,17 +178,17 @@ static void test_rects(void) {
     CHECK_INT(px(&l, 3, 3), want);
     CHECK_INT(px(&l, 4, 3), 0x4208);
   }
-  /* big translucent rects and long runs go through per-colour tables: still lcd_blend565 for every
-   * pixel of a random picture, every opacity, and short runs beside them */
+  /* translucent rects and runs (blend_run's arithmetic): lcd_blend565 for every pixel of a random
+   * picture, every opacity */
   static uint16_t before[W * H];
   for (int opa = 1; opa <= 14; opa++) {
     for (int i = 0; i < W * H; i++) l.fb[i] = (uint16_t)rnd();
     memcpy(before, l.fb, sizeof before);
     uint16_t c = (uint16_t)rnd();
     int bad = 0, a = (15 - opa) * 17;
-    lcd_fill_rect(&l, 7, 3, W - 20, H - 10, c, opa);                    /* one table for the rect */
-    lcd_hline(&l, 0, H - 2, W, c, opa);                                 /* a table for the run */
-    lcd_hline(&l, 0, H - 1, 100, c, opa);                               /* short: blended per pixel */
+    lcd_fill_rect(&l, 7, 3, W - 20, H - 10, c, opa);
+    lcd_hline(&l, 0, H - 2, W, c, opa);
+    lcd_hline(&l, 0, H - 1, 100, c, opa);
     for (int y = 0; y < H; y++)
       for (int x = 0; x < W; x++) {
         bool in = (x >= 7 && x < W - 13 && y >= 3 && y < H - 7) || y == H - 2 || (y == H - 1 && x < 100);
@@ -861,8 +861,10 @@ static void test_recorded(void) {
     bad += memcmp(&a.st, &b.st, sizeof a.st) != 0;
   }
   CHECK_INT(bad, 0);
-  /* lines: a band starts at its first step of the line (any slope, direction, pattern, partly off) */
+  /* lines: a band starts at its first step of the line (any slope, direction, pattern, partly off; 1 and
+   * 2 pixels wide) */
   for (int k = 0; k < 3000; k++) {
+    a.line_w = b.line_w = k < 1500 ? 1 : 2;
     if (k % 300 == 0) {
       lcd_clear(&a, 0);
       lcd_clear(&b, 0);

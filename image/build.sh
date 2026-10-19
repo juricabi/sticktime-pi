@@ -17,6 +17,8 @@
 #   LABEL=...              the name part of the output files (default: VER, plus -dev.<sha> off a tag)
 #   BIN=FILE               the static aarch64 sticktime-pi (default: a placeholder that only answers
 #                          /api/status, so the image can be built and boot-tested without it)
+#   GPU_BIN=FILE           the GPU drawing helper sticktime-gpu (aarch64, glibc), put next to it (optional:
+#                          without it drawing = gpu draws on the CPU)
 #   GAME_ZIP=FILE          StickTime-<ver>-sdcard.zip (default: download GAME_VERSION's release asset)
 #   GAME_VERSION=1.7.2     the StickTime release to ship (default: GAME_VERSION_DEFAULT in base.env)
 #   GAME_SHA256=hex        the zip's sha256 (default: the pin in base.env for the default version)
@@ -302,6 +304,13 @@ sys.exit(0 if ok else 1)
 PY
   cp "$BIN" "$P/bin/sticktime-pi"
   BIN_DESC="$(basename "$BIN") sha256 $(sha256sum "$BIN" | cut -d' ' -f1)"
+  # the GPU drawing helper (drawing = gpu), next to it: without it that setting draws on the CPU
+  if [ -n "${GPU_BIN:-}" ]; then
+    [ -f "$GPU_BIN" ] || die "GPU_BIN=$GPU_BIN not found"
+    cp "$GPU_BIN" "$P/bin/sticktime-gpu"
+    chmod 0755 "$P/bin/sticktime-gpu"
+    BIN_DESC="$BIN_DESC, $(basename "$GPU_BIN") sha256 $(sha256sum "$GPU_BIN" | cut -d' ' -f1)"
+  fi
 else
   warn "no BIN given: the image gets a PLACEHOLDER app (it answers /api/status, draws nothing)"
   cat > "$P/bin/sticktime-pi" <<'SH'

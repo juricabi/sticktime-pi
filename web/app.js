@@ -292,11 +292,11 @@
       uart4: 'Two pins: UART4, TX pin 24 + RX pin 21', uart5: 'Two pins: UART5, TX pin 32 + RX pin 33' },
   };
   const HELP_MORE = {
-    av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines, but they flicker.',
-    av_detail: 'High draws the picture with twice the lines (and twice as wide) and the Pi scales it down: smoother edges and sharper text, for a few ms more work per frame (most with interlaced).',
-    drawing: 'Multi-core draws each frame on three of the Pi\'s cores (the fourth is left to the sound): exactly the same picture as one core, in less time; high detail on interlaced needs it. GPU draws it on the graphics chip: the cores stay free and the Pi runs a little cooler, but on a Pi 4 it is slower than multi-core at high detail, and edges may differ by a pixel. One core is how 0.2.5 drew.',
-    av_flicker: 'Each line blended with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light keeps more detail, Full stops it completely (as a GameCube in 480i).',
-    bluetooth: 'Off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards). Bluetooth shares the Pi\'s radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.',
+    av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines; the flicker filter (Full by default) keeps thin lines from flickering, a little softer up and down.',
+    av_detail: 'High: smoother edges and sharper text, for a few ms more work per frame (the most with interlaced). Thin lines are then drawn 2 pixels wide, so they keep their weight.',
+    drawing: 'Multi-core: exactly the same picture as one core, in about half the time; the fourth core is left to the sound. High detail on interlaced needs it. GPU: frees the cores, but on a Pi 4 it is slower than Multi-core at high detail, and edges may differ by a pixel; if it can\'t start, the Pi draws on the cores. One core: how 0.2.5 drew.',
+    av_flicker: 'Full stops the flicker, a little softer up and down (as game consoles did in 480i); Light only reduces it and keeps more detail; Off is interlaced as before.',
+    bluetooth: 'Bluetooth shares the Pi\'s radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
     channel_order: 'AETR for ELRS and most radios; TAER for some Spektrum and Futaba setups.',
     stick_channels: 'Detect asks you to move each stick in turn. Gamepads and the keyboard keep their own layout.',
@@ -843,9 +843,9 @@
     runMs: (s) => num(g(s, 'run_ms', 'avg'), 2) + ' ms avg · ' + num(g(s, 'run_ms', 'p95'), 1) + ' p95',
     presentMs: (s) => num(s.present_ms, 2) + ' ms',
     // done -> on screen: the frame starts that much earlier than its work needs (the pacer's and the display's margins)
-    waitMs: (s) => num(s.wait_ms, 2) + ' ms' + (isNum(s.margin_ms) ? ' · margin ' + num(s.margin_ms, 1) + ' ms' : ''),
-    latencyParts: (s) => (isNum(s.latency_ms) && isNum(g(s, 'frame_ms', 'avg'))
-      ? 'Latency = game + copy + waiting + half a refresh (' + num(g(s, 'frame_ms', 'avg') / 2, 1) + ' ms): the screen draws the picture line by line over a whole refresh, so its top line shows when the frame goes out and its middle, which latency counts to, half a refresh later. Waiting holds the screen\'s blanking gap between pictures (about 2.8 ms on NTSC composite) and the safety margin.' : ''),
+    waitMs: (s) => (isNum(s.wait_ms) ? num(s.wait_ms, 2) + ' ms' + (isNum(s.margin_ms) ? ' · margin ' + num(s.margin_ms, 1) + ' ms' : '') : '–'),
+    latencyParts: (s) => (isNum(s.latency_ms) && isNum(s.wait_ms) && isNum(g(s, 'frame_ms', 'avg'))
+      ? 'Latency = game + copy + waiting + half a refresh (' + num(g(s, 'frame_ms', 'avg') / 2, 1) + ' ms): the screen draws the picture line by line over a whole refresh, so its top line shows when the frame goes out and its middle, which latency counts to, half a refresh later. Waiting holds the screen\'s blanking gap between pictures (about 2.8 ms on NTSC composite), a safety margin, and the head start each frame gets so its slowest ones make it too.' : ''),
     frames: (s) => (isNum(s.frames) ? s.frames.toLocaleString() : '–'),
     missed: (s) => (isNum(s.missed) ? s.missed.toLocaleString() : '–'),
     luaKb: (s) => (isNum(g(s, 'game', 'lua_kb')) ? g(s, 'game', 'lua_kb') + ' KB' : '–'),
@@ -879,7 +879,8 @@
     const live = (Array.isArray(srcs) ? srcs : []).filter((x) => x && typeof x === 'object' && x.live);
     const ign = f && !live.some((x) => x.kind === f) ? live : [];
     const names = ign.map((x) => (x.name || KIND[x.kind] || String(x.kind)) + ' (' + (KIND[x.kind] || String(x.kind)) + ')');
-    const btLive = live.some((x) => x.kind === 'bluetooth');
+    // a Bluetooth source the Pi has (moving or not): it stays connected until the Pi restarts
+    const btLive = (Array.isArray(srcs) ? srcs : []).some((x) => x && typeof x === 'object' && x.kind === 'bluetooth');
     const text = f === 'bluetooth' && btOff() && !btLive ? 'Stick source is set to Bluetooth, but Bluetooth is off: the game gets no sticks.'
       : names.length ? 'Stick source is set to ' + (KIND[f] || f) + ': ' + (names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are' : names[0] + ' is') + ' ignored.' : '';
     for (const el of $$('.input-warn')) {

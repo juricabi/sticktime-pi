@@ -8,13 +8,13 @@
   X("tv",               SK_ENUM,   "ntsc",        "ntsc|pal|pal60|ntsc-j|pal-m|pal-n|ntsc-443|secam",  false, true,  "TV standard of the composite output") \
   X("aspect",           SK_ENUM,   "4:3",         "4:3|16:9",                                          false, false, "Shape of the picture in your goggles or screen") \
   X("av_mode",          SK_ENUM,   "progressive", "interlaced|progressive",                            false, false, "Composite: interlaced (480i/576i) or progressive (240p/288p)") \
-  X("av_detail",        SK_ENUM,   "high",        "high|normal",                                       false, false, "Composite: high draws twice the lines and the Pi scales them down (smoother edges, sharper text), normal draws the mode's lines") \
-  X("av_flicker",       SK_ENUM,   "full",        "off|light|full",                                    false, false, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)") \
+  X("av_detail",        SK_ENUM,   "high",        "high|normal",                                       false, false, "Composite: high draws twice the lines and twice the width, and the Pi scales the picture down; normal draws 240p/288p or 480i/576i as they are") \
+  X("av_flicker",       SK_ENUM,   "full",        "off|light|full",                                    false, false, "Interlaced composite: blends each line with its neighbours so thin lines and text don't flicker: off, light or full") \
   X("hdmi_mode",        SK_STRING, "auto",        "",                                                  false, false, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz") \
   X("margin",           SK_INT,    "0",           "0|20",                                              false, false, "Black border in percent, for goggles that cut off the edges") \
   X("fonts",            SK_ENUM,   "auto",        "auto|std|sml|lrg|pc|hd",                            false, false, "Text size: auto, or the fonts of a radio screen class") \
   X("show_ip",          SK_ENUM,   "auto",        "auto|on|off",                                       true,  false, "Show the web address on the main menu") \
-  X("drawing",          SK_ENUM,   "multi",       "single|multi|gpu",                                  true,  false, "Drawing the picture: multi (three of the Pi's cores, the fourth left to the sound: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower than multi at high detail; edges may differ by a pixel) or single (one core)") \
+  X("drawing",          SK_ENUM,   "multi",       "single|multi|gpu",                                  true,  false, "How the picture is drawn: Multi-core (three of the Pi's four cores), GPU (the graphics chip) or One core") \
   X("wifi_ssid",        SK_STRING, "",            "",                                                  false, false, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)") \
   X("wifi_password",    SK_SECRET, "",            "",                                                  false, false, "WiFi password (empty for an open network)") \
   X("wifi_country",     SK_STRING, "US",          "",                                                  false, false, "Two-letter country code for WiFi (US, GB, DE, HR, ...)") \
@@ -29,7 +29,7 @@
   X("stick_menus",      SK_BOOL,   "on",          "",                                                  true,  false, "Fly the menus with the sticks") \
   X("wifi_module_ip",   SK_STRING, "",            "",                                                  true,  false, "ELRS/Crossfire WiFi module IP (empty: find it by its broadcast)") \
   X("wifi_interval_us", SK_INT,    "4000",        "1000|100000",                                       true,  false, "WiFi joystick packet interval in microseconds (4000 = 250 Hz)") \
-  X("bluetooth",        SK_BOOL,   "on",          "",                                                  false, false, "Bluetooth: ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect, and steadier WiFi)") \
+  X("bluetooth",        SK_BOOL,   "on",          "",                                                  false, false, "ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect: the ELRS BLE joystick, gamepads, keyboards)") \
   X("latency",          SK_STRING, "0",           "",                                                  true,  false, "Camera prediction in seconds (STICKTIME_LAT): 0 = off") \
   X("stick_mode",       SK_INT,    "2",           "1|4",                                               true,  false, "Your radio's stick mode (what getStickMode() tells the game)") \
   X("script",           SK_STRING, "/SCRIPTS/TOOLS/StickTime.lua", "",                                  true,  false, "The tool script to run (SD path)") \
@@ -74,7 +74,7 @@
 "tv = ntsc\n" \
 "# shape of the picture in your goggles or screen: 4:3 or 16:9\n" \
 "aspect = 4:3\n" \
-"# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines, thin lines flicker)\n" \
+"# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines; av_flicker below stops thin lines flickering)\n" \
 "av_mode = progressive\n" \
 "# av: high (drawn with twice the lines, scaled down by the Pi: smoother edges, sharper text) or normal\n" \
 "av_detail = high\n" \
@@ -88,7 +88,7 @@
 "fonts = auto\n" \
 "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n" \
 "show_ip = auto\n" \
-"# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores), single (one core)\n" \
+"# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower at high detail), single (one core)\n" \
 "drawing = multi\n" \
 "\n" \
 "# ---- WiFi -----------------------------------------------------------------------\n" \

@@ -97,17 +97,20 @@ jobs:
           rm -f build/aarch64-edgetx/obj/src/app.o build/aarch64-edgetx/obj/src/main.o   # the version is compiled into these
           VERSION=$VER CC="zig cc" host/build.sh aarch64 prog
           file build/aarch64-edgetx/sticktime-pi | tee /dev/stderr | grep -q 'ARM aarch64.*statically linked'
+          # the GPU drawing helper: glibc, dynamic (it loads Mesa's EGL and GLES at run time)
+          file build/aarch64-edgetx/sticktime-gpu | tee /dev/stderr | grep -q 'ARM aarch64.*dynamically linked'
       - name: Package sticktime-pi-app-${{ steps.ver.outputs.ver }}.tar.gz
         env:
           VER: ${{ steps.ver.outputs.ver }}
         run: |
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) python3 tools/make_app_package.py \
-            --bin build/aarch64-edgetx/sticktime-pi --ver "$VER" --out dist
+            --bin build/aarch64-edgetx/sticktime-pi --gpu build/aarch64-edgetx/sticktime-gpu --ver "$VER" --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: app
           path: |
             build/aarch64-edgetx/sticktime-pi
+            build/aarch64-edgetx/sticktime-gpu
             next/sticktime-pi
             dist/*
           if-no-files-found: error
@@ -177,6 +180,7 @@ jobs:
       - name: Build the image
         run: |
           sudo env VER="$VER" LABEL="$LABEL" BASE="${{ inputs.base }}" BIN="$PWD/app/build/aarch64-edgetx/sticktime-pi" \
+            GPU_BIN="$PWD/app/build/aarch64-edgetx/sticktime-gpu" \
             GAME_VERSION="${{ steps.game.outputs.version }}" GAME_SHA256="${{ steps.game.outputs.sha256 }}" \
             WORK="$WORKDIR/build" OUT="$PWD/out" SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
             bash image/build.sh

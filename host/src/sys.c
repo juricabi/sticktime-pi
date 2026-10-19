@@ -263,6 +263,7 @@ void sys_exec_self(char **argv) {
   sigemptyset(&none);
   sigprocmask(SIG_SETMASK, &none, NULL);
   for (int fd = 3; fd < 1024; fd++) close(fd);
+  if (*sys_quit_flag()) return;                 /* systemd stopped us meanwhile: stop */
   execv(argv[0] && argv[0][0] == '/' ? argv[0] : "/proc/self/exe", argv);
 #else
   (void)argv;

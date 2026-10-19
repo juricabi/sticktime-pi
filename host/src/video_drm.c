@@ -87,7 +87,7 @@ typedef struct {
   /* device */
   int fd;
   char path[32], driver[32];
-  bool master, ts_mono, warned_type, warned_hdmi_mode, hw_scale_broken, have_saved, modeset_done;
+  bool master, ts_mono, warned_type, warned_hdmi_mode, hw_scale_broken, have_saved, modeset_done, warned_flicker;
   int master_err;                  /* last SET_MASTER error logged (no repeats) */
   int bpp;                         /* 16 (RGB565) unless the primary plane can't: 32 (XRGB8888) */
   /* current output */
@@ -663,6 +663,13 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
   if (composite && mode_il(m))
     frows = d->rh == lay.view_h ? (d->flicker ? 1 : 0) : d->rh == 2 * lay.view_h ? 2 : 0;
   bool fpad = frows && d->flicker && lay.view_y >= 1 && lay.view_y + lay.view_h < mh;
+  if (composite && mode_il(m) && d->flicker && !frows && !d->warned_flicker) {
+    video_log(&d->base, "av_flicker: not with a render of %d lines on %d (a render size set by hand): unfiltered",
+              d->rh, lay.view_h);
+    d->warned_flicker = true;
+  }
+  /* the GPU helper lets go of the buffers it draws into first: they are freed for the new ones */
+  if (d->base.gpu) gpu_drop_target(d->base.gpu);
   uint32_t plane = d->plane_id && crtc_idx == d->crtc_idx ? d->plane_id : find_primary_plane(d->fd, crtc_idx);
   if (plane && d->bpp == 16) {
     bool known, has = plane_has_format(d->fd, plane, DRM_FORMAT_RGB565, &known);
@@ -1442,7 +1449,7 @@ static const video_out_t *drm_out_begin(video_t *v) {
   return &d->vout;
 }
 
-static void drm_out_done(video_t *v) { ((drm_t *)v)->vout_ready = true; }
+static void drm_out_done(video_t *v, bool made) { ((drm_t *)v)->vout_ready = made; }
 
 static int drm_wait(video_t *v, int timeout_ms, int64_t *t_us) {
   drm_t *d = (drm_t *)v;

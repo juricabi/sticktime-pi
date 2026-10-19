@@ -203,7 +203,11 @@ class UiTest(unittest.TestCase):
         self.assertEqual([p.get_attribute("#f-video-margin", a) for a in ("type", "min", "max", "value")], ["range", "0", "20", "0"])
         self.assertIn("TV standard of the composite output", p.inner_text("#f-video-tv-help"))
         flag = lambda key: p.text_content(f"{self.field('video', key)} .flag:not(.changed)")  # noqa: E731
-        self.assertEqual([flag(k) for k in ("video", "aspect", "show_ip")], ["after reboot", "restarts the game", "at once"])
+        self.assertEqual([flag(k) for k in ("video", "aspect", "show_ip", "drawing")], ["after reboot", "restarts the game", "at once", "at once"])
+        # Drawing: its three ways, Multi-core the default; it is there for HDMI too
+        self.assertEqual(sorted(p.eval_on_selector_all(f'{form} input[name="f-video-drawing"]', "els => els.map((e) => e.value)")), ["gpu", "multi", "single"])
+        self.assertTrue(p.is_checked(f'{form} input[name="f-video-drawing"][value="multi"]'))
+        self.assertIn("Multi-core", p.inner_text(self.field("video", "drawing")))
         self.assertEqual(p.text_content(f"{self.field('video', 'fonts')} .flag:not(.changed)"), "restarts the game")
         # Picture detail: with composite, progressive (the default) or interlaced; the flicker filter
         # only with interlaced
@@ -219,7 +223,7 @@ class UiTest(unittest.TestCase):
         self.assertTrue(p.is_hidden(self.field("video", "hdmi_mode")) and p.is_visible(self.field("video", "tv")))
         p.check(f'{form} input[name="f-video-video"][value="hdmi"]')
         self.assertTrue(p.is_visible(self.field("video", "hdmi_mode")) and p.is_hidden(self.field("video", "tv")) and p.is_hidden(self.field("video", "av_mode"))
-                        and p.is_hidden(self.field("video", "av_detail")))
+                        and p.is_hidden(self.field("video", "av_detail")) and p.is_visible(self.field("video", "drawing")))
         self.assertTrue(p.is_visible(f"{self.field('video', 'video')} .flag.changed"))
         self.assertEqual(p.inner_text(f"{form} .savebar span"), "1 change")
         p.click(f"{form} .savebar button:has-text('Undo')")

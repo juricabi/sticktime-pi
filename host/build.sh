@@ -113,8 +113,11 @@ if [ "$WHAT" != tests ] && [ -f "$HERE/src/main.c" ]; then
   GTFLAGS=skip
   case "$TARGET" in
     aarch64|x86_64-linux)
-      GTFLAGS=""
-      case "$CC" in *zig*) GTFLAGS="-target $(echo "$TARGET" | sed 's/-linux//')-linux-gnu.2.31" ;; esac ;;
+      case "$CC" in
+        *zig*) GTFLAGS="-target $(echo "$TARGET" | sed 's/-linux//')-linux-gnu.2.31" ;;
+        *musl*) echo "  (no sticktime-gpu: a musl compiler can't make it; zig cc or a glibc compiler can)" ;;
+        *) GTFLAGS="" ;;
+      esac ;;
     native) [ -n "$EXE" ] || GTFLAGS="" ;;
   esac
   if [ "$GTFLAGS" != skip ]; then

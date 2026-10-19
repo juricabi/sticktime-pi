@@ -32,14 +32,22 @@ Keep `sticktime` next to this repo: the tests run its `StickTime.lua` and compar
 
 ```sh
 host/build.sh native test      # the program + unit tests for this machine, then runs them (exit code = result)
-host/build.sh aarch64          # static Pi program + test binaries: build/aarch64-edgetx/
+host/build.sh aarch64          # static Pi program, the GPU helper, test binaries: build/aarch64-edgetx/
 host/build.sh native clean     # remove build/native-edgetx/
 NUMS=ref host/build.sh native  # Lua with double floats, like the browser (for comparisons with engine.js)
 ```
 Unit tests are `host/tests/test_*.c` (drawing, fonts, the EdgeTX Lua API, settings, input, menu
-navigation, video, web server, WiFi protocol, audio, motor sound, music). `test_lcd_golden` replays
-recorded drawing calls and must match `engine.js` byte for byte; it skips when its references (in
-`build/golden/`, made by `host/tests/golden/ref.js`) are missing.
+navigation, video, web server, WiFi protocol, audio, motor sound, music, the thread pool, the GPU's
+geometry). `test_lcd_golden` replays recorded drawing calls and must match `engine.js` byte for byte, drawn
+at once and recorded and drawn in bands on four threads (drawing = multi); it skips when its references
+(in `build/golden/`, made by `host/tests/golden/ref.js`) are missing.
+
+**The GPU helper** (`sticktime-gpu`, drawing = gpu: `host/src/gpu_main.c`, `gpu_geom.c`) is a program of its
+own, built against glibc 2.31 and dynamic, because it loads Mesa's EGL and GLES 2 at run time; `build.sh`
+builds it beside `sticktime-pi` for the Linux targets (zig: `-target <arch>-linux-gnu.2.31`; a musl
+compiler builds no helper, and says so). On a Pi,
+`sticktime-gpu --test` draws test frames into a buffer of its own and says what works and how fast;
+`STP_GPU_PROF=1` in the service's environment makes it log where a frame's time goes.
 
 Run the Pi build's tests on arm64 Linux the same way: copy `build/aarch64-edgetx/` and the repo, and
 run each `test_*` from the repo root.
@@ -94,7 +102,7 @@ Build them like the unit tests, linked with the objects from `build/<target>/obj
 On Linux as root (details and all options: [image/README.md](../image/README.md)):
 ```sh
 VERSION=0.1.0 host/build.sh aarch64 prog            # the version compiled in must match VER
-sudo BIN=build/aarch64-edgetx/sticktime-pi VER=0.1.0 image/build.sh
+sudo BIN=build/aarch64-edgetx/sticktime-pi GPU_BIN=build/aarch64-edgetx/sticktime-gpu VER=0.1.0 image/build.sh
 # -> out/sticktime-pi-0.1.0.img.xz, .sha256, .info
 ```
 Nothing runs inside the image, so the build host's architecture doesn't matter. On Windows, use an arm64

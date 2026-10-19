@@ -132,7 +132,7 @@ struct fonts {
   uint8_t gamma[256];
   uint32_t tick;
   struct font_face face[MAX_FACES];
-  bool hold;                       /* fonts_hold: masks of evicted glyphs wait in grave */
+  int hold;                        /* fonts_hold: masks of evicted glyphs wait in grave while > 0 */
   uint8_t **grave;
   int ngrave, capgrave;
 };
@@ -172,8 +172,11 @@ static void face_clear(fonts_t *f, struct font_face *fc) {
 
 void fonts_hold(fonts_t *f, bool hold) {
   if (!f) return;
-  f->hold = hold;
-  if (hold) return;
+  if (hold) {
+    f->hold++;
+    return;
+  }
+  if (f->hold > 0 && --f->hold > 0) return;    /* another lcd_t's recording still holds them */
   for (int i = 0; i < f->ngrave; i++) free(f->grave[i]);
   f->ngrave = 0;
 }
@@ -245,7 +248,7 @@ fonts_t *fonts_open_stub(float adv_px) {
 
 void fonts_close(fonts_t *f) {
   if (!f) return;
-  f->hold = false;
+  f->hold = 0;
   for (int i = 0; i < MAX_FACES; i++) face_clear(f, &f->face[i]);
   fonts_hold(f, false);
   free(f->grave);

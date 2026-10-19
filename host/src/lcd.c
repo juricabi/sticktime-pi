@@ -318,7 +318,8 @@ static rcmd_t *rec_add(lcd_t *l, int op, int64_t ylo, int64_t yhi) {
   if (!r) return NULL;
   if (r->n == r->cap) {
     int cap = r->cap ? r->cap * 2 : 4096;
-    rcmd_t *m = cap <= (1 << 22) ? realloc(r->cmd, (size_t)cap * sizeof *m) : NULL;
+    /* up to 131072 calls (7 MB): a runaway frame then draws what it has at once, and goes on recording */
+    rcmd_t *m = cap <= (1 << 17) ? realloc(r->cmd, (size_t)cap * sizeof *m) : NULL;
     if (!m) {
       lcd_play(l);
       return NULL;
@@ -387,11 +388,11 @@ static void draw_rows(const lcd_t *src, int row0, int row1) {
       case RC_CLEAR: rows_fill(&b, k->c); break;
       case RC_HLINE: hline64(&b, k->u.r.x, k->u.r.y, k->u.r.w, k->c, k->opa); break;
       case RC_RECT: rect_rows(&b, k->u.r.x, k->u.r.y, k->u.r.w, k->u.r.h, k->c, k->opa); break;
-      case RC_LINE: line_px(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->pat, k->c); break;
+      case RC_LINE: b.line_w = k->w; line_px(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->pat, k->c); break;
       case RC_TRI: tri_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1, k->u.p.x2, k->u.p.y2, k->c, k->opa); break;
-      case RC_POINT: point_px(&b, k->u.p.x0, k->u.p.y0, k->c); break;
+      case RC_POINT: b.line_w = k->w; point_px(&b, k->u.p.x0, k->u.p.y0, k->c); break;
       case RC_FCIRCLE: fcircle_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->c); break;
-      case RC_CIRCLE: circle_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->c); break;
+      case RC_CIRCLE: b.line_w = k->w; circle_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->c); break;
       case RC_INVERT: invert_draw(&b, k->u.p.x0, k->u.p.y0, k->u.p.x1, k->u.p.y1); break;
       case RC_GLYPH: glyph_blit(&b, &k->u.gl.g, k->u.gl.x, k->u.gl.y, k->c); break;
     }

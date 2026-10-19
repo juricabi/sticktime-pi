@@ -18,6 +18,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <sys/syscall.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -612,6 +613,18 @@ int plat_run_capture(const char *cmdline, char *out, size_t max, int timeout_ms)
   return r;
 }
 #else
+/* a forked child (before exec: system calls only) as an ordinary process: SCHED_OTHER on every CPU, not
+ * the frame loop's SCHED_FIFO pinned to its core that fork() passes on. The raw system call: musl's
+ * sched_setscheduler only fails. */
+static void child_normal(void) {
+  struct sched_param sp = { 0 };
+  syscall(SYS_sched_setscheduler, 0, SCHED_OTHER, &sp);
+  cpu_set_t all;
+  CPU_ZERO(&all);
+  for (int i = 0; i < CPU_SETSIZE; i++) CPU_SET(i, &all);
+  sched_setaffinity(0, sizeof all, &all);
+}
+
 int plat_spawn(const char *cmdline) {
   pid_t pid = fork();
   if (pid < 0) return -1;
@@ -619,8 +632,7 @@ int plat_spawn(const char *cmdline) {
     /* grandchild runs the command so nobody has to reap it */
     if (fork() == 0) {
       setsid();
-      struct sched_param sp = { 0 };
-      sched_setscheduler(0, SCHED_OTHER, &sp);
+      child_normal();
       for (int fd = 3; fd < 1024; fd++) close(fd);
       execl("/bin/sh", "sh", "-c", cmdline, (char *)NULL);
       _exit(127);
@@ -637,8 +649,7 @@ int plat_run_capture(const char *cmdline, char *out, size_t max, int timeout_ms)
   pid_t pid = fork();
   if (pid < 0) { close(fds[0]); close(fds[1]); return -1; }
   if (pid == 0) {
-    struct sched_param sp = { 0 };
-    sched_setscheduler(0, SCHED_OTHER, &sp);
+    child_normal();
     dup2(fds[1], 1);
     close(fds[0]); close(fds[1]);
     for (int fd = 3; fd < 1024; fd++) close(fd);

@@ -50,13 +50,13 @@ KEYS = (
     Key("tv", ENUM, "ntsc", "ntsc|pal|pal60|ntsc-j|pal-m|pal-n|ntsc-443|secam", False, True, "TV standard of the composite output"),
     Key("aspect", ENUM, "4:3", "4:3|16:9", False, False, "Shape of the picture in your goggles or screen"),
     Key("av_mode", ENUM, "progressive", "interlaced|progressive", False, False, "Composite: interlaced (480i/576i) or progressive (240p/288p)"),
-    Key("av_detail", ENUM, "high", "high|normal", False, False, "Composite: high draws twice the lines and the Pi scales them down (smoother edges, sharper text), normal draws the mode's lines"),
-    Key("av_flicker", ENUM, "full", "off|light|full", False, False, "Interlaced composite: the flicker filter blends each line with its neighbours (light, or full: no flicker of thin lines)"),
+    Key("av_detail", ENUM, "high", "high|normal", False, False, "Composite: high draws twice the lines and twice the width, and the Pi scales the picture down; normal draws 240p/288p or 480i/576i as they are"),
+    Key("av_flicker", ENUM, "full", "off|light|full", False, False, "Interlaced composite: blends each line with its neighbours so thin lines and text don't flicker: off, light or full"),
     Key("hdmi_mode", STRING, "auto", "", False, False, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz"),
     Key("margin", INT, "0", "0|20", False, False, "Black border in percent, for goggles that cut off the edges"),
     Key("fonts", ENUM, "auto", "auto|std|sml|lrg|pc|hd", False, False, "Text size: auto, or the fonts of a radio screen class"),
     Key("show_ip", ENUM, "auto", "auto|on|off", True, False, "Show the web address on the main menu"),
-    Key("drawing", ENUM, "multi", "single|multi|gpu", True, False, "Drawing the picture: multi (three of the Pi's cores, the fourth left to the sound: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower than multi at high detail; edges may differ by a pixel) or single (one core)"),
+    Key("drawing", ENUM, "multi", "single|multi|gpu", True, False, "How the picture is drawn: Multi-core (three of the Pi's four cores), GPU (the graphics chip) or One core"),
     Key("wifi_ssid", STRING, "", "", False, False, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)"),
     Key("wifi_password", SECRET, "", "", False, False, "WiFi password (empty for an open network)"),
     Key("wifi_country", STRING, "US", "", False, False, "Two-letter country code for WiFi (US, GB, DE, HR, ...)"),
@@ -71,7 +71,7 @@ KEYS = (
     Key("stick_menus", BOOL, "on", "", True, False, "Fly the menus with the sticks"),
     Key("wifi_module_ip", STRING, "", "", True, False, "ELRS/Crossfire WiFi module IP (empty: find it by its broadcast)"),
     Key("wifi_interval_us", INT, "4000", "1000|100000", True, False, "WiFi joystick packet interval in microseconds (4000 = 250 Hz)"),
-    Key("bluetooth", BOOL, "on", "", False, False, "Bluetooth: ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect, and steadier WiFi)"),
+    Key("bluetooth", BOOL, "on", "", False, False, "ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect: the ELRS BLE joystick, gamepads, keyboards)"),
     Key("latency", STRING, "0", "", True, False, "Camera prediction in seconds (STICKTIME_LAT): 0 = off"),
     Key("stick_mode", INT, "2", "1|4", True, False, "Your radio's stick mode (what getStickMode() tells the game)"),
     Key("script", STRING, "/SCRIPTS/TOOLS/StickTime.lua", "", True, False, "The tool script to run (SD path)"),
@@ -117,7 +117,7 @@ TEMPLATE = (
     "tv = ntsc\n"
     "# shape of the picture in your goggles or screen: 4:3 or 16:9\n"
     "aspect = 4:3\n"
-    "# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines, thin lines flicker)\n"
+    "# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines; av_flicker below stops thin lines flickering)\n"
     "av_mode = progressive\n"
     "# av: high (drawn with twice the lines, scaled down by the Pi: smoother edges, sharper text) or normal\n"
     "av_detail = high\n"
@@ -131,7 +131,7 @@ TEMPLATE = (
     "fonts = auto\n"
     "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n"
     "show_ip = auto\n"
-    "# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores), single (one core)\n"
+    "# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower at high detail), single (one core)\n"
     "drawing = multi\n"
     "\n"
     "# ---- WiFi -----------------------------------------------------------------------\n"

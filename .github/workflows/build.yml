@@ -70,6 +70,8 @@ jobs:
           CC="zig cc" host/build.sh aarch64 all
           file build/aarch64-edgetx/sticktime-pi
           file build/aarch64-edgetx/sticktime-pi | grep -q 'ARM aarch64.*statically linked'
+          file build/aarch64-edgetx/sticktime-gpu
+          file build/aarch64-edgetx/sticktime-gpu | grep -q 'ARM aarch64.*dynamically linked'
       - name: Unit tests under qemu-aarch64
         working-directory: sticktime-pi
         run: |
@@ -82,7 +84,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sticktime-pi-aarch64
-          path: sticktime-pi/build/aarch64-edgetx/sticktime-pi
+          path: |
+            sticktime-pi/build/aarch64-edgetx/sticktime-pi
+            sticktime-pi/build/aarch64-edgetx/sticktime-gpu
           if-no-files-found: error
 
   python:

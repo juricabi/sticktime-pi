@@ -289,20 +289,21 @@ static void gpu_off(host_t *h) {
   h->gpu_said = false;
 }
 
-/* drawing = multi: the frame drawn (lcd_flush) and copied out on every core; single: on the frame loop's;
- * gpu: by the GPU helper, all cores until it is ready and if it fails. The threads start the first time
- * they're asked for and stay. */
+/* drawing = multi: the frame drawn (lcd_flush) and copied out on the pool (3 cores on a Pi 4); single: on
+ * the frame loop's core; gpu: by the GPU helper, on the pool until it is ready and if it fails. The threads
+ * start the first time they're asked for and stay. */
 static void apply_drawing(host_t *h) {
   const char *mode = settings_get(h->set, "drawing");
   bool gpu = !strcmp(mode, "gpu"), multi = gpu || strcmp(mode, "single") != 0;
   if (!gpu) h->gpu_given_up = false;            /* asking for it again later starts it again */
   if (multi && !h->par && !(h->par = par_open(0))) app_log(h->app, "drawing: no threads to draw with: one core");
   par_t *p = multi ? h->par : NULL;
-  if (gpu && !h->gpu && !h->gpu_given_up && h->video) {
+  /* (only a KMS display can take frames from the GPU) */
+  if (gpu && !h->gpu && !h->gpu_given_up && h->video && !strcmp(h->vinfo.backend, "drm")) {
     char path[600], err[256];
     gpu_helper_path(path, sizeof path);
     if (!(h->gpu = gpu_open(path, err, sizeof err))) {
-      app_log(h->app, "drawing: no GPU (%s): all cores", err);
+      app_log(h->app, "drawing: no GPU (%s): multi-core", err);
       h->gpu_given_up = true;
     }
   }
@@ -675,7 +676,7 @@ static int present_gpu(host_t *h) {
   h->present_start_us = t0;
   int r = video_present_gpu(h->video, c, nc, shot);
   if (r < 0) {
-    app_log(h->app, "drawing: the GPU stopped (%s): all cores", gpu_info(h->gpu));
+    app_log(h->app, "drawing: the GPU stopped (%s): multi-core", gpu_info(h->gpu));
     h->gpu_given_up = true;
     gpu_off(h);
     lcd_set_mode(&h->lcd, h->drawing_pool, false);
@@ -709,11 +710,17 @@ static int present_gpu(host_t *h) {
 }
 
 int host_present(host_t *h) {
+  int64_t t0 = plat_now_us();
   if (h->gpu) {
     if (present_gpu(h)) return 0;
-    lcd_play(&h->lcd);                    /* this frame on the CPU */
+    lcd_play(&h->lcd);                    /* this frame on the CPU (timed as the copy, as the GPU's are) */
   }
-  lcd_flush(&h->lcd);                     /* what was drawn after the game's run (the web address) */
+  int pending;
+  lcd_calls(&h->lcd, &pending);
+  if (pending) {                          /* drawn after the frame's drawing (draw_frame): not in a fused copy */
+    lcd_flush(&h->lcd);
+    video_out_cancel(h->video);
+  }
   if (h->want_shot) {
     /* hand a copy of this frame to the web thread */
     plat_mutex_lock(&h->app->mu);
@@ -731,8 +738,7 @@ int host_present(host_t *h) {
     plat_mutex_unlock(&h->app->mu);
     h->want_shot = false;
   }
-  int64_t t0 = plat_now_us();
-  h->present_start_us = t0;
+  h->present_start_us = plat_now_us();
   int r = video_present(h->video, h->lcd.fb);
   h->present_done_us = plat_now_us();
   h->last_present_us = h->present_done_us - t0;

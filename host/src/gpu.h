@@ -24,6 +24,10 @@ const char *gpu_info(const gpu_t *g);       /* the GL renderer, or why the GPU i
 int  gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, uint32_t fourcc, int rw, int rh,
                     int rows, int pad, int strength, uint32_t id);
 uint32_t gpu_target_id(const gpu_t *g);     /* the id of the target set (0: none yet) */
+/* let go of the target (the display's buffers) before the display frees them for new ones */
+void gpu_drop_target(gpu_t *g);
+/* let go of the target (the display's buffers) before the display frees them for new ones */
+void gpu_drop_target(gpu_t *g);
 /* draw calls c[0 .. n - 1] into buffer buf and wait until it is done; shot (rw x rh RGB565) or NULL:
  * a copy of the frame. 0, or -1 (the GPU is given up: gpu_poll says -1 from now on). */
 int  gpu_draw(gpu_t *g, const rcmd_t *c, int n, int buf, uint16_t *shot);

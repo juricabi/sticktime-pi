@@ -105,15 +105,22 @@ eyes. What helps:
   the brightest thing in view. Overcast is the softest.
 - On the AV output the text has a black outline (like Betaflight's OSD), readable over sky and grass alike.
 - **Progressive** (`av_mode = progressive`, 240p / 288p) is the default since 0.2.5: no flicker of thin lines
-  and text. Interlaced (480i / 576i) has twice the lines, but without the flicker filter below thin lines and
+  and text. Interlaced (480i / 576i) has twice the lines; without the flicker filter (below), thin lines and
   text flicker. A card from before 0.2.5 keeps interlaced: web page → Video → Composite lines → Progressive.
 - **Picture detail** (`av_detail = high`, the default): the game draws twice the lines (and twice as wide) and
   the Pi scales them down: smoother edges and sharper text, for a few ms more work per frame. Since 0.2.6 also
-  with interlaced, where it is the most work (four times the pixels of progressive). `normal` draws one line
-  per line of the mode.
+  with interlaced, where it is the most work (four times the pixels of progressive at high detail). `normal` draws one line
+  per line of the mode. At high detail the game's thin lines (the floor grid, outlines) are drawn 2 pixels
+  wide, so scaled down they look as at normal detail.
+- **Drawing** (`drawing`, web page → Video → Drawing; it switches at once): **Multi-core** (the default)
+  draws each frame on three of the Pi's four cores, the fourth left to the sound: the same picture as one
+  core, in about half the time, which high detail on interlaced needs. **GPU** draws it on the graphics chip:
+  the cores stay free, but on a Pi 4 it is slower than Multi-core at high
+  detail, and edges may differ by a pixel. **One core** is how 0.2.5 drew. High detail on interlaced keeps a
+  Pi 4 busy and warm: a heatsink or a small fan keeps it below the 80 °C where it slows itself down.
 - Staying with interlaced? The flicker filter (`av_flicker`, web page → Video → Flicker filter) blends each line
   with the lines above and below it, so a thin line or text lands in both fields and stops flickering: **Full**
-  (the default since 0.2.6) stops it completely at a little vertical softness, as a GameCube does in 480i;
+  (the default) stops it completely at a little vertical softness, as a GameCube does in 480i;
   Light keeps more detail; Off is interlaced as before. It also softens the picture's top and bottom edges
   into the border, and with high detail it works on the averaged line pairs.
 - `tv = ntsc` (or `pal60`) refreshes at 60 Hz: a little less delay and smoother than PAL's 50 Hz. Most analog
@@ -205,7 +212,8 @@ counted to the **middle** of the picture. It adds up as the **Frame times** card
 
 - **Game (Lua + drawing)**: the game's step and drawing its picture (on interlaced composite with
   Drawing on multi-core, also the copy out through the flicker filter).
-- **Copy to the screen**: the picture into the display's buffer.
+- **Copy to the screen**: the picture into the display's buffer. With Drawing on GPU the drawing is here too:
+  the GPU draws the picture straight into that buffer, so Game is then the Lua step alone.
 - **Waiting for the refresh**: the frame is done and waits for its picture to start going out. That holds
   the screen's blanking gap between two pictures (about 2.8 ms on NTSC composite: the Pi hands a frame over
   before the gap, the first picture line comes after it), a safety margin before the gap (shown beside it;
@@ -217,10 +225,11 @@ counted to the **middle** of the picture. It adds up as the **Frame times** card
   the picture line by line over a whole refresh. The top line shows at the refresh, the middle half a
   refresh later, the bottom a whole refresh later.
 
-For example 5.8 + 0.2 + 7.0 + 8.3 ≈ 21 ms: the frame was ready and on its way after 13 ms, its top line
-shows then, its middle at 21 ms, its bottom at 30 ms. Every 60 Hz screen scans like this; only the game,
-the copy and the waiting can get shorter. Double detail (Picture detail = high) makes the game step longer,
-so the frame starts sooner and latency grows with it; PAL's 50 Hz adds 1.7 ms to the half refresh.
+For example 5.8 + 0.2 + 7.0 + 8.3 ≈ 21 ms: the frame is ready after 6 ms (game + copy), waits 7 ms, and its
+top line shows at 13 ms, its middle at 21 ms, its bottom at 30 ms. Every 60 Hz screen scans like this; only
+the game, the copy and the waiting can get shorter. Double detail (Picture detail = high) makes the game step
+longer, so each frame has to start earlier before its refresh and latency grows with it; PAL's 50 Hz adds
+1.7 ms to the half refresh.
 
 ## 7. Sound
 
@@ -375,7 +384,7 @@ more only overloads the goggles' receiver. Never run a VTX without its antenna.
 |---|---|
 | No picture in the goggles | Check the cable (video on the sleeve), the VTX channel and power. `video = av` in sticktime.txt. Some goggles want `tv = pal`. With HDMI plugged in at boot, use `video = hdmi`. |
 | Picture cut off at the edges | `margin = 5` (percent). |
-| Hard on the eyes, colors smear, thin lines shimmer | The game's Settings → Colors: Summer, Evening or Overcast; `av_mode = progressive` (see [Easy on the eyes in goggles](#easy-on-the-eyes-in-goggles)). |
+| Hard on the eyes, colors smear, thin lines shimmer | The game's Settings → Colors: Summer, Evening or Overcast; `av_mode = progressive` (see [Easy on the eyes in goggles](#easy-on-the-eyes-in-goggles)); with interlaced, Video → Flicker filter → Full. |
 | Wrong shape | `aspect = 16:9` or `4:3`. |
 | Can't find the web page | Look at the bottom of the main menu for the address. Phones on mobile data: turn it off. On the hotspot: http://10.42.0.1. |
 | WiFi joystick not found | Same 2.4 GHz network; some routers isolate clients (turn "AP isolation" off) or block broadcasts (set `wifi_module_ip`). One client per module. |

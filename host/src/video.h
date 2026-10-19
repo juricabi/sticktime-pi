@@ -106,7 +106,7 @@ int  video_layout(int mode_w, int mode_h, bool composite, const char *aspect, in
                   int render_w, int render_h, video_layout_t *out);
 /* the render size alone, without margin (the original contract) */
 void video_render_size(int mode_w, int mode_h, bool composite, const char *aspect, int *rw, int *rh);
-/* A composite mode drawn at twice its lines (av_detail = high on 240p/288p): the automatic size of
+/* A composite mode drawn at twice its lines (av_detail = high on composite): the automatic size of
  * the inset area with twice its lines (720x288 PAL 4:3 → 768x576, 720x240 NTSC 16:9 → 854x480), which
  * fills that area exactly; the plane scales it down, so edges and text come out supersampled. */
 int  video_layout_double(int mode_w, int mode_h, const char *aspect, int margin_pct, video_layout_t *out);
@@ -171,6 +171,8 @@ typedef struct {
 } video_out_t;
 const video_out_t *video_out_begin(video_t *v);
 void video_out_done(video_t *v);
+/* drawing after video_out_done (it isn't in the buffer): present() copies the frame after all */
+void video_out_cancel(video_t *v);
 /* the copy for render rows row0 .. row1 - 1 (multiples of o->rows), just drawn as band band of bands:
  * the output lines inside it, and the two at each edge with a neighbour once both are drawn (edges:
  * bands + 1 counters, 0 at the start of the frame, shared by the threads). Any order, any thread. */
@@ -205,7 +207,7 @@ typedef struct {
   int  (*debug)(video_t *v, const char *action);   /* optional */
   int  (*present_gpu)(video_t *v, const rcmd_t *c, int n, uint16_t *shot);   /* optional: drm */
   const video_out_t *(*out_begin)(video_t *v);                                 /* optional: drm */
-  void (*out_done)(video_t *v);
+  void (*out_done)(video_t *v, bool made);
 } video_ops_t;
 struct video {
   const video_ops_t *ops;

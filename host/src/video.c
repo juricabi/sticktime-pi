@@ -509,7 +509,11 @@ const video_out_t *video_out_begin(video_t *v) {
 }
 
 void video_out_done(video_t *v) {
-  if (v && v->ops->out_done) v->ops->out_done(v);
+  if (v && v->ops->out_done) v->ops->out_done(v, true);
+}
+
+void video_out_cancel(video_t *v) {
+  if (v && v->ops->out_done) v->ops->out_done(v, false);
 }
 
 /* picture lines y0 .. y1 - 1 (-1 and h: the pad lines) of o's copy */

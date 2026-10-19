@@ -4,6 +4,8 @@
 #endif
 #include "gpu.h"
 #include "gpu_proto.h"
+#include "par.h"
+#include "plat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +28,7 @@ int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, 
   return -1;
 }
 uint32_t gpu_target_id(const gpu_t *g) { (void)g; return 0; }
+void gpu_drop_target(gpu_t *g) { (void)g; }
 int gpu_draw(gpu_t *g, const rcmd_t *c, int n, int buf, uint16_t *shot) {
   (void)g; (void)c; (void)n; (void)buf; (void)shot;
   return -1;
@@ -65,25 +68,48 @@ struct gpu {
   uint32_t aval[AKEYS], agen[AKEYS], gen;
 };
 
+/* the helper's end, off the frame loop: a second for it to go, then SIGKILL (a GPU job may hold a killed
+ * process up a while), and reaped */
+static void *reap(void *arg) {
+  pid_t pid = (pid_t)(intptr_t)arg;
+  for (int i = 0; i < 50 && waitpid(pid, NULL, WNOHANG) == 0; i++) usleep(20000);
+  if (waitpid(pid, NULL, WNOHANG) == 0) {
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+  }
+  return NULL;
+}
+
+static void end_helper(gpu_t *g, bool kill_now) {
+  if (g->pid <= 0) return;
+  pid_t pid = g->pid;
+  g->pid = 0;
+  if (kill_now) kill(pid, SIGKILL);
+  /* mostly gone within a few ms: waited for here, so a restart (exec) doesn't leave it behind */
+  for (int i = 0; i < 25; i++) {
+    if (waitpid(pid, NULL, WNOHANG) != 0) return;
+    usleep(10000);
+  }
+  plat_thread t;
+  if (plat_thread_start(&t, reap, (void *)(intptr_t)pid, true)) kill(pid, SIGKILL);
+}
+
 static void give_up(gpu_t *g, const char *why) {
   if (g->state >= 0 && why) snprintf(g->info, sizeof g->info, "%s", why);
   g->state = -1;
-  if (g->pid > 0) {
-    kill(g->pid, SIGKILL);
-    waitpid(g->pid, NULL, 0);
-    g->pid = 0;
-  }
+  end_helper(g, true);
 }
 
-/* the helper's answer within ms, or -1 */
+/* the helper's answer within ms: 0, -1 no answer in time, -2 the helper is gone */
 static int wait_msg(gpu_t *g, gpu_msg_t *m, int ms) {
   struct pollfd p = { .fd = g->sock, .events = POLLIN };
   int r;
   do r = poll(&p, 1, ms);
   while (r < 0 && errno == EINTR);
-  if (r <= 0) return -1;
+  if (r == 0) return -1;
+  if (r < 0) return -2;
   ssize_t n = recv(g->sock, m, sizeof *m, MSG_DONTWAIT);
-  return n == (ssize_t)sizeof *m ? 0 : -1;
+  return n == (ssize_t)sizeof *m ? 0 : -2;
 }
 
 static int send_msg(gpu_t *g, const gpu_msg_t *m, const int *fds, int nfd) {
@@ -127,23 +153,25 @@ gpu_t *gpu_open(const char *helper, char *err, int errlen) {
     free(g);
     return NULL;
   }
-  /* the helper runs as the pool's threads do (par.c): below the audio thread, off the frame loop's core */
+  /* the helper runs as the pool's threads do (par.c): below the audio thread, on par_plan's CPUs */
   int pol = SCHED_OTHER;
   struct sched_param sp;
   memset(&sp, 0, sizeof sp);
   if (pthread_getschedparam(pthread_self(), &pol, &sp) == 0 && pol == SCHED_FIFO && sp.sched_priority > 2) sp.sched_priority -= 2;
   else { pol = SCHED_OTHER; sp.sched_priority = 0; }
   cpu_set_t cpus, cur;
-  CPU_ZERO(&cpus);
-  for (int i = 0; i < CPU_SETSIZE; i++) CPU_SET(i, &cpus);
+  int pinned = -1, threads;
   if (sched_getaffinity(0, sizeof cur, &cur) == 0 && CPU_COUNT(&cur) == 1)
-    for (int i = 0; i < CPU_SETSIZE; i++) if (CPU_ISSET(i, &cur)) CPU_CLR(i, &cpus);
+    for (int i = 0; i < CPU_SETSIZE; i++) if (CPU_ISSET(i, &cur)) { pinned = i; break; }
+  unsigned long long plan = par_plan(plat_cpus_online(), pinned, &threads);
+  CPU_ZERO(&cpus);
+  for (int i = 0; i < 64; i++) if (plan >> i & 1) CPU_SET(i, &cpus);
   /* from here to exec only system calls: the host has other threads */
-  int a = fcntl(sv[1], F_DUPFD, 10), b = a >= 0 ? fcntl(mfd, F_DUPFD, 10) : -1;
+  int a = fcntl(sv[1], F_DUPFD_CLOEXEC, 10), b = a >= 0 ? fcntl(mfd, F_DUPFD_CLOEXEC, 10) : -1;
   pid_t pid = b >= 0 ? fork() : -1;
   if (pid == 0) {
     prctl(PR_SET_PDEATHSIG, SIGKILL);
-    sched_setscheduler(0, pol, &sp);
+    syscall(SYS_sched_setscheduler, 0, pol, &sp);   /* (musl's sched_setscheduler only fails) */
     sched_setaffinity(0, sizeof cpus, &cpus);
     if (dup2(a, GPU_FD_SOCK) < 0 || dup2(b, GPU_FD_SHM) < 0) _exit(127);
     for (int fd = GPU_FD_SHM + 1; fd < 1024; fd++) close(fd);
@@ -166,6 +194,8 @@ gpu_t *gpu_open(const char *helper, char *err, int errlen) {
   memset(&m, 0, sizeof m);
   m.type = GM_HELLO;
   m.proto = GPU_PROTO;
+  m.cmd_size = sizeof(rcmd_t);
+  m.msg_size = sizeof(gpu_msg_t);
   if (send_msg(g, &m, NULL, 0)) {
     snprintf(err, (size_t)errlen, "%s doesn't answer", helper);
     gpu_close(g);
@@ -182,13 +212,9 @@ void gpu_close(gpu_t *g) {
     memset(&m, 0, sizeof m);
     m.type = GM_QUIT;
     send_msg(g, &m, NULL, 0);
-    for (int i = 0; i < 20 && waitpid(g->pid, NULL, WNOHANG) == 0; i++) usleep(10000);
-    if (waitpid(g->pid, NULL, WNOHANG) == 0) {
-      kill(g->pid, SIGKILL);
-      waitpid(g->pid, NULL, 0);
-    }
   }
-  if (g->sock >= 0) close(g->sock);
+  if (g->sock >= 0) close(g->sock);            /* (a helper still setting up sees the socket close) */
+  end_helper(g, false);
   if (g->shm) munmap(g->shm, GPU_SHM_SIZE);
   free(g);
 }
@@ -220,6 +246,10 @@ int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, 
                    int rows, int pad, int strength, uint32_t id) {
   if (!g || g->state != 1 || nbuf < 1 || nbuf > GPU_MAX_BUF) return -1;
   g->target_id = 0;
+  if ((size_t)rw * (size_t)rh * 2 > GPU_SHM_READ_MAX) {     /* its copy for the screenshot wouldn't fit */
+    give_up(g, "the render size is too big for the GPU helper");
+    return -1;
+  }
   gpu_msg_t m;
   memset(&m, 0, sizeof m);
   m.type = GM_TARGET;
@@ -234,8 +264,9 @@ int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, 
   m.rows = rows;
   m.pad = pad;
   m.strength = strength;
-  if (send_msg(g, &m, fds, nbuf) || wait_msg(g, &m, 3000)) {
-    give_up(g, "the GPU helper doesn't answer");
+  int ans = send_msg(g, &m, fds, nbuf) ? -2 : wait_msg(g, &m, 3000);
+  if (ans) {
+    give_up(g, ans == -1 ? "the GPU helper doesn't answer" : "the GPU helper stopped");
     return -1;
   }
   m.text[sizeof m.text - 1] = 0;
@@ -251,9 +282,20 @@ int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, 
 
 uint32_t gpu_target_id(const gpu_t *g) { return g ? g->target_id : 0; }
 
+void gpu_drop_target(gpu_t *g) {
+  if (!g || g->state != 1 || !g->target_id) return;
+  g->target_id = 0;
+  gpu_msg_t m;
+  memset(&m, 0, sizeof m);
+  m.type = GM_TARGET;
+  m.proto = GPU_PROTO;
+  int w = send_msg(g, &m, NULL, 0) ? -2 : wait_msg(g, &m, 1000);
+  if (w || m.type != GM_DONE) give_up(g, w == -1 ? "the GPU helper doesn't answer" : "the GPU helper stopped");
+}
+
 /* a glyph mask's place in this frame's atlas (x | y << 16), placed now if new; -1: no room */
 static int64_t atlas_put(gpu_t *g, const glyph_t *gl) {
-  uint32_t k = (uint32_t)(((uintptr_t)gl->a >> 4) * 2654435761u) & (AKEYS - 1);
+  uint32_t k = (uint32_t)(((uint64_t)(uintptr_t)gl->a * 0x9E3779B97F4A7C15ull) >> 51) & (AKEYS - 1);
   for (int probe = 0; probe < AKEYS; probe++, k = (k + 1) & (AKEYS - 1)) {
     if (g->agen[k] != g->gen) break;
     if (g->akey[k] == gl->a) return g->aval[k];
@@ -311,8 +353,9 @@ int gpu_draw(gpu_t *g, const rcmd_t *c, int n, int buf, uint16_t *shot) {
   }
   /* a frame takes a few ms; half a second is a GPU that hangs */
   for (;;) {
-    if (wait_msg(g, &m, 500)) {
-      give_up(g, "the GPU took too long");
+    int w = wait_msg(g, &m, 500);
+    if (w) {
+      give_up(g, w == -1 ? "the GPU took too long" : "the GPU helper stopped");
       return -1;
     }
     m.text[sizeof m.text - 1] = 0;
