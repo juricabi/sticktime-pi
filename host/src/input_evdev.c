@@ -7,6 +7,7 @@
 #endif
 #include "input_evdev.h"
 #include "etx.h"
+#include "plat.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -659,8 +660,7 @@ static int probe_node(const char *dir, const char *node, int *fd_out, evdev_caps
 
 static void *worker(void *arg) {
   evdev_t *e = arg;
-  struct sched_param sp = { 0 };
-  pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);   /* never above the frame loop */
+  plat_thread_lower_priority();             /* never above the frame loop, nor on its core only */
   pthread_mutex_lock(&e->mu);
   for (;;) {
     while (!e->reqn && !e->th_stop) pthread_cond_wait(&e->cv, &e->mu);
