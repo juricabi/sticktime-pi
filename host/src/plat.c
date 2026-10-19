@@ -126,9 +126,18 @@ int plat_thread_start(plat_thread *t, void *(*fn)(void *), void *arg, bool detac
 }
 int plat_thread_join(plat_thread t) { return pthread_join(t, NULL) ? -1 : 0; }
 void plat_thread_lower_priority(void) {
-  /* worker threads never run real-time, whatever the process was started with */
+  /* worker threads never run real-time, whatever the process was started with, nor only on the frame
+   * loop's core: a thread inherits its creator's policy and CPU mask */
   struct sched_param sp = { 0 };
   pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+#ifdef __linux__
+  /* every bit: the kernel keeps the CPUs that exist and the process may use (musl's sysconf counts
+   * the CPUs of the caller's mask, which is the one inherited pin) */
+  cpu_set_t all;
+  CPU_ZERO(&all);
+  for (int i = 0; i < CPU_SETSIZE; i++) CPU_SET(i, &all);
+  pthread_setaffinity_np(pthread_self(), sizeof all, &all);
+#endif
 }
 void plat_mutex_init(plat_mutex *m) { pthread_mutex_init(m, NULL); }
 void plat_mutex_lock(plat_mutex *m) { pthread_mutex_lock(m); }

@@ -51,7 +51,7 @@ typedef pthread_cond_t plat_cond;   /* waits use CLOCK_MONOTONIC */
 #endif
 int  plat_thread_start(plat_thread *t, void *(*fn)(void *), void *arg, bool detached);
 int  plat_thread_join(plat_thread t);
-void plat_thread_lower_priority(void);     /* calling thread: below the frame loop */
+void plat_thread_lower_priority(void);     /* calling thread: below the frame loop, on any core */
 void plat_mutex_init(plat_mutex *m);
 void plat_mutex_lock(plat_mutex *m);
 void plat_mutex_unlock(plat_mutex *m);
