@@ -18,9 +18,9 @@ Pi's AV jack, or over HDMI to goggles with an HDMI input or to any screen. You f
 ## Features
 
 - **Video for goggles**: composite NTSC or PAL (4:3 or 16:9, adjustable margin) straight into a VTX for
-  analog goggles, or HDMI for goggles with an HDMI input (and any HDMI screen). Thin lines and text
-  flicker on interlaced video: in goggles, `av_mode = progressive` (240p / 288p) shows no flicker
-  ([easy on the eyes](docs/USER_GUIDE.md#easy-on-the-eyes-in-goggles)).
+  analog goggles, or HDMI for goggles with an HDMI input (and any HDMI screen). Composite is
+  progressive (240p / 288p) by default: no flicker of thin lines and text, and drawn with twice the lines
+  for the Pi to scale down, so text stays sharp ([easy on the eyes](docs/USER_GUIDE.md#easy-on-the-eyes-in-goggles)).
 - **Your radio as the controller**: ExpressLRS and TBS Crossfire **WiFi joystick** (the same protocol as
   [ELRS-Crossfire-WiFi-Joystick-Windows](https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows)),
   an EdgeTX/OpenTX radio as a **USB joystick**, the ELRS **BLE joystick**, gamepads and keyboards.
