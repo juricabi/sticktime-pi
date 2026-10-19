@@ -290,7 +290,7 @@
       uart4: 'Two pins: UART4, TX pin 24 + RX pin 21', uart5: 'Two pins: UART5, TX pin 32 + RX pin 33' },
   };
   const HELP_MORE = {
-    av_mode: 'Progressive has half the lines and no flicker.',
+    av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines, but they flicker.',
     av_detail: 'High draws the picture with twice the lines and the Pi scales it down: sharper text and smoother edges, a few ms more work per frame.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
     channel_order: 'AETR for ELRS and most radios; TAER for some Spektrum and Futaba setups.',

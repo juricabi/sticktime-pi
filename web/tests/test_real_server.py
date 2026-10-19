@@ -242,7 +242,7 @@ class RealServerTest(unittest.TestCase):
         self.assertIsNone(p.query_selector("#gameErrorText b"))
         loaded = {
             "sticks": "document.querySelectorAll('#srcCards .src-card').length === 2",
-            "video": "document.querySelectorAll('form[data-form=video] .field').length === 8",
+            "video": "document.querySelectorAll('form[data-form=video] .field').length === 9",
             "wifi": "document.getElementById('scanNote').textContent.includes('Press Scan')",   # no scan yet: none at opening
             "sound": "document.querySelector('#songList li.empty') !== null",
             "tracks": "document.querySelectorAll('#slotList li').length === 8",

@@ -48,7 +48,7 @@ MOBILE = {"width": 390, "height": 844}
 LOADED = {
     "status": "document.querySelector('[data-f=fps]').textContent !== '–' && !document.getElementById('shotImg').hidden",
     "sticks": "document.querySelectorAll('#srcCards .src-card').length === 2",
-    "video": "document.querySelectorAll('form[data-form=video] .field').length === 8",
+    "video": "document.querySelectorAll('form[data-form=video] .field').length === 9",
     "wifi": "document.querySelectorAll('#netList li').length === 4",
     "sound": "document.querySelectorAll('#songList li .name').length >= 2",
     "tracks": "document.querySelectorAll('#slotList li').length === 8",

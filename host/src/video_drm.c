@@ -82,6 +82,7 @@ typedef struct {
   int out, margin, cfg_rw, cfg_rh, wait_ms;
   bool progressive, sharp, filter_set;
   bool detail_high;                /* av_detail = high: a progressive composite mode draws twice its lines */
+  bool doubled;                    /* the render size is such a doubled one */
   /* device */
   int fd;
   char path[32], driver[32];
@@ -699,6 +700,7 @@ static int apply_mode(drm_t *d, const video_mode_t *m, const conn_t *c, uint32_t
       if (e) {
         /* the plane can't scale or position (vkms, simple drivers): CPU scaling from now on */
         video_log(&d->base, "hardware scaling unavailable (%s): CPU scaling", strerror(-e));
+        if (d->doubled) video_log(&d->base, "av_detail = high needs hardware scaling: av_detail = normal draws as sharp for less work");
         d->hw_scale_broken = true;
         if (e == -EACCES) {
           destroy_all(d, nb, &nblack);
@@ -849,7 +851,8 @@ static int drm_setup(drm_t *d, int flags, bool first) {
      * av_detail = high draws twice its lines and the plane scales them down (supersampled) */
     video_layout_t l;
     const video_mode_t *m0 = &cands.m[0];
-    if (cls == CLS_COMPOSITE && d->detail_high && !mode_il(m0) && !d->cfg_rw && !d->hw_scale_broken)
+    d->doubled = cls == CLS_COMPOSITE && d->detail_high && !mode_il(m0) && !d->cfg_rw;
+    if (d->doubled)
       video_layout_double(m0->hdisplay, m0->vdisplay, d->aspect, d->margin, &l);
     else
       video_layout(m0->hdisplay, m0->vdisplay, cls == CLS_COMPOSITE, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
@@ -1452,9 +1455,9 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
   char tmp[16];
   cfg_str(tmp, sizeof tmp, c->output, "auto");
   d->out = !strcmp(tmp, "av") ? OUT_AV : !strcmp(tmp, "hdmi") ? OUT_HDMI : OUT_AUTO;
-  cfg_str(tmp, sizeof tmp, c->av_mode, "interlaced");
+  cfg_str(tmp, sizeof tmp, c->av_mode, "progressive");
   d->progressive = !strcmp(tmp, "progressive") || !strcmp(tmp, "240p") || !strcmp(tmp, "288p");
-  cfg_str(tmp, sizeof tmp, c->av_detail, "normal");
+  cfg_str(tmp, sizeof tmp, c->av_detail, "high");
   d->detail_high = !strcmp(tmp, "high");
   if (c->scale_filter && *c->scale_filter) {
     cfg_str(tmp, sizeof tmp, c->scale_filter, "smooth");
@@ -1487,9 +1490,12 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
      * keep the loop running and retry with back-off */
     if (!d->rw) {
       video_layout_t l;
-      bool av = d->out != OUT_HDMI;
-      video_layout(720, av && video_tv_625(d->tv) ? 576 : av ? 480 : 720, av, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
-      if (!av) video_layout(1280, 720, false, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
+      bool av = d->out != OUT_HDMI, p625 = video_tv_625(d->tv);
+      int mh = d->progressive ? (p625 ? 288 : 240) : (p625 ? 576 : 480);
+      d->doubled = av && d->progressive && d->detail_high && !d->cfg_rw;
+      if (d->doubled) video_layout_double(720, mh, d->aspect, d->margin, &l);
+      else if (av) video_layout(720, mh, true, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
+      else video_layout(1280, 720, false, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
       d->rw = l.render_w;
       d->rh = l.render_h;
     }
