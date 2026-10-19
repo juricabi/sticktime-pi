@@ -48,9 +48,10 @@ CI_HOST1, CI_HOST2 = "sticktime-ci", "stci-two"
 # the emulated SD host (sdhost-bcm2835, mmc0) reporting an error. Some recover; a boot that then
 # fails with one of these in its log failed because QEMU's card emulation stalled, not the image
 SD_FLAKE = r"sdhost-bcm2835 [0-9a-f]+\.mmc: (fsm \d+, hsts 0000010[0-9a-f]|PIO read timeout|.*timeout)"
-# a boot that went wrong (fail at once instead of waiting for the timeout)
+# a boot that went wrong (fail at once instead of waiting for the timeout). A kernel oops (the stalled
+# SD controller can make the MMC driver oops) need not panic: the guest just stops
 BOOT_FAILED = (r"Kernel panic|end Kernel panic|You are in emergency mode|Give root password for maintenance|"
-               r"No init found|\(initramfs\) |EXT4-fs error")
+               r"No init found|\(initramfs\) |EXT4-fs error|Unable to handle kernel |Internal error: Oops")
 
 
 def log(msg):
@@ -979,8 +980,8 @@ class BootTest:
                 self.launch(1, first=True)
                 t = self.wait_boot(1)
                 # the stalled card can also make the units that wait on D-Bus give up (avahi-daemon,
-                # wpa_supplicant) while the boot still gets to 'ready'
-                bad = "error" in t or ("ready_s" in t and "failed=none" not in t.get("ready_line", ""))
+                # wpa_supplicant) while the boot still gets to 'ready', or stop the boot with no message
+                bad = "error" in t or "timeout" in t or ("ready_s" in t and "failed=none" not in t.get("ready_line", ""))
                 flake = re.search(SD_FLAKE, self.console.text()) if bad else None
                 if not flake or attempt > self.a.retries:
                     break
