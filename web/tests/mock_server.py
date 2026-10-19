@@ -308,6 +308,8 @@ class MockPi:
                        "app": {"installed": "0.1.0", "latest": "0.1.0", "notes": ""}, "checked_at": 0, "error": ""}
         self._upd_job = None
         self.update_start_delay = 0.0
+        self.vtx_hold = None                       # an Event: the next GET /api/vtx is built, then sent once it is set
+        self.vtx_held = False
         self.song_now = 0
         self.wifi_applied = None
         self.log_lines = [f"[{i * 0.37:8.3f}] " + t for i, t in enumerate([
@@ -1151,7 +1153,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "vtx":
             if get:
-                return self.json(200, pi.vtx_json())
+                j = pi.vtx_json()
+                with pi.lock:
+                    hold, pi.vtx_hold = pi.vtx_hold, None
+                if hold:                                   # a late answer: as the Pi had it when asked
+                    pi.vtx_held = True
+                    hold.wait(10)
+                return self.json(200, j)
             if post:
                 return self.json(200, pi.vtx_post(self.form_or_text(text)))
             raise ApiError(405, "MethodNotAllowed", "That method isn't allowed here.")
