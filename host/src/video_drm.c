@@ -81,6 +81,7 @@ typedef struct {
   char device[64], tv[16], aspect[8], hdmi_mode[32];
   int out, margin, cfg_rw, cfg_rh, wait_ms;
   bool progressive, sharp, filter_set;
+  bool detail_high;                /* av_detail = high: a progressive composite mode draws twice its lines */
   /* device */
   int fd;
   char path[32], driver[32];
@@ -844,10 +845,14 @@ static int drm_setup(drm_t *d, int flags, bool first) {
   if (cls == CLS_COMPOSITE) composite_cands(d, c, &cands);
   else hdmi_cands(d, c, &cands);
   if (!d->rw) {
-    /* the render size is chosen once, from the mode we aim for */
+    /* the render size is chosen once, from the mode we aim for; a progressive composite mode with
+     * av_detail = high draws twice its lines and the plane scales them down (supersampled) */
     video_layout_t l;
-    video_layout(cands.m[0].hdisplay, cands.m[0].vdisplay, cls == CLS_COMPOSITE, d->aspect, d->margin,
-                 d->cfg_rw, d->cfg_rh, &l);
+    const video_mode_t *m0 = &cands.m[0];
+    if (cls == CLS_COMPOSITE && d->detail_high && !mode_il(m0) && !d->cfg_rw && !d->hw_scale_broken)
+      video_layout_double(m0->hdisplay, m0->vdisplay, d->aspect, d->margin, &l);
+    else
+      video_layout(m0->hdisplay, m0->vdisplay, cls == CLS_COMPOSITE, d->aspect, d->margin, d->cfg_rw, d->cfg_rh, &l);
     d->rw = l.render_w;
     d->rh = l.render_h;
   }
@@ -1449,6 +1454,8 @@ video_t *video_drm_open(const video_config_t *c, video_info_t *info, char *err, 
   d->out = !strcmp(tmp, "av") ? OUT_AV : !strcmp(tmp, "hdmi") ? OUT_HDMI : OUT_AUTO;
   cfg_str(tmp, sizeof tmp, c->av_mode, "interlaced");
   d->progressive = !strcmp(tmp, "progressive") || !strcmp(tmp, "240p") || !strcmp(tmp, "288p");
+  cfg_str(tmp, sizeof tmp, c->av_detail, "normal");
+  d->detail_high = !strcmp(tmp, "high");
   if (c->scale_filter && *c->scale_filter) {
     cfg_str(tmp, sizeof tmp, c->scale_filter, "smooth");
     d->filter_set = true;

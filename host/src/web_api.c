@@ -371,7 +371,7 @@ static bool in_list(const char *k, const char *const *list) {
 }
 
 /* not live, but the host reads them at start: the service restarts */
-static const char *const RESTART_KEYS[] = { "aspect", "av_mode", "hdmi_mode", "margin", "fonts", "audio_out", NULL };
+static const char *const RESTART_KEYS[] = { "aspect", "av_mode", "av_detail", "hdmi_mode", "margin", "fonts", "audio_out", NULL };
 /* applied by sticktime-setup at boot */
 static const char *const BOOT_KEYS[] = { "wifi_ssid", "wifi_password", "wifi_country", "hotspot", "hotspot_ssid",
                                          "hotspot_password", "bluetooth", "hostname", "ssh", "password", "keep_logs",

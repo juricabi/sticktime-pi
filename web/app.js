@@ -249,7 +249,7 @@
   const S = { values: null, keys: [], byKey: new Map(), warnings: '', error: '' };
   const SECRET = (k) => k && k.kind === 'secret';
   // the host restarts for these (the server's "restart" flag; this list only for a server without it)
-  const RESTART = new Set(['aspect', 'av_mode', 'hdmi_mode', 'margin', 'fonts', 'audio_out']);
+  const RESTART = new Set(['aspect', 'av_mode', 'av_detail', 'hdmi_mode', 'margin', 'fonts', 'audio_out']);
   const restarts = (k) => (typeof k.restart === 'boolean' ? k.restart : RESTART.has(k.key));
   // how a saved key takes effect: at once, after a reboot, by a restart of the game, or when a helper
   // next runs (the updater's keys): no flag then
@@ -262,7 +262,7 @@
   const PLACED = new Set(['wifi_ssid', 'wifi_password', 'script',                   // set elsewhere: Join, the script list,
     'vtx_band', 'vtx_channel', 'vtx_freq', 'vtx_power', 'vtx_pit']);                // the VTX card's pickers
   const LABEL = {
-    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', hdmi_mode: 'HDMI mode', margin: 'Border',
+    video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Progressive detail', hdmi_mode: 'HDMI mode', margin: 'Border',
     fonts: 'Text size', show_ip: 'Show the web address', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
     hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', stick_channels: 'Stick mapping', invert: 'Reverse', pause_channel: 'Pause switch',
     stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
@@ -276,6 +276,7 @@
     video: { av: 'AV (composite)', hdmi: 'HDMI' },
     tv: { ntsc: 'NTSC', pal: 'PAL', pal60: 'PAL-60', 'ntsc-j': 'NTSC-J (Japan)', 'pal-m': 'PAL-M (Brazil)', 'pal-n': 'PAL-N', 'ntsc-443': 'NTSC 4.43', secam: 'SECAM' },
     av_mode: { interlaced: 'Interlaced', progressive: 'Progressive' },
+    av_detail: { high: 'High', normal: 'Normal' },
     fonts: { auto: 'Auto', std: 'Standard radio (480×272)', sml: 'Small radio', lrg: 'Large radio (800×480)', pc: 'PC (1280×720)', hd: 'HD (1920×1080)' },
     input: { auto: 'Auto: the last one that moved', wifi: 'ELRS / Crossfire WiFi', usb: 'USB radio', bluetooth: 'Bluetooth', gamepad: 'Gamepad', joystick: 'Joystick', keyboard: 'Keyboard' },
     sd_write: { game: 'Tracks + game', tracks: 'Tracks only', all: 'Everything', off: 'Nothing' },
@@ -290,6 +291,7 @@
   };
   const HELP_MORE = {
     av_mode: 'Progressive has half the lines and no flicker.',
+    av_detail: 'High draws the picture with twice the lines and the Pi scales it down: sharper text and smoother edges, a few ms more work per frame.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
     channel_order: 'AETR for ELRS and most radios; TAER for some Spektrum and Futaba setups.',
     stick_channels: 'Detect asks you to move each stick in turn. Gamepads and the keyboard keep their own layout.',
@@ -304,7 +306,7 @@
     vtx_send_only: 'For a VTX whose answers can\'t be read: this page then can\'t show what the VTX is set to.',
   };
   // fields that only matter for one output
-  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', hdmi_mode: (v) => v.video === 'hdmi' };
+  const WHEN = { tv: (v) => v.video === 'av', av_mode: (v) => v.video === 'av', av_detail: (v) => v.video === 'av' && v.av_mode === 'progressive', hdmi_mode: (v) => v.video === 'hdmi' };
   const SLIDERS = new Set(['volume', 'music_volume', 'margin']);
   // the server's one-line help (no full stop), then ours
   function helpText(k) {

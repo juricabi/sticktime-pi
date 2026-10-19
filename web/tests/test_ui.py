@@ -205,10 +205,19 @@ class UiTest(unittest.TestCase):
         flag = lambda key: p.text_content(f"{self.field('video', key)} .flag:not(.changed)")  # noqa: E731
         self.assertEqual([flag(k) for k in ("video", "aspect", "show_ip")], ["after reboot", "restarts the game", "at once"])
         self.assertEqual(p.text_content(f"{self.field('video', 'fonts')} .flag:not(.changed)"), "restarts the game")
+        # Progressive detail: only with progressive composite (the default), gone with interlaced
+        self.assertTrue(p.is_checked(f'{form} input[name="f-video-av_mode"][value="progressive"]'))
+        self.assertTrue(p.is_checked(f'{form} input[name="f-video-av_detail"][value="high"]'))
+        self.assertTrue(p.is_visible(self.field("video", "av_detail")))
+        p.check(f'{form} input[name="f-video-av_mode"][value="interlaced"]')
+        self.assertTrue(p.is_hidden(self.field("video", "av_detail")))
+        p.click(f"{form} .savebar button:has-text('Undo')")
+        self.assertTrue(p.is_visible(self.field("video", "av_detail")))
         # HDMI: its mode shows, the composite fields go; the change is marked; Undo puts it back
         self.assertTrue(p.is_hidden(self.field("video", "hdmi_mode")) and p.is_visible(self.field("video", "tv")))
         p.check(f'{form} input[name="f-video-video"][value="hdmi"]')
-        self.assertTrue(p.is_visible(self.field("video", "hdmi_mode")) and p.is_hidden(self.field("video", "tv")) and p.is_hidden(self.field("video", "av_mode")))
+        self.assertTrue(p.is_visible(self.field("video", "hdmi_mode")) and p.is_hidden(self.field("video", "tv")) and p.is_hidden(self.field("video", "av_mode"))
+                        and p.is_hidden(self.field("video", "av_detail")))
         self.assertTrue(p.is_visible(f"{self.field('video', 'video')} .flag.changed"))
         self.assertEqual(p.inner_text(f"{form} .savebar span"), "1 change")
         p.click(f"{form} .savebar button:has-text('Undo')")

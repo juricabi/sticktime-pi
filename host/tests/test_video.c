@@ -505,6 +505,28 @@ static void test_layout_bad(void) {
   CHECK(1);
 }
 
+/* av_detail = high: twice the lines of the inset area, the automatic width for them, and the same
+ * area on screen as the progressive layout (the plane scales it down, nothing letterboxed) */
+static void test_layout_double(void) {
+  struct { int w, h; const char *aspect; int margin, rw, rh; } c[] = {
+    { 720, 288, "4:3", 1, 754, 564 }, { 720, 288, "16:9", 1, 1005, 564 },
+    { 720, 240, "4:3", 1, 628, 472 }, { 720, 240, "16:9", 1, 837, 472 },
+    { 720, 288, "4:3", 0, 768, 576 }, { 720, 240, "4:3", 0, 640, 480 },     /* = the 576i / 480i sizes */
+    { 720, 240, "4:3", 10, 512, 384 },
+  };
+  for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+    video_layout_t l, a;
+    CHECK_INT(video_layout_double(c[i].w, c[i].h, c[i].aspect, c[i].margin, &l), 0);
+    CHECK_INT(l.render_w, c[i].rw);
+    CHECK_INT(l.render_h, c[i].rh);
+    video_layout(c[i].w, c[i].h, true, c[i].aspect, c[i].margin, 0, 0, &a);
+    CHECK(l.view_x == a.view_x && l.view_y == a.view_y && l.view_w == a.view_w && l.view_h == a.view_h);
+  }
+  video_layout_t l;
+  CHECK_INT(video_layout_double(0, 240, "4:3", 0, &l), -1);
+  CHECK(l.render_w == 640 && l.render_h == 480);
+}
+
 static void test_parse_mode(void) {
   struct { const char *s; int r, w, h; double hz; bool il; } c[] = {
     { "auto", 0, 0, 0, 0, false },      { "AUTO", 0, 0, 0, 0, false },     { "  auto  ", 0, 0, 0, 0, false },
@@ -1403,6 +1425,7 @@ int main(void) {
   test_layout_table();
   test_layout_sweep();
   test_layout_bad();
+  test_layout_double();
   test_parse_mode();
   test_mode_helpers();
   test_composite_modes();

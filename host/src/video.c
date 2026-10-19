@@ -109,6 +109,17 @@ void video_render_size(int mode_w, int mode_h, bool composite, const char *aspec
   if (rh) *rh = l.render_h;
 }
 
+int video_layout_double(int mode_w, int mode_h, const char *aspect, int margin_pct, video_layout_t *o) {
+  video_layout_t a;
+  int r = video_layout(mode_w, mode_h, true, aspect, margin_pct, 0, 0, &a);   /* view = the inset area */
+  if (r) { *o = a; return r; }
+  int64_t dw, dh;
+  parse_aspect(aspect, &dw, &dh);
+  /* as video_layout's automatic width, for twice the lines (rounded up the same way) */
+  int64_t num = (int64_t)a.view_w * dw * 2 * mode_h, den = dh * mode_w;
+  return video_layout(mode_w, mode_h, true, aspect, margin_pct, (int)((num + den - 1) / den), 2 * a.view_h, o);
+}
+
 /* ASCII case-insensitive prefix test (strncasecmp isn't everywhere) */
 static bool prefix_ci(const char *s, const char *pre) {
   for (; *pre; s++, pre++)

@@ -7,7 +7,8 @@
   X("video",            SK_ENUM,   "av",          "av|hdmi",                                           false, true,  "Video output: av (composite on the 3.5 mm jack, to a VTX) or hdmi") \
   X("tv",               SK_ENUM,   "ntsc",        "ntsc|pal|pal60|ntsc-j|pal-m|pal-n|ntsc-443|secam",  false, true,  "TV standard of the composite output") \
   X("aspect",           SK_ENUM,   "4:3",         "4:3|16:9",                                          false, false, "Shape of the picture in your goggles or screen") \
-  X("av_mode",          SK_ENUM,   "interlaced",  "interlaced|progressive",                            false, false, "Composite: interlaced (480i/576i) or progressive (240p/288p)") \
+  X("av_mode",          SK_ENUM,   "progressive", "interlaced|progressive",                            false, false, "Composite: interlaced (480i/576i) or progressive (240p/288p)") \
+  X("av_detail",        SK_ENUM,   "high",        "high|normal",                                       false, false, "Progressive composite: high draws twice the lines and the Pi scales them down (sharper), normal draws 240p/288p") \
   X("hdmi_mode",        SK_STRING, "auto",        "",                                                  false, false, "HDMI mode: auto (1280x720 if offered) or WxH, WxH@Hz") \
   X("margin",           SK_INT,    "0",           "0|20",                                              false, false, "Black border in percent, for goggles that cut off the edges") \
   X("fonts",            SK_ENUM,   "auto",        "auto|std|sml|lrg|pc|hd",                            false, false, "Text size: auto, or the fonts of a radio screen class") \
@@ -71,8 +72,10 @@
 "tv = ntsc\n" \
 "# shape of the picture in your goggles or screen: 4:3 or 16:9\n" \
 "aspect = 4:3\n" \
-"# av: interlaced (480i / 576i) or progressive (240p / 288p: half the lines, no flicker)\n" \
-"av_mode = interlaced\n" \
+"# av: progressive (240p / 288p: no flicker) or interlaced (480i / 576i: twice the lines, thin lines flicker)\n" \
+"av_mode = progressive\n" \
+"# progressive av: high (drawn with twice the lines, scaled down by the Pi: sharper text and edges) or normal\n" \
+"av_detail = high\n" \
 "# hdmi: auto (1280x720 if the screen offers it, else its preferred mode), or e.g. 1920x1080, 1280x720@60\n" \
 "hdmi_mode = auto\n" \
 "# black border in percent, for goggles that cut off the edges of the picture (0-20)\n" \

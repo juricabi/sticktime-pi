@@ -41,7 +41,7 @@ KEYS_H = REPO / "host" / "src" / "settings_keys.h"
 
 KIND = {"SK_STRING": "string", "SK_ENUM": "enum", "SK_INT": "int", "SK_NUM": "num", "SK_BOOL": "bool", "SK_SECRET": "secret"}
 # as web_api.c: read by the host at start (the service restarts), and applied by sticktime-setup at boot
-RESTART_KEYS = {"aspect", "av_mode", "hdmi_mode", "margin", "fonts", "audio_out"}
+RESTART_KEYS = {"aspect", "av_mode", "av_detail", "hdmi_mode", "margin", "fonts", "audio_out"}
 BOOT_KEYS = {"wifi_ssid", "wifi_password", "wifi_country", "hotspot", "hotspot_ssid", "hotspot_password", "bluetooth",
              "hostname", "ssh", "password"}
 STATE_NAMES = ["unknown", "menu", "setup", "count", "fly", "crashed", "ready", "paused", "done"]

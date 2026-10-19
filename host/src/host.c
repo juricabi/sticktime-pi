@@ -236,6 +236,7 @@ static void video_config_from_settings(host_t *h) {
   v->tv = settings_get(h->set, "tv");
   v->aspect = settings_get(h->set, "aspect");
   v->av_mode = settings_get(h->set, "av_mode");
+  v->av_detail = settings_get(h->set, "av_detail");
   v->hdmi_mode = settings_get(h->set, "hdmi_mode");
   v->margin_pct = settings_get_int(h->set, "margin", 0, 0, 20);
   v->render_w = h->opt.render_w;

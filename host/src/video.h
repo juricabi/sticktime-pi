@@ -42,6 +42,9 @@ typedef struct {
   const char *aspect;      /* "4:3" or "16:9": the shape of the goggles' / screen's picture
                             * (composite only; HDMI pixels are square, so the mode is the shape) */
   const char *av_mode;     /* "interlaced" (480i/576i) or "progressive" (240p/288p) */
+  const char *av_detail;   /* progressive composite: "high" draws twice the lines (the interlaced
+                            * size, video_layout_double) for the plane to scale down; "normal" /
+                            * NULL draws the mode's lines */
   const char *hdmi_mode;   /* "auto" (1280x720@60 if offered, else preferred), "WxH" or "WxH@Hz"
                             * (an "i" after H asks for an interlaced mode) */
   int margin_pct;          /* 0..20: black border for goggles that crop the picture */
@@ -96,6 +99,10 @@ int  video_layout(int mode_w, int mode_h, bool composite, const char *aspect, in
                   int render_w, int render_h, video_layout_t *out);
 /* the render size alone, without margin (the original contract) */
 void video_render_size(int mode_w, int mode_h, bool composite, const char *aspect, int *rw, int *rh);
+/* A composite mode drawn at twice its lines (av_detail = high on 240p/288p): the automatic size of
+ * the inset area with twice its lines (720x288 PAL 4:3 → 754x564, 720x240 NTSC 16:9 → 837x472), which
+ * fills that area exactly; the plane scales it down, so edges and text come out supersampled. */
+int  video_layout_double(int mode_w, int mode_h, const char *aspect, int margin_pct, video_layout_t *out);
 
 video_t *video_open(const video_config_t *c, video_info_t *info, char *err, int errlen);
 /* Scale/convert fb (render_w x render_h RGB565) into the back buffer and queue it for the
