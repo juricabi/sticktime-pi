@@ -24,6 +24,7 @@ static volatile int quit_flag = 0;
 #include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -42,8 +43,13 @@ void sys_realtime(int prio, int cpu, char *msg, size_t msglen) {
     if (e != 0)
       n += (size_t)snprintf(buf + n, sizeof buf - n, "SCHED_FIFO: %s; ", strerror(e));
   }
-  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
-    n += (size_t)snprintf(buf + n, sizeof buf - n, "mlockall: %s; ", strerror(errno));
+  /* all of the memory kept in RAM, only where nothing limits that (the service: root, LimitMEMLOCK=infinity):
+   * under a limit (a test as a user) MCL_FUTURE makes every allocation past it fail with ENOMEM */
+  struct rlimit ml;
+  if (geteuid() == 0 || (getrlimit(RLIMIT_MEMLOCK, &ml) == 0 && ml.rlim_cur == RLIM_INFINITY)) {
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
+      n += (size_t)snprintf(buf + n, sizeof buf - n, "mlockall: %s; ", strerror(errno));
+  }
   int ncpu = plat_cpus_online();
   if (cpu >= ncpu) cpu = ncpu - 1;              /* fewer CPUs than asked for (maxcpus=): the last one */
   if (cpu >= 0 && cpu < CPU_SETSIZE) {
