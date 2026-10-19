@@ -424,6 +424,7 @@
       f.get = () => (clearing ? '\u0000clear' : edit.hidden ? '' : inp.value);
       f.set = () => { inp.value = ''; clearing = false; mode(false); };
       f.input = inp;
+      f.editing = () => !edit.hidden;          // open for typing: a refresh must not close it
       f.secret = true;
       f.root = h('div', { class: 'field' }, top(null), h('div', { class: 'secret' }, state, change, clear, cancel), edit, help, err);
     } else if (k.kind === 'enum' && Array.isArray(k.choices) && k.choices.length) {
@@ -590,9 +591,10 @@
       const elsewhere = new Set(forms.filter((f) => f !== this && f.spec !== '*').flatMap((f) => f.spec.split(',')));
       return S.keys.filter((k) => !elsewhere.has(k.key) && !PLACED.has(k.key));
     }
-    // (re)built from S.values, unless the user is editing it: their edits stay
+    // (re)built from S.values, unless the user is editing it: their edits stay, and a secret field
+    // opened with Change stays open while still empty
     render(force) {
-      if (!force && this.dirty().length) return;
+      if (!force && (this.dirty().length || [...this.fields.values()].some((f) => f.editing && f.editing()))) return;
       if (S.error && !S.values) {
         this.el.replaceChildren(h('div', { class: 'alert bad' }, icon('warn'), h('div', {}, 'Couldn\'t read the settings: ' + S.error + ' ',
           h('button', { class: 'btn sm', type: 'button', text: 'Try again', on: { click: () => loadSettings() } }))));
