@@ -221,7 +221,10 @@ int main(int argc, char **argv) {
     app_log(&app, "fatal: %s", h.err);
     return 1;
   }
-  app_log(&app, "sticktime-pi %s: %s, render %dx%d", app.version, h.vinfo.desc, h.vinfo.render_w, h.vinfo.render_h);
+  /* (the DRM and framebuffer descriptions end with the render size already) */
+  char rs[40] = "";
+  if (!strstr(h.vinfo.desc, ", render ")) snprintf(rs, sizeof rs, ", render %dx%d", h.vinfo.render_w, h.vinfo.render_h);
+  app_log(&app, "sticktime-pi %s: %s%s", app.version, h.vinfo.desc, rs);
   if (a.port > 0) {
     static char hostname[64];
     plat_strlcpy(hostname, settings_get(h.set, "hostname"), sizeof hostname);   /* settings reloads free it */
