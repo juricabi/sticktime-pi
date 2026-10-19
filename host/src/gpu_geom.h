@@ -2,7 +2,9 @@
  * Coordinates are render pixels (0, 0 the top left corner of the top left pixel); u < 0 is a plain
  * color, else u, v are texels of the glyph atlas whose alpha the color takes. The GPU's coverage
  * rules are not Bresenham's or Adafruit's: edges may differ by a pixel from drawing = single/multi.
- * Inverting rects need a blend of their own, so they come in batches of their own. */
+ * Inverting rects need a blend of their own, so they come in batches of their own; everything else is
+ * one batch blended by alpha (solid shapes have alpha 1): batches by solid or not would cost a draw call
+ * each time the two alternate, far more than the blending. */
 #ifndef GPU_GEOM_H
 #define GPU_GEOM_H
 
@@ -11,7 +13,8 @@
 #include "lcd_rec.h"
 
 typedef struct { float x, y, u, v; uint8_t r, g, b, a; } gvert_t;
-typedef struct { int first, count; bool invert; } gbatch_t;
+enum { GB_BLEND, GB_INVERT };                  /* a batch's blend: by alpha, or inverting */
+typedef struct { int first, count, mode; } gbatch_t;
 typedef struct {
   gvert_t *v;
   int nv, capv;

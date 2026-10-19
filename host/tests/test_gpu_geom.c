@@ -168,7 +168,7 @@ int main(void) {
   c3[2].op = RC_POINT; c3[2].u.p.x0 = 3; c3[2].u.p.y0 = 3;
   CHECK_INT(gmesh_build(&m, c3, 3, W, H), 0);
   CHECK_INT(m.nb, 3);
-  CHECK(!m.b[0].invert && m.b[1].invert && !m.b[2].invert);
+  CHECK(m.b[0].mode == GB_BLEND && m.b[1].mode == GB_INVERT && m.b[2].mode == GB_BLEND);
   CHECK_INT(m.v[0].a, 8 * 17);
   CHECK(m.v[0].g == 255 && m.v[0].r == 0);
   gmesh_free(&m);

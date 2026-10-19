@@ -20,11 +20,12 @@ void gpu_close(gpu_t *g) { (void)g; }
 int gpu_poll(gpu_t *g) { (void)g; return -1; }
 const char *gpu_info(const gpu_t *g) { (void)g; return "GPU drawing needs Linux"; }
 int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, uint32_t fourcc, int rw, int rh,
-                   int rows, int pad, int strength) {
+                   int rows, int pad, int strength, uint32_t id) {
   (void)g; (void)fds; (void)nbuf; (void)w; (void)h; (void)pitch; (void)fourcc; (void)rw; (void)rh; (void)rows;
-  (void)pad; (void)strength;
+  (void)pad; (void)strength; (void)id;
   return -1;
 }
+uint32_t gpu_target_id(const gpu_t *g) { (void)g; return 0; }
 int gpu_draw(gpu_t *g, const rcmd_t *c, int n, int buf, uint16_t *shot) {
   (void)g; (void)c; (void)n; (void)buf; (void)shot;
   return -1;
@@ -57,6 +58,7 @@ struct gpu {
   uint32_t frame;
   float last_ms;
   int rw, rh;
+  uint32_t target_id;
   /* the atlas of this frame's glyph masks: shelves, and the masks placed (by their pointer) */
   int ax, ay, arow;
   const uint8_t *akey[AKEYS];
@@ -215,8 +217,9 @@ const char *gpu_info(const gpu_t *g) { return g ? g->info : "off"; }
 float gpu_last_ms(const gpu_t *g) { return g ? g->last_ms : 0; }
 
 int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, uint32_t fourcc, int rw, int rh,
-                   int rows, int pad, int strength) {
+                   int rows, int pad, int strength, uint32_t id) {
   if (!g || g->state != 1 || nbuf < 1 || nbuf > GPU_MAX_BUF) return -1;
+  g->target_id = 0;
   gpu_msg_t m;
   memset(&m, 0, sizeof m);
   m.type = GM_TARGET;
@@ -242,8 +245,11 @@ int gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, 
   }
   g->rw = rw;
   g->rh = rh;
+  g->target_id = id;
   return 0;
 }
+
+uint32_t gpu_target_id(const gpu_t *g) { return g ? g->target_id : 0; }
 
 /* a glyph mask's place in this frame's atlas (x | y << 16), placed now if new; -1: no room */
 static int64_t atlas_put(gpu_t *g, const glyph_t *gl) {

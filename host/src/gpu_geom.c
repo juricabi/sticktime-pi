@@ -17,8 +17,8 @@ static int grow(gmesh_t *m, int more) {
 }
 
 /* the batch the next vertices go to */
-static int batch(gmesh_t *m, bool invert) {
-  if (m->nb && m->b[m->nb - 1].invert == invert) return 0;
+static int batch(gmesh_t *m, int mode) {
+  if (m->nb && m->b[m->nb - 1].mode == mode) return 0;
   if (m->nb == m->capb) {
     int cap = m->capb ? m->capb * 2 : 64;
     gbatch_t *b = realloc(m->b, (size_t)cap * sizeof *b);
@@ -26,7 +26,7 @@ static int batch(gmesh_t *m, bool invert) {
     m->b = b;
     m->capb = cap;
   }
-  m->b[m->nb++] = (gbatch_t){ .first = m->nv, .count = 0, .invert = invert };
+  m->b[m->nb++] = (gbatch_t){ .first = m->nv, .count = 0, .mode = mode };
   return 0;
 }
 
@@ -54,7 +54,7 @@ static void color(uint16_t c, int a, uint8_t *o) {
 
 /* a convex quad p0 p1 p2 p3 (in order round it); u0 >= 0: atlas texels from u0, v0 over x0..x1, y0..y1 */
 static int quad4(gmesh_t *m, const float *x, const float *y, const uint8_t *rgba, bool invert) {
-  if (batch(m, invert) || grow(m, 6)) return -1;
+  if (batch(m, invert ? GB_INVERT : GB_BLEND) || grow(m, 6)) return -1;
   static const int ix[6] = { 0, 1, 2, 0, 2, 3 };
   for (int i = 0; i < 6; i++) put(m, x[ix[i]], y[ix[i]], -1, -1, rgba);
   return 0;
@@ -69,7 +69,7 @@ static int rect(gmesh_t *m, double x0, double y0, double x1, double y1, uint16_t
 }
 
 static int glyph(gmesh_t *m, int64_t gx, int64_t gy, const glyph_t *g, uint16_t c) {
-  if (batch(m, false) || grow(m, 6)) return -1;
+  if (batch(m, GB_BLEND) || grow(m, 6)) return -1;
   uintptr_t at = (uintptr_t)g->a;
   float u0 = (float)(at & 0xFFFF), v0 = (float)((at >> 16) & 0xFFFF);
   float x0 = (float)gx, y0 = (float)gy, x1 = x0 + g->w, y1 = y0 + g->h;
@@ -141,7 +141,7 @@ static int tri(gmesh_t *m, const rcmd_t *k, uint16_t c, int a) {
   if (y2 < ly) ly = y2;
   if (y2 > hy) hy = y2;
   if (ly == hy || lx == hx) return rect(m, lx, ly, (double)hx + 1, (double)hy + 1, c, a, false);
-  if (batch(m, false) || grow(m, 3)) return -1;
+  if (batch(m, GB_BLEND) || grow(m, 3)) return -1;
   uint8_t rgba[4];
   color(c, a, rgba);
   put(m, x0 + 0.5f, y0 + 0.5f, -1, -1, rgba);

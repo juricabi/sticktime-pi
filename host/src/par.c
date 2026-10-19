@@ -105,9 +105,12 @@ static int cpus_online(void) {
   return n > 0 ? (n < CPU_SETSIZE ? (int)n : CPU_SETSIZE) : 1;
 }
 
-/* below the caller's SCHED_FIFO priority by 2 (the audio thread is 1 below: it goes first), on every
- * CPU but the one the caller is pinned to */
-static void pick_sched(par_t *p, int ncpu) {
+/* below the caller's SCHED_FIFO priority by 2 (the audio thread is 1 below: it goes first), on the CPUs
+ * neither the caller is pinned to nor the audio thread (the one before the caller's, audio.c): on a Pi
+ * 4 the frame loop is on core 3, audio on 2, the pool's threads on 0 and 1. A 4th thread among them
+ * draws a frame only a little sooner (the memory is the limit by then) and would wait for the audio
+ * thread, or hold it up. Returns how many CPUs that leaves. */
+static int pick_sched(par_t *p, int ncpu) {
   int pol = SCHED_OTHER;
   struct sched_param sp;
   memset(&sp, 0, sizeof sp);
@@ -123,29 +126,32 @@ static void pick_sched(par_t *p, int ncpu) {
   int pinned = -1;
   if (sched_getaffinity(0, sizeof cur, &cur) == 0 && CPU_COUNT(&cur) == 1)
     for (int i = 0; i < CPU_SETSIZE; i++) if (CPU_ISSET(i, &cur)) { pinned = i; break; }
+  int audio = pinned >= 0 && ncpu >= 3 ? (pinned + ncpu - 1) % ncpu : -1;
   CPU_ZERO(&p->cpus);
-  for (int i = 0; i < ncpu; i++) if (i != pinned || ncpu < 2) CPU_SET(i, &p->cpus);
+  for (int i = 0; i < ncpu; i++) if ((i != pinned && i != audio) || ncpu < 2) CPU_SET(i, &p->cpus);
   p->pin = true;
+  return CPU_COUNT(&p->cpus);
 }
 #endif
 
 par_t *par_open(int threads) {
-#ifdef __linux__
-  int ncpu = cpus_online();
-#else
-  int ncpu = 4;
-#endif
-  if (threads <= 0) threads = ncpu;
-  if (threads > PAR_MAX + 1) threads = PAR_MAX + 1;
-  if (threads <= 1) return NULL;
   par_t *p = calloc(1, sizeof *p);
   if (!p) return NULL;
+#ifdef __linux__
+  int ncpu = cpus_online(), free_cpus = pick_sched(p, ncpu);
+  /* one thread for each CPU it may use, and the caller (pinned: its own core; else it is one of them) */
+  if (threads <= 0) threads = free_cpus < ncpu ? free_cpus + 1 : ncpu;
+#else
+  if (threads <= 0) threads = 3;
+#endif
+  if (threads > PAR_MAX + 1) threads = PAR_MAX + 1;
+  if (threads <= 1) {
+    free(p);
+    return NULL;
+  }
   plat_mutex_init(&p->mu);
   plat_cond_init(&p->go);
   plat_cond_init(&p->done);
-#ifdef __linux__
-  pick_sched(p, ncpu);
-#endif
   for (int i = 0; i < threads - 1; i++) {
 #ifdef __linux__
     /* started with its own policy, not the caller's (a SCHED_FIFO caller pinned to one core would

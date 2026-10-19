@@ -5,7 +5,9 @@
  * program, so the host stays one static file and a GPU driver crash costs only GPU drawing.
  *
  *   sticktime-gpu            run for the host (socket fd 3, shared memory fd 4)
- *   sticktime-gpu --test     draw test frames into a buffer of its own: what works, how fast */
+ *   sticktime-gpu --test     draw test frames into a buffer of its own: what works, how fast
+ * With STP_GPU_PROF set (in the host's environment) it logs where a frame's time goes every 120 frames
+ * (the GPU then finishes the scene before the filter starts, to tell them apart). */
 #define _GNU_SOURCE
 #include "gpu_geom.h"
 #include "gpu_proto.h"
@@ -124,6 +126,7 @@ typedef intptr_t GLsizeiptr;
   X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *)) \
   X(void, glDrawArrays, (GLenum, GLint, GLsizei)) X(void, glEnable, (GLenum)) X(void, glDisable, (GLenum)) \
   X(void, glBlendFunc, (GLenum, GLenum)) X(GLenum, glGetError, (void)) X(void, glGenTextures, (GLsizei, GLuint *)) \
+  X(void, glClearColor, (GLfloat, GLfloat, GLfloat, GLfloat)) X(void, glClear, (GLbitfield)) \
   X(void, glDeleteTextures, (GLsizei, const GLuint *)) X(void, glBindTexture, (GLenum, GLuint)) \
   X(void, glActiveTexture, (GLenum)) X(void, glTexParameteri, (GLenum, GLenum, GLint)) \
   X(void, glTexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
@@ -183,12 +186,15 @@ static EGLContext ctx;
 static uint8_t *shm;
 static target_t tg[GPU_MAX_BUF];
 static gpu_msg_t tgt;              /* the TARGET in force (nbuf 0: none) */
-static bool direct;                /* the GPU draws into the buffers themselves */
+static bool direct;                /* the GPU draws into the buffers themselves (else glReadPixels) */
 static GLuint scene_tex, scene_fbo, out_tex, out_fbo, atlas_tex, vbo;
 static GLuint prog_scene, prog_field;
 static GLint u_scene_s, u_scene_asz, u_scene_atlas;
 static GLint u_field_t, u_field_tsz, u_field_rows, u_field_pad, u_field_e, u_field_m, u_field_div, u_field_hl, u_field_tt;
 static gmesh_t mesh;
+static bool prof;
+static double prof_t[5];                        /* -, build + issue, scene, out, all (ms) */
+static long prof_n, prof_verts, prof_calls;
 static uint8_t *rgba_tmp;
 static size_t rgba_tmp_n;
 
@@ -410,9 +416,10 @@ static int set_target(const gpu_msg_t *m, const int *fds, int nfd) {
       return -1;
     }
   }
-  /* the frame is drawn on its own when it goes out through the filter, or can't be drawn in place */
-  if ((m->rows || !direct) && tex_fbo(&scene_tex, &scene_fbo, m->rw, m->rh, true)) return -1;
-  if (m->rows && !direct && tex_fbo(&out_tex, &out_fbo, m->w, m->h, false)) return -1;
+  /* the frame is drawn on a texture of its own, which keeps it for the next (as lcd.c's fb does), then
+   * goes out (as it is, or through the filter) into the buffer */
+  if (tex_fbo(&scene_tex, &scene_fbo, m->rw, m->rh, true)) return -1;
+  if (!direct && tex_fbo(&out_tex, &out_fbo, m->w, m->h, false)) return -1;
   size_t need = (size_t)(m->rw > m->w ? m->rw : m->w) * (size_t)(m->rh > m->h ? m->rh : m->h) * 4;
   if (need > rgba_tmp_n) {
     free(rgba_tmp);
@@ -459,7 +466,17 @@ static int frame(const gpu_msg_t *m, float *gpu_ms) {
     return -1;
   }
   target_t *t = &tg[m->buf];
-  if (gmesh_build(&mesh, (const rcmd_t *)(shm + GPU_SHM_CMD), (int)m->ncmd, tgt.rw, tgt.rh)) {
+  /* a frame that starts with a clear (the game's do) clears with glClear: the tiles then start from that
+   * color instead of loading the last frame from memory */
+  const rcmd_t *calls = (const rcmd_t *)(shm + GPU_SHM_CMD);
+  int ncalls = (int)m->ncmd;
+  bool cleared = ncalls > 0 && calls[0].op == RC_CLEAR;
+  if (cleared) {
+    calls++;
+    ncalls--;
+  }
+  double tb = now_ms();
+  if (gmesh_build(&mesh, calls, ncalls, tgt.rw, tgt.rh)) {
     snprintf(err, sizeof err, "out of memory");
     return -1;
   }
@@ -470,9 +487,13 @@ static int frame(const gpu_msg_t *m, float *gpu_ms) {
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GPU_ATLAS_W, m->atlas_h, GL_ALPHA, GL_UNSIGNED_BYTE, shm + GPU_SHM_ATLAS);
   glActiveTexture(GL_TEXTURE0);
   /* the calls */
-  bool in_place = direct && !tgt.rows;
-  glBindFramebuffer(GL_FRAMEBUFFER, in_place ? t->fbo : scene_fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo);
   glViewport(0, 0, tgt.rw, tgt.rh);
+  if (cleared) {
+    uint16_t c = calls[-1].c;
+    glClearColor((c >> 11) / 31.0f, ((c >> 5) & 63) / 63.0f, (c & 31) / 31.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+  }
   glUseProgram(prog_scene);
   glUniform2f(u_scene_s, 2.0f / tgt.rw, 2.0f / tgt.rh);
   glUniform2f(u_scene_asz, GPU_ATLAS_W, GPU_ATLAS_MAXH);
@@ -487,27 +508,36 @@ static int frame(const gpu_msg_t *m, float *gpu_ms) {
   glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, 1, sizeof(gvert_t), (void *)offsetof(gvert_t, r));
   glEnable(GL_BLEND);
   for (int i = 0; i < mesh.nb; i++) {
-    if (mesh.b[i].invert) glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ZERO);
+    if (mesh.b[i].mode == GB_INVERT) glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ZERO);
     else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLES, mesh.b[i].first, mesh.b[i].count);
   }
   glDisable(GL_BLEND);
   glDisableVertexAttribArray(1);
   glDisableVertexAttribArray(2);
-  /* interlaced out: the filter (and a doubled frame's line pairs) */
-  if (tgt.rows) {
+  double ts = 0, ti = now_ms();
+  if (prof) {
+    glFinish();
+    ts = now_ms();
+  }
+  /* out into the buffer: as it is, or interlaced through the filter (and a doubled frame's line pairs);
+   * the buffer cleared first, so its tiles aren't loaded from memory only to be painted over */
+  {
     glBindFramebuffer(GL_FRAMEBUFFER, direct ? t->fbo : out_fbo);
     glViewport(0, 0, tgt.w, tgt.h);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog_field);
     glBindTexture(GL_TEXTURE_2D, scene_tex);
-    float e = tgt.strength > 0 ? 1.0f : 0.0f, mm = tgt.strength >= 2 ? 2.0f : tgt.strength == 1 ? 6.0f : 1.0f;
+    int strength = tgt.rows ? tgt.strength : 0;
+    float e = strength > 0 ? 1.0f : 0.0f, mm = strength >= 2 ? 2.0f : strength == 1 ? 6.0f : 1.0f;
     glUniform1i(u_field_t, 0);
     glUniform2f(u_field_tsz, (float)tgt.rw, (float)tgt.rh);
-    glUniform1f(u_field_rows, (float)tgt.rows);
+    glUniform1f(u_field_rows, (float)(tgt.rows ? tgt.rows : 1));
     glUniform1f(u_field_pad, (float)tgt.pad);
     glUniform1f(u_field_e, e);
     glUniform1f(u_field_m, mm);
-    glUniform1f(u_field_div, (2 * e + mm) * tgt.rows);
+    glUniform1f(u_field_div, (2 * e + mm) * (tgt.rows ? tgt.rows : 1));
     glUniform1f(u_field_hl, (float)(tgt.h - 2 * tgt.pad));
     glUniform1f(u_field_tt, 2 * e / (2 * e + mm));
     static const float full[8] = { -1, -1, 1, -1, -1, 1, 1, 1 };
@@ -518,7 +548,7 @@ static int frame(const gpu_msg_t *m, float *gpu_ms) {
   if (!direct) read_into(tgt.w, tgt.h, t->map, tgt.pitch, tgt.fourcc);
   glFinish();
   if (m->readback) {
-    glBindFramebuffer(GL_FRAMEBUFFER, in_place ? t->fbo : scene_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo);
     read_into(tgt.rw, tgt.rh, shm + GPU_SHM_READ, tgt.rw * 2, DRM_FORMAT_RGB565);
   }
   GLenum ge = glGetError();
@@ -527,6 +557,22 @@ static int frame(const gpu_msg_t *m, float *gpu_ms) {
     return -1;
   }
   *gpu_ms = (float)(now_ms() - t0);
+  if (prof) {
+    double te = now_ms();
+    prof_t[1] += ti - tb;
+    prof_t[2] += ts - ti;
+    prof_t[3] += te - ts;
+    prof_t[4] += te - t0;
+    prof_verts += mesh.nv;
+    prof_calls += ncalls;
+    if (++prof_n == 120) {
+      fprintf(stderr, "sticktime-gpu: a frame: %.2f ms = build + issue %.2f, scene %.2f, out %.2f (%ld calls, %ld vertices)\n",
+              prof_t[4] / prof_n, prof_t[1] / prof_n, prof_t[2] / prof_n, prof_t[3] / prof_n, prof_calls / prof_n,
+              prof_verts / prof_n);
+      memset(prof_t, 0, sizeof prof_t);
+      prof_n = prof_verts = prof_calls = 0;
+    }
+  }
   return 0;
 }
 
@@ -636,6 +682,7 @@ static int self_test(void) {
 }
 
 int main(int argc, char **argv) {
+  prof = getenv("STP_GPU_PROF") != NULL;
   if (argc > 1 && !strcmp(argv[1], "--test")) return self_test();
   int sock = GPU_FD_SOCK;
   shm = mmap(NULL, GPU_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, GPU_FD_SHM, 0);

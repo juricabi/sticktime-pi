@@ -102,7 +102,7 @@ typedef struct {
   bool field_pad;                  /* ... with a line more above and below the picture */
   uint32_t *field_scratch;         /* video_deflicker_lines' spread lines, 3 * rw for each pool thread */
   size_t field_scratch_n;
-  uint32_t buf_gen, gpu_buf_gen;   /* buf[] replaced (apply_mode), and the set the GPU was given */
+  uint32_t buf_gen;                /* buf[] replaced (apply_mode): the GPU's target id */
   dbuf_t buf[NBUF], black, steal;
   uint16_t *xlut, *ylut;
   int front, pending;
@@ -1395,7 +1395,7 @@ static int gpu_target(drm_t *d) {
     const dbuf_t *b = &d->buf[0];
     e = gpu_set_target(d->base.gpu, fds, NBUF, (int)b->w, (int)b->h, (int)b->pitch,
                        d->bpp == 16 ? DRM_FORMAT_RGB565 : DRM_FORMAT_XRGB8888, d->rw, d->rh, d->field_rows,
-                       d->field_pad, d->field_rows ? d->flicker : 0);
+                       d->field_pad, d->field_rows ? d->flicker : 0, d->buf_gen);
   } else {
     video_log(&d->base, "GPU drawing: the buffers can't be shared (%s)", strerror(-e));
   }
@@ -1412,10 +1412,7 @@ static int drm_present_gpu(video_t *v, const rcmd_t *c, int n, uint16_t *shot) {
   for (int tries = 0; tries < 2; tries++) {
     /* the GPU draws what the plane shows as it is (CPU scaling copies on the CPU) */
     if (d->base.down || !d->active || d->pending >= 0 || d->cpu_scale) return 0;
-    if (d->gpu_buf_gen != d->buf_gen) {
-      if (gpu_target(d)) return -1;
-      d->gpu_buf_gen = d->buf_gen;
-    }
+    if (gpu_target_id(v->gpu) != d->buf_gen && gpu_target(d)) return -1;
     int b = d->front == 0 ? 1 : 0;
     if (gpu_draw(v->gpu, c, n, b, shot)) return -1;
     int e = flip(d, b);

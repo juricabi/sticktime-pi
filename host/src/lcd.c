@@ -256,7 +256,18 @@ uint16_t lcd_color_of(uint32_t flags) {
   return idx < LCD_NAMED_COLORS ? NAMED565[idx] : 0;
 }
 
+/* x / 255 for 0 <= x < 65535, without dividing: a blend's numerator (src * a + dst * (255 - a) + 127)
+ * stays under 16 200 */
+#define DIV255(x) (((x) + 1 + ((x) >> 8)) >> 8)
+
 uint16_t lcd_blend565(uint16_t dst, uint16_t src, int a) {
+  if (a >= 0 && a <= 255) {
+    uint32_t ia = 255u - (uint32_t)a, ua = (uint32_t)a;
+    uint32_t r = (uint32_t)(src >> 11) * ua + (uint32_t)(dst >> 11) * ia + 127;
+    uint32_t g = (uint32_t)((src >> 5) & 63) * ua + (uint32_t)((dst >> 5) & 63) * ia + 127;
+    uint32_t b = (uint32_t)(src & 31) * ua + (uint32_t)(dst & 31) * ia + 127;
+    return (uint16_t)(DIV255(r) << 11 | DIV255(g) << 5 | DIV255(b));
+  }
   int r1 = dst >> 11, g1 = (dst >> 5) & 63, b1 = dst & 31;
   int r2 = src >> 11, g2 = (src >> 5) & 63, b2 = src & 31;
   int r = (r2 * a + r1 * (255 - a) + 127) / 255;
@@ -271,35 +282,16 @@ static void fill16(uint16_t *p, uint16_t c, int64_t n) {
   for (int64_t i = 0; i < n; i++) p[i] = c;
 }
 
-/* lcd_blend565 of colour c at alpha a (0..255) for every value of each channel: the channels blend on
- * their own, so a pixel is three lookups instead of three divisions */
-typedef struct { uint16_t r[32], g[64], b[32]; } blend_tab_t;
-
-static void blend_tab(blend_tab_t *t, uint16_t c, int a) {
-  for (int v = 0; v < 32; v++) {
-    t->r[v] = lcd_blend565((uint16_t)(v << 11), c, a) & 0xF800;
-    t->b[v] = lcd_blend565((uint16_t)v, c, a) & 0x001F;
-  }
-  for (int v = 0; v < 64; v++) t->g[v] = lcd_blend565((uint16_t)(v << 5), c, a) & 0x07E0;
-}
-
-static void blend_tab_run(uint16_t *p, const blend_tab_t *t, int64_t n) {
-  for (int64_t i = 0; i < n; i++) {
-    uint16_t d = p[i];
-    p[i] = t->r[d >> 11] | t->g[(d >> 5) & 63] | t->b[d & 31];
-  }
-}
-
-/* a run blended at alpha a (0..255); a long one through the tables */
-#define BLEND_TAB_MIN 256
+/* a run blended with colour c at alpha a (0..255): lcd_blend565 with the colour's share worked out
+ * once, in arithmetic the compiler turns into vector code (8 pixels a step on the Pi) */
 static void blend_run(uint16_t *p, uint16_t c, int64_t n, int a) {
-  if (n >= BLEND_TAB_MIN) {
-    blend_tab_t t;
-    blend_tab(&t, c, a);
-    blend_tab_run(p, &t, n);
-    return;
+  uint32_t ia = 255u - (uint32_t)a, ua = (uint32_t)a;
+  uint32_t kr = (uint32_t)(c >> 11) * ua + 127, kg = (uint32_t)((c >> 5) & 63) * ua + 127, kb = (uint32_t)(c & 31) * ua + 127;
+  for (int64_t i = 0; i < n; i++) {
+    uint32_t d = p[i];
+    uint32_t r = (d >> 11) * ia + kr, g = ((d >> 5) & 63) * ia + kg, b = (d & 31) * ia + kb;
+    p[i] = (uint16_t)(DIV255(r) << 11 | DIV255(g) << 5 | DIV255(b));
   }
-  for (int64_t i = 0; i < n; i++) p[i] = lcd_blend565(p[i], c, a);
 }
 
 /* ------------------------------------------------------------------ recording (drawing = multi)
@@ -353,10 +345,12 @@ int lcd_set_mode(lcd_t *l, par_t *par, bool keep) {
   if (!l->rec && !(l->rec = calloc(1, sizeof *l->rec))) return -1;
   l->rec->par = par;
   l->rec->keep = keep;
-  /* two bands per thread (when one is held up by another process the others take its share), of 16
-   * rows or more */
-  int bands = par ? par_threads(par) * 2 : 1;
-  if (bands > l->h / 16) bands = l->h / 16;
+  /* bands of 16 rows: a band's pixels stay in the cache while every layer of the frame is drawn on them
+   * (sky, ground, overlays, text), where bands too big for it fetch them from memory for each layer; on
+   * a Pi 4 at 1674x940 that drew a frame 15 % sooner than 6 bands, 8 rows a little later again. Many
+   * bands also share the work out evenly when one thread is held up. */
+  int bands = par ? l->h / 16 : 1;
+  if (par && bands < par_threads(par)) bands = par_threads(par);
   l->rec->bands = bands > 1 ? bands : 1;
   return 0;
 }
@@ -491,12 +485,6 @@ static void fill_rect64(lcd_t *l, int64_t x, int64_t y, int64_t w, int64_t h, ui
 static void rect_rows(lcd_t *l, int64_t x, int64_t y, int64_t w, int64_t h, uint16_t c, int opa) {
   int64_t j0 = y > l->row0 ? y : l->row0, j1 = y + h < l->row1 ? y + h : l->row1;
   if (j0 >= j1) return;
-  if (opa && w * (j1 - j0) >= BLEND_TAB_MIN) {
-    blend_tab_t t;
-    blend_tab(&t, c, (15 - opa) * 17);
-    for (int64_t j = j0; j < j1; j++) blend_tab_run(l->fb + j * l->w + x, &t, w);
-    return;
-  }
   for (int64_t j = j0; j < j1; j++) {
     uint16_t *p = l->fb + j * l->w + x;
     if (!opa) fill16(p, c, w);

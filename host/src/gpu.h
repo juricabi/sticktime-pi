@@ -18,11 +18,12 @@ void gpu_close(gpu_t *g);
 int  gpu_poll(gpu_t *g);
 const char *gpu_info(const gpu_t *g);       /* the GL renderer, or why the GPU isn't drawing */
 
-/* where frames go: the display's nbuf buffers (DRM PRIME fds, the caller keeps its own; dup'ed here),
+/* where frames go: the display's nbuf buffers (DRM PRIME fds, the caller keeps its own: sent, not kept),
  * w x h of pitch bytes and fourcc; the calls draw on rw x rh; rows 0: the frame as it is, 1 or 2:
  * interlaced out through the flicker filter (pad, strength), as video_deflicker_lines. 0 or -1. */
 int  gpu_set_target(gpu_t *g, const int *fds, int nbuf, int w, int h, int pitch, uint32_t fourcc, int rw, int rh,
-                    int rows, int pad, int strength);
+                    int rows, int pad, int strength, uint32_t id);
+uint32_t gpu_target_id(const gpu_t *g);     /* the id of the target set (0: none yet) */
 /* draw calls c[0 .. n - 1] into buffer buf and wait until it is done; shot (rw x rh RGB565) or NULL:
  * a copy of the frame. 0, or -1 (the GPU is given up: gpu_poll says -1 from now on). */
 int  gpu_draw(gpu_t *g, const rcmd_t *c, int n, int buf, uint16_t *shot);
