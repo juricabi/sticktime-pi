@@ -130,6 +130,8 @@ test those on a Pi 4.
 - `.github/workflows/image.yml` (tags `v*`, manual): the app package for the updater, the SD image and its
   QEMU boot test, and on tags a GitHub release with all of it. The release notes: `docs/releases/<tag>.md`
   (what's new, how to update) when the tagged commit has it, then the install text and the image's info.
+  Run by hand with a tag (`v0.2.4`), it publishes that release from the branch it runs on; the release
+  makes the tag at the run's commit (a tag that exists must already be that commit).
 
 ## Layout
 
