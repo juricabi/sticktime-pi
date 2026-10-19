@@ -296,6 +296,12 @@ def run(exe, use_pty, keep):
             ok(r["reboot"] is False, f"off: {r}")
         step("off, and on again (reboot flag)", off)
     finally:
+        if failed:                               # the program's own log (its stderr may say nothing)
+            try:
+                st, data = req("GET", "/api/log")
+                print("GET /api/log (end):\n  " + "\n  ".join(data.decode("utf-8", "replace").splitlines()[-40:]))
+            except (OSError, http.client.HTTPException) as e:
+                print("GET /api/log:", e)
         p.terminate()
         try:
             p.wait(10)
