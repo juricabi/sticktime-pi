@@ -934,7 +934,7 @@ static int slot_open(etx_t *e, int i, int how) {
 }
 
 static bool slot_last(etx_t *e, const char *want) {
-  char buf[4096];
+  char buf[8192];                                            /* a format 2 track: up to 6000 bytes */
   etx_test_call_str(e, "last", NULL, 0, 0, buf, sizeof buf);
   bool ok = !strcmp(buf, want);
   if (!ok) fprintf(stderr, "  slot content \"%s\", want \"%s\"\n", buf, want);
@@ -954,7 +954,7 @@ static void test_slots(void) {
   slots_reset();
   slot(1, C1);
   slot(2, "Bad\n1 5\n");                                     /* no seed: crashes buildTrack */
-  slot(3, "Broken\n2 1 1 9 0 0 1 0 0\n");                    /* format 2: the game skips it */
+  slot(3, "Broken\n2 1 1 9 0 0 1 0 0\n");                    /* format 2 (1.8.0): listed, one gate short */
   slot(4, "\nOdd File\n1 55 3 9  0 0 1 0 0  30 0 9 0 0 / 10 10 1 1 0 2 7\n");
   slot(6, "Frac\n1 7 3 9  0 0 1.005 0 0  0 40 1 0 0\n");    /* passes the type check, indexes nil */
   slot(7, "Inf\n1 8 3 9  1e400 0 1 0 0  0 40 1 0 0\n");
@@ -964,7 +964,7 @@ static void test_slots(void) {
   etx_t *e = load_test("slots.lua", false);
   CHECK(listed(e, 1, "Test Loop"));
   CHECK(listed(e, 2, NULL));
-  CHECK(listed(e, 3, NULL));
+  CHECK(listed(e, 3, "Broken"));
   CHECK(listed(e, 4, "Odd File"));
   for (int i = 5; i <= 8; i++) CHECK(listed(e, i, NULL));
   CHECK(log_has("c2.txt hidden"));
@@ -1015,6 +1015,30 @@ static void test_slots(void) {
   CHECK(listed(e, 3, "Near"));
   CHECK(listed(e, 6, "Zeros"));
   CHECK(listed(e, 7, NULL));
+  etx_free(e);
+
+  /* format 2 (StickTime 1.8.0): up to 48 gates and 64 structures, read from 6000 bytes; once
+   * listed, it keeps its last good content too, all of it (past the 4096 bytes a snapshot held) */
+  static char big[6000];
+  int bn = snprintf(big, sizeof big, "Big One\n2 973733 7 9");
+  for (int g = 0; g < 48; g++)
+    bn += snprintf(big + bn, sizeof big - (size_t)bn, "  %d.1250 -%d.8750 %d 90.5000 2.2500", g * 10, g * 3, g % 8 + 1);
+  bn += snprintf(big + bn, sizeof big - (size_t)bn, " /");
+  for (int s = 0; s < 64; s++)
+    bn += snprintf(big + bn, sizeof big - (size_t)bn, " %d.1250 -%d.8750 1.1250 2.8750 0.5000 3.6250 %d", s * 7, s * 2, s % 3 + 1);
+  bn += snprintf(big + bn, sizeof big - (size_t)bn, "\n");
+  CHECK(bn > 4096 && bn < (int)sizeof big - 1);
+  slots_reset();
+  slot(1, big);
+  e = load_test("slots.lua", false);
+  CHECK(listed(e, 1, "Big One"));
+  CHECK_INT(slot_open(e, 1, 0), 1);
+  CHECK(slot_last(e, big));
+  slot(1, "garbage");
+  log_clear();
+  CHECK_INT(slot_open(e, 1, 0), 1);
+  CHECK(slot_last(e, big));
+  CHECK(log_has("keeping the version the game loaded"));
   etx_free(e);
 
   /* once listed, a slot keeps its last good content */
