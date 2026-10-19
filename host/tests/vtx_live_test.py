@@ -302,6 +302,14 @@ def run(exe, use_pty, keep):
                 print("GET /api/log (end):\n  " + "\n  ".join(data.decode("utf-8", "replace").splitlines()[-40:]))
             except (OSError, http.client.HTTPException) as e:
                 print("GET /api/log:", e)
+            for name in sorted(os.listdir(base)):
+                print(f"  {name}: {os.path.getsize(os.path.join(base, name))} bytes")
+            try:
+                with open(f"/proc/{p.pid}/status") as f:
+                    print("  " + " ".join(l.strip() for l in f if l.startswith(("VmPeak", "VmRSS", "VmSize", "Threads"))))
+                print("  maps:", sum(1 for _ in open(f"/proc/{p.pid}/maps")))
+            except OSError:
+                pass
         p.terminate()
         try:
             p.wait(10)
