@@ -56,7 +56,7 @@ KEYS = (
     Key("margin", INT, "0", "0|20", False, False, "Black border in percent, for goggles that cut off the edges"),
     Key("fonts", ENUM, "auto", "auto|std|sml|lrg|pc|hd", False, False, "Text size: auto, or the fonts of a radio screen class"),
     Key("show_ip", ENUM, "auto", "auto|on|off", True, False, "Show the web address on the main menu"),
-    Key("drawing", ENUM, "multi", "single|multi|gpu", True, False, "Drawing the picture: multi (on all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest; edges may differ by a pixel) or single (one core)"),
+    Key("drawing", ENUM, "multi", "single|multi|gpu", True, False, "Drawing the picture: multi (three of the Pi's cores, the fourth left to the sound: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower than multi at high detail; edges may differ by a pixel) or single (one core)"),
     Key("wifi_ssid", STRING, "", "", False, False, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)"),
     Key("wifi_password", SECRET, "", "", False, False, "WiFi password (empty for an open network)"),
     Key("wifi_country", STRING, "US", "", False, False, "Two-letter country code for WiFi (US, GB, DE, HR, ...)"),
@@ -131,7 +131,7 @@ TEMPLATE = (
     "fonts = auto\n"
     "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n"
     "show_ip = auto\n"
-    "# drawing the picture: multi (all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest), single (one core)\n"
+    "# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores), single (one core)\n"
     "drawing = multi\n"
     "\n"
     "# ---- WiFi -----------------------------------------------------------------------\n"

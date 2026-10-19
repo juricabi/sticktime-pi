@@ -100,6 +100,11 @@ int plat_thread_join(plat_thread t) {
   return 0;
 }
 void plat_thread_lower_priority(void) { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+int plat_cpus_online(void) {
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  return si.dwNumberOfProcessors > 0 ? (int)si.dwNumberOfProcessors : 1;
+}
 void plat_mutex_init(plat_mutex *m) { InitializeCriticalSection(m); }
 void plat_mutex_lock(plat_mutex *m) { EnterCriticalSection(m); }
 void plat_mutex_unlock(plat_mutex *m) { LeaveCriticalSection(m); }
@@ -125,6 +130,26 @@ int plat_thread_start(plat_thread *t, void *(*fn)(void *), void *arg, bool detac
   return 0;
 }
 int plat_thread_join(plat_thread t) { return pthread_join(t, NULL) ? -1 : 0; }
+int plat_cpus_online(void) {
+  char b[64];
+  int fd = open("/sys/devices/system/cpu/online", O_RDONLY | O_CLOEXEC);
+  ssize_t r = fd >= 0 ? read(fd, b, sizeof b - 1) : -1;
+  if (fd >= 0) close(fd);
+  long n = 0;
+  if (r > 0) {                                   /* "0-3", "0,2-3" */
+    b[r] = 0;
+    for (char *p = b; *p && *p != '\n';) {
+      char *e;
+      long lo = strtol(p, &e, 10), hi = lo;
+      if (e == p) break;
+      if (*e == '-') hi = strtol(e + 1, &e, 10);
+      n = hi + 1 > n ? hi + 1 : n;               /* the highest CPU number + 1 */
+      p = *e == ',' ? e + 1 : e;
+    }
+  }
+  if (n <= 0) n = sysconf(_SC_NPROCESSORS_CONF);
+  return n > 0 ? (n < 1024 ? (int)n : 1024) : 1;
+}
 void plat_thread_lower_priority(void) {
   /* worker threads never run real-time, whatever the process was started with, nor only on the frame
    * loop's core: a thread inherits its creator's policy and CPU mask */

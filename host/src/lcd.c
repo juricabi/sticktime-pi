@@ -371,13 +371,13 @@ static void circle_draw(lcd_t *l, int cx, int cy, int r, uint16_t c);
 static void invert_draw(lcd_t *l, int x, int y, int w, int h);
 static void glyph_blit(lcd_t *l, const glyph_t *g, int64_t gx, int64_t gy, uint16_t c);
 
-static void play_band(void *ctx, int part) {
-  const lcd_t *src = ctx;
+/* the recorded calls, drawn on rows row0 .. row1 - 1 */
+static void draw_rows(const lcd_t *src, int row0, int row1) {
   const struct lcd_rec *r = src->rec;
   lcd_t b = *src;
   b.rec = NULL;
-  b.row0 = (int)((int64_t)src->h * part / r->bands);
-  b.row1 = (int)((int64_t)src->h * (part + 1) / r->bands);
+  b.row0 = row0;
+  b.row1 = row1;
   for (int i = 0; i < r->n; i++) {
     const rcmd_t *k = &r->cmd[i];
     if (k->yhi < b.row0 || k->ylo >= b.row1) continue;
@@ -395,6 +395,38 @@ static void play_band(void *ctx, int part) {
     }
   }
 }
+
+static void play_band(void *ctx, int part) {
+  const lcd_t *src = ctx;
+  int bands = src->rec->bands;
+  draw_rows(src, (int)((int64_t)src->h * part / bands), (int)((int64_t)src->h * (part + 1) / bands));
+}
+
+typedef struct {
+  const lcd_t *l;
+  int align, units;
+  lcd_band_fn done;
+  void *ctx;
+} fused_t;
+
+static void play_fused(void *ctx, int part) {
+  const fused_t *f = ctx;
+  int bands = f->l->rec->bands;
+  int row0 = f->align * (int)((int64_t)f->units * part / bands), row1 = f->align * (int)((int64_t)f->units * (part + 1) / bands);
+  draw_rows(f->l, row0, row1);
+  f->done(f->ctx, part, bands, row0, row1);
+}
+
+bool lcd_flush_bands(lcd_t *l, int align, lcd_band_fn done, void *ctx) {
+  struct lcd_rec *r = l->rec;
+  if (!r || !r->par || r->keep || align < 1 || l->h % align || l->h / align < 2 * r->bands) return false;
+  fused_t f = { l, align, l->h / align, done, ctx };
+  par_run(r->par, r->bands, play_fused, &f);
+  lcd_drop(l);
+  return true;
+}
+
+int lcd_bands(const lcd_t *l) { return l->rec ? l->rec->bands : 1; }
 
 void lcd_flush(lcd_t *l) {
   if (l->rec && !l->rec->keep) lcd_play(l);

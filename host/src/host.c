@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define FUSE_MAX_BANDS 256
 #ifdef __linux__
 #include <unistd.h>
 #endif
@@ -228,6 +230,39 @@ static void note_error(host_t *h, int64_t now) {
   if (now - h->err_window_us > 60000000) { h->err_window_us = now; h->err_count = 0; }
   h->err_count++;
   h->err_retry_us = h->err_count <= 3 ? now + ERROR_RETRY_US : 0;
+}
+
+typedef struct {
+  const video_out_t *o;
+  const uint16_t *fb;
+  int edges[FUSE_MAX_BANDS + 1];
+} fuse_t;
+
+static void fuse_band(void *ctx, int band, int bands, int row0, int row1) {
+  fuse_t *f = ctx;
+  video_out_band(f->o, f->fb, band, bands, row0, row1, f->edges);
+}
+
+/* drawing = multi: the frame's drawing on the pool; on an interlaced composite output each band also
+ * makes its part of the copy out (the flicker filter) as soon as it is drawn, while its pixels are in
+ * the cache, instead of present() reading the whole frame from memory again. Counted in run. */
+static void draw_frame(host_t *h) {
+  int64_t t0 = plat_now_us();
+  const video_out_t *o = h->drawing_pool && !h->gpu ? video_out_begin(h->video) : NULL;
+  static fuse_t f;                        /* (the frame loop's thread only) */
+  bool fused = false;
+  if (o && o->w == h->lcd.w && o->h * o->rows == h->lcd.h && lcd_bands(&h->lcd) <= FUSE_MAX_BANDS) {
+    f.o = o;
+    f.fb = h->lcd.fb;
+    memset(f.edges, 0, sizeof f.edges);
+    fused = lcd_flush_bands(&h->lcd, o->rows, fuse_band, &f);
+  }
+  if (fused) video_out_done(h->video);
+  else lcd_flush(&h->lcd);
+  int64_t us = plat_now_us() - t0;
+  h->last_run_us += us;
+  h->hs.run_ms[(h->hs.run_n - 1) % 64] += (float)(us / 1000.0);
+  h->hs.run_sum += us / 1000.0;
 }
 
 /* the GPU helper: next to this program */
@@ -569,7 +604,6 @@ void host_frame(host_t *h, int64_t now) {
   memset(&h->lcd.st, 0, sizeof h->lcd.st);
   int64_t t0 = plat_now_us();
   int r = etx_run(h->etx, ev);
-  lcd_flush(&h->lcd);                     /* drawing = multi: what it drew, on every core (counted in run) */
   int64_t t1 = plat_now_us();
   h->last_run_us = t1 - t0;
   h->hs.run_ms[h->hs.run_n++ % 64] = (float)(h->last_run_us / 1000.0);
@@ -625,6 +659,7 @@ void host_frame(host_t *h, int64_t now) {
   }
 
   if (h->show_ip && h->game_state == GS_MENU) draw_ip_overlay(h);
+  draw_frame(h);
   h->frames_drawn++;
 }
 
@@ -666,7 +701,8 @@ static int present_gpu(host_t *h) {
     plat_mutex_unlock(&h->app->mu);
     h->want_shot = false;
   }
-  h->last_present_us = plat_now_us() - t0;
+  h->present_done_us = plat_now_us();
+  h->last_present_us = h->present_done_us - t0;
   h->hs.present_sum += h->last_present_us / 1000.0;
   return 1;
 }
@@ -697,7 +733,8 @@ int host_present(host_t *h) {
   int64_t t0 = plat_now_us();
   h->present_start_us = t0;
   int r = video_present(h->video, h->lcd.fb);
-  h->last_present_us = plat_now_us() - t0;
+  h->present_done_us = plat_now_us();
+  h->last_present_us = h->present_done_us - t0;
   h->hs.present_sum += h->last_present_us / 1000.0;
   return r;
 }
@@ -712,6 +749,9 @@ void host_note_shown(host_t *h, int64_t vblank_us, int64_t sample_us, int64_t pe
   }
   /* TOOL_SHOW_US: from the start of the copy until the frame is on screen */
   if (h->present_start_us && vblank_us > h->present_start_us) h->last_show_us = vblank_us - h->present_start_us;
+  /* done -> on screen: the wait for the vblank (the pacer's and the display's margins, a late start) */
+  if (h->present_done_us && vblank_us > h->present_done_us && vblank_us - h->present_done_us < 100000)
+    s->wait_sum += (vblank_us - h->present_done_us) / 1000.0;
   /* sample -> the middle of the scanout of this frame */
   double lat = (vblank_us - sample_us + period_us / 2) / 1000.0;
   if (lat > 0 && lat < 200) {
@@ -749,6 +789,13 @@ void host_publish(host_t *h, int64_t now) {
   st.run_ms_avg = frames > 0 ? (float)(s->run_sum / frames) : 0;
   st.present_ms_avg = frames > 0 ? (float)(s->present_sum / frames) : 0;
   st.latency_ms = s->count ? (float)(s->lat_sum / s->count) : 0;
+  st.wait_ms = s->count ? (float)(s->wait_sum / s->count) : 0;
+  st.budget_ms = (float)(h->pacer_budget_us / 1000.0);
+  if (h->video) {
+    video_stats_t vs;
+    video_get_stats(h->video, &vs);
+    st.margin_ms = (float)(vs.margin_us / 1000.0);
+  }
   st.frames = s->frames;
   st.missed = s->missed;
   st.game_state = h->game_state;
@@ -794,7 +841,7 @@ void host_publish(host_t *h, int64_t now) {
   /* new stats window */
   memset(s->run_ms, 0, sizeof s->run_ms);
   s->run_n = 0;
-  s->run_sum = s->present_sum = s->frame_sum = s->lat_sum = 0;
+  s->run_sum = s->present_sum = s->frame_sum = s->lat_sum = s->wait_sum = 0;
   s->count = 0;
   s->frame_max = 0;
   s->window_us = now;

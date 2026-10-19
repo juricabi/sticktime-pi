@@ -617,7 +617,7 @@ class MockPi:
         return {
             "version": self.version, "game_version": self.game_version, "uptime_ms": self.uptime_ms(),
             "fps": round(59.94 - abs(math.sin(t)) * 0.3, 2), "frame_ms": {"avg": 16.68, "max": round(17.1 + abs(math.sin(t * 3)), 2)},
-            "run_ms": {"avg": round(3.1 + math.sin(t) * 0.2, 2), "p95": 4.0}, "present_ms": 0.6, "latency_ms": round(9.8 + math.sin(t / 2), 1),
+            "run_ms": {"avg": round(3.1 + math.sin(t) * 0.2, 2), "p95": 4.0}, "present_ms": 0.6, "latency_ms": round(9.8 + math.sin(t / 2), 1), "wait_ms": 1.2, "margin_ms": 0.5, "budget_ms": 4.1,
             "frames": int(t * 60), "missed": 3,
             "game": {"state": state, "state_name": STATE_NAMES[state], "loaded": True, "error": self.game_error, "lua_kb": 812,
                      "script": self.value("script")},

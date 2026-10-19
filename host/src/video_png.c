@@ -114,7 +114,7 @@ static void png_close(video_t *v) {
   free(p->rgb);
   free(p);
 }
-static const video_ops_t png_ops = { png_present, png_wait, png_pending, png_fd, png_close, NULL, NULL };
+static const video_ops_t png_ops = { png_present, png_wait, png_pending, png_fd, png_close, NULL, NULL, NULL, NULL };
 
 video_t *video_png_open(const video_config_t *c, video_info_t *info, char *err, int errlen) {
   int w = 640, h = 480;

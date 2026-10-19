@@ -1368,6 +1368,43 @@ static void test_none_backend(void) {
 /* the flicker filter: a 1-line white line on black spreads over three lines, each channel rounded on
  * its own; a flat colour stays as it is; the edge lines count themselves for the line they lack, or with
  * pad spread into a line of the border; a doubled render's line pairs are averaged first */
+/* the copy band by band (video_out_band), the bands done in any order: the same lines as the whole frame
+ * at once, for both line pairings, every strength, with and without the border lines */
+static void test_out_bands(void) {
+  enum { W = 53, HP = 40 };                      /* picture lines; the frame has HP * rows rows */
+  static uint16_t fb[W * HP * 2], want[W * (HP + 2)], got[W * (HP + 2)];
+  uint32_t seed = 99;
+  for (size_t i = 0; i < sizeof fb / sizeof fb[0]; i++) { seed = seed * 1103515245u + 12345u; fb[i] = (uint16_t)(seed >> 16); }
+  int bad = 0, runs = 0;
+  for (int rows = 1; rows <= 2; rows++)
+    for (int s = 0; s <= 2; s++)
+      for (int pad = 0; pad <= 1; pad++)
+        for (int bands = 1; bands <= HP / 2; bands += 3) {
+          int lines = HP + (s > 0 ? 2 * pad : 0);
+          memset(want, 0, sizeof want);
+          video_deflicker_copy(fb, W, HP, rows, want, W * 2, 16, s, pad);
+          video_out_t o = { (uint8_t *)got, W * 2, 16, W, HP, rows, s > 0 ? pad : 0, s };
+          memset(got, 0, sizeof got);
+          int edges[HP / 2 + 1], order[HP / 2];
+          memset(edges, 0, sizeof edges);
+          for (int k = 0; k < bands; k++) order[k] = k;
+          for (int k = bands - 1; k > 0; k--) {          /* shuffled */
+            seed = seed * 1103515245u + 12345u;
+            int j = (int)((seed >> 16) % (uint32_t)(k + 1)), t = order[k];
+            order[k] = order[j];
+            order[j] = t;
+          }
+          for (int k = 0; k < bands; k++) {
+            int b = order[k], row0 = rows * (HP * b / bands), row1 = rows * (HP * (b + 1) / bands);
+            video_out_band(&o, fb, b, bands, row0, row1, edges);
+          }
+          bad += memcmp(got, want, sizeof got[0] * (size_t)(W * lines)) != 0;
+          runs++;
+        }
+  CHECK(runs > 30);
+  CHECK_INT(bad, 0);
+}
+
 static void test_deflicker(void) {
   enum { W = 3, H = 5 };
   uint16_t src[W * H * 2], out[W * (H + 2)];
@@ -1552,6 +1589,7 @@ int main(void) {
   test_png_backend();
   test_none_backend();
   test_deflicker();
+  test_out_bands();
   test_frame_dt();
   test_dispatch();
   rm_tree(tmpdir);

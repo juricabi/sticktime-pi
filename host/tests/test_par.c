@@ -62,6 +62,18 @@ int main(void) {
   }
   CHECK_INT(jobs[0].wrong_job + jobs[1].wrong_job, 0);
   par_close(p);
+  /* the plan for any number of CPUs: off the frame loop's CPU (the last) and the audio thread's (the one
+   * before), unless that leaves none */
+  static const struct { int ncpu, pinned, threads; unsigned long long cpus; } plan[] = {
+    { 1, 0, 1, 0x1 },  { 2, 1, 2, 0x1 },  { 3, 2, 2, 0x1 },  { 4, 3, 3, 0x3 },  { 6, 5, 5, 0xF },  { 8, 7, 7, 0x3F },
+    { 4, 0, 3, 0x6 },  { 4, -1, 4, 0xF }, { 2, -1, 2, 0x3 }, { 1, -1, 1, 0x1 },
+  };
+  for (size_t i = 0; i < sizeof plan / sizeof plan[0]; i++) {
+    int threads = 0;
+    unsigned long long cpus = par_plan(plan[i].ncpu, plan[i].pinned, &threads);
+    CHECK_INT(threads, plan[i].threads);
+    CHECK(cpus == plan[i].cpus);
+  }
   /* one per CPU */
   p = par_open(0);
   CHECK(p == NULL || par_threads(p) >= 2);

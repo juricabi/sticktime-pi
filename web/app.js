@@ -284,7 +284,7 @@
     music_source: { generated: 'Generated', songs: 'My songs' },
     audio_out: { auto: 'Auto', jack: 'Jack', hdmi: 'HDMI', off: 'Off' },
     show_ip: { auto: 'Auto', on: 'On', off: 'Off' },
-    drawing: { multi: 'All cores', gpu: 'GPU', single: 'One core' },
+    drawing: { multi: 'Multi-core', gpu: 'GPU', single: 'One core' },
     hotspot: { auto: 'Auto', on: 'On', off: 'Off' },
     vtx: { off: 'Off', auto: 'Auto', smartaudio: 'SmartAudio', tramp: 'Tramp' },
     vtx_port: { gpio4: 'One pin: GPIO4, pin 7', gpio17: 'One pin: GPIO17, pin 11', gpio22: 'One pin: GPIO22, pin 15',
@@ -294,7 +294,7 @@
   const HELP_MORE = {
     av_mode: 'Progressive: no flicker of thin lines and text. Interlaced: twice the lines, but they flicker.',
     av_detail: 'High draws the picture with twice the lines (and twice as wide) and the Pi scales it down: smoother edges and sharper text, for a few ms more work per frame (most with interlaced).',
-    drawing: 'All cores draws each frame on all of the Pi\'s cores: the same picture in less time, which high detail on interlaced needs. GPU draws it on the graphics chip: the least work for the cores; edges may differ by a pixel. One core is how 0.2.5 drew.',
+    drawing: 'Multi-core draws each frame on three of the Pi\'s cores (the fourth is left to the sound): exactly the same picture as one core, in less time; high detail on interlaced needs it. GPU draws it on the graphics chip: the cores stay free and the Pi runs a little cooler, but on a Pi 4 it is slower than multi-core at high detail, and edges may differ by a pixel. One core is how 0.2.5 drew.',
     av_flicker: 'Each line blended with the lines above and below it, so a thin line or text lands in both fields and stops flickering: Light keeps more detail, Full stops it completely (as a GameCube in 480i).',
     bluetooth: 'Off: no Bluetooth device can connect (the ELRS BLE joystick, gamepads, keyboards). Bluetooth shares the Pi\'s radio with WiFi, so off can steady the WiFi when you fly with the WiFi joystick or USB.',
     sd_write: 'Tracks + game: the track editor and its Install. Everything: any file in the game\'s SD folder.',
@@ -842,6 +842,10 @@
     frameMs: (s) => num(g(s, 'frame_ms', 'avg'), 2) + ' ms avg · ' + num(g(s, 'frame_ms', 'max'), 1) + ' max',
     runMs: (s) => num(g(s, 'run_ms', 'avg'), 2) + ' ms avg · ' + num(g(s, 'run_ms', 'p95'), 1) + ' p95',
     presentMs: (s) => num(s.present_ms, 2) + ' ms',
+    // done -> on screen: the frame starts that much earlier than its work needs (the pacer's and the display's margins)
+    waitMs: (s) => num(s.wait_ms, 2) + ' ms' + (isNum(s.margin_ms) ? ' · margin ' + num(s.margin_ms, 1) + ' ms' : ''),
+    latencyParts: (s) => (isNum(s.latency_ms) && isNum(g(s, 'frame_ms', 'avg'))
+      ? 'Latency: game + copy + waiting + half a refresh (' + num(g(s, 'frame_ms', 'avg') / 2, 1) + ' ms) while the picture goes out.' : ''),
     frames: (s) => (isNum(s.frames) ? s.frames.toLocaleString() : '–'),
     missed: (s) => (isNum(s.missed) ? s.missed.toLocaleString() : '–'),
     luaKb: (s) => (isNum(g(s, 'game', 'lua_kb')) ? g(s, 'game', 'lua_kb') + ' KB' : '–'),

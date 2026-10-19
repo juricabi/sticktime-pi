@@ -14,7 +14,7 @@
   X("margin",           SK_INT,    "0",           "0|20",                                              false, false, "Black border in percent, for goggles that cut off the edges") \
   X("fonts",            SK_ENUM,   "auto",        "auto|std|sml|lrg|pc|hd",                            false, false, "Text size: auto, or the fonts of a radio screen class") \
   X("show_ip",          SK_ENUM,   "auto",        "auto|on|off",                                       true,  false, "Show the web address on the main menu") \
-  X("drawing",          SK_ENUM,   "multi",       "single|multi|gpu",                                  true,  false, "Drawing the picture: multi (on all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest; edges may differ by a pixel) or single (one core)") \
+  X("drawing",          SK_ENUM,   "multi",       "single|multi|gpu",                                  true,  false, "Drawing the picture: multi (three of the Pi's cores, the fourth left to the sound: the same picture, sooner), gpu (the graphics chip: frees the cores, but slower than multi at high detail; edges may differ by a pixel) or single (one core)") \
   X("wifi_ssid",        SK_STRING, "",            "",                                                  false, false, "Your WiFi network (2.4 GHz is best next to 5.8 GHz video)") \
   X("wifi_password",    SK_SECRET, "",            "",                                                  false, false, "WiFi password (empty for an open network)") \
   X("wifi_country",     SK_STRING, "US",          "",                                                  false, false, "Two-letter country code for WiFi (US, GB, DE, HR, ...)") \
@@ -88,7 +88,7 @@
 "fonts = auto\n" \
 "# show the web address on the main menu: auto (for a while after the network comes up), on, off\n" \
 "show_ip = auto\n" \
-"# drawing the picture: multi (all the Pi's cores: the same picture, sooner), gpu (the graphics chip: fastest), single (one core)\n" \
+"# drawing the picture: multi (three cores: the same picture, sooner), gpu (the graphics chip: frees the cores), single (one core)\n" \
 "drawing = multi\n" \
 "\n" \
 "# ---- WiFi -----------------------------------------------------------------------\n" \

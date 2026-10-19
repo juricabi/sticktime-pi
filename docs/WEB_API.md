@@ -44,7 +44,7 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
 ```json
 {"version":"0.1.0","game_version":"1.7.2","uptime_ms":123456,
  "fps":60.0,"frame_ms":{"avg":16.7,"max":17.1},"run_ms":{"avg":3.1,"p95":4.0},"present_ms":0.6,
- "latency_ms":9.8,"frames":7400,"missed":3,
+ "latency_ms":9.8,"wait_ms":1.2,"margin_ms":0.5,"budget_ms":4.1,"frames":7400,"missed":3,
  "game":{"state":1,"state_name":"menu","loaded":true,"error":"","lua_kb":812},
  "video":{"desc":"Composite-1 720x480i 59.94 Hz, NTSC 4:3, render 640x480","render_w":640,"render_h":480},
  "input":{"active":0,"kind":"wifi","live":true,
@@ -56,7 +56,12 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
  "system":{"cpu_temp":51.2,"throttled":"0x0"},
  "vtx":{"state":"ready","text":"SmartAudio 2.1 · R1 5658 MHz · 25 mW"}}
 ```
-State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
+Times in ms, averaged over the last couple of seconds: `run_ms` the game's run() with its drawing (and, on
+interlaced composite with drawing = multi, the copy out, which it then makes band by band), `present_ms`
+the copy into the display's buffer and queueing it, `wait_ms` from then until the frame's vblank (what
+`budget_ms`, the pacer's head start, and `margin_ms`, the display's adaptive safety margin, leave over),
+`latency_ms` from the stick sample to the middle of the frame's scanout (≈ run + present + wait + half a
+refresh). State names: unknown, menu, setup, count, fly, crashed, ready, paused, done. `vtx` is one line for the status
 page (states as in `GET /api/vtx`; `text` is `off` when VTX control is off). `system.throttled`: the firmware's
 throttling flags in hex, as `vcgencmd get_throttled` prints them (bit 0 under-voltage now, 1 frequency capped,
 2 throttled, 3 soft temperature limit; bits 16-19 the same since boot), read from the firmware's mailbox

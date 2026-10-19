@@ -83,33 +83,8 @@ static void *worker(void *arg) {
 }
 
 #ifdef __linux__
-/* the CPUs online (see audio.c: musl's sysconf counts only the caller's affinity mask) */
-static int cpus_online(void) {
-  char b[64];
-  int fd = open("/sys/devices/system/cpu/online", O_RDONLY | O_CLOEXEC);
-  ssize_t r = fd >= 0 ? read(fd, b, sizeof b - 1) : -1;
-  if (fd >= 0) close(fd);
-  long n = 0;
-  if (r > 0) {
-    b[r] = 0;
-    for (char *s = b; *s && *s != '\n';) {
-      char *e;
-      long lo = strtol(s, &e, 10), hi = lo;
-      if (e == s) break;
-      if (*e == '-') hi = strtol(e + 1, &e, 10);
-      n = hi + 1 > n ? hi + 1 : n;
-      s = *e == ',' ? e + 1 : e;
-    }
-  }
-  if (n <= 0) n = sysconf(_SC_NPROCESSORS_CONF);
-  return n > 0 ? (n < CPU_SETSIZE ? (int)n : CPU_SETSIZE) : 1;
-}
-
 /* below the caller's SCHED_FIFO priority by 2 (the audio thread is 1 below: it goes first), on the CPUs
- * neither the caller is pinned to nor the audio thread (the one before the caller's, audio.c): on a Pi
- * 4 the frame loop is on core 3, audio on 2, the pool's threads on 0 and 1. A 4th thread among them
- * draws a frame only a little sooner (the memory is the limit by then) and would wait for the audio
- * thread, or hold it up. Returns how many CPUs that leaves. */
+ * par_plan gives; returns its thread count */
 static int pick_sched(par_t *p, int ncpu) {
   int pol = SCHED_OTHER;
   struct sched_param sp;
@@ -126,24 +101,39 @@ static int pick_sched(par_t *p, int ncpu) {
   int pinned = -1;
   if (sched_getaffinity(0, sizeof cur, &cur) == 0 && CPU_COUNT(&cur) == 1)
     for (int i = 0; i < CPU_SETSIZE; i++) if (CPU_ISSET(i, &cur)) { pinned = i; break; }
-  int audio = pinned >= 0 && ncpu >= 3 ? (pinned + ncpu - 1) % ncpu : -1;
+  int threads;
+  unsigned long long m = par_plan(ncpu, pinned, &threads);
   CPU_ZERO(&p->cpus);
-  for (int i = 0; i < ncpu; i++) if ((i != pinned && i != audio) || ncpu < 2) CPU_SET(i, &p->cpus);
+  for (int i = 0; i < ncpu && i < 64; i++) if (m >> i & 1) CPU_SET(i, &p->cpus);
   p->pin = true;
-  return CPU_COUNT(&p->cpus);
+  return threads;
 }
 #endif
+
+unsigned long long par_plan(int ncpu, int pinned, int *threads) {
+  if (ncpu > 64) ncpu = 64;
+  unsigned long long all = ncpu >= 64 ? ~0ull : (1ull << (ncpu > 0 ? ncpu : 1)) - 1;
+  if (ncpu <= 1 || pinned < 0 || pinned >= ncpu) {
+    *threads = ncpu > 0 ? ncpu : 1;
+    return all;
+  }
+  int audio = (pinned + ncpu - 1) % ncpu;
+  unsigned long long m = all & ~(1ull << pinned) & ~(1ull << audio);
+  if (!m) m = all & ~(1ull << pinned);          /* 2 CPUs: next to the audio thread, below it */
+  *threads = __builtin_popcountll(m) + 1;
+  return m;
+}
 
 par_t *par_open(int threads) {
   par_t *p = calloc(1, sizeof *p);
   if (!p) return NULL;
 #ifdef __linux__
-  int ncpu = cpus_online(), free_cpus = pick_sched(p, ncpu);
-  /* one thread for each CPU it may use, and the caller (pinned: its own core; else it is one of them) */
-  if (threads <= 0) threads = free_cpus < ncpu ? free_cpus + 1 : ncpu;
+  int planned = pick_sched(p, plat_cpus_online());
 #else
-  if (threads <= 0) threads = 3;
+  int planned;
+  par_plan(plat_cpus_online(), -1, &planned);
 #endif
+  if (threads <= 0) threads = planned;
   if (threads > PAR_MAX + 1) threads = PAR_MAX + 1;
   if (threads <= 1) {
     free(p);

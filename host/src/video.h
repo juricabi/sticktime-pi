@@ -36,6 +36,7 @@
 #include "par.h"
 
 typedef struct video video_t;
+#define VIDEO_DEFLICKER_MAXW 2048        /* video_deflicker_lines' scratch: 3 lines of up to this wide */
 
 typedef struct {
   const char *backend;     /* "auto" (drm, then fb, then none), "drm", "fb", "png", "none" */
@@ -151,6 +152,24 @@ unsigned char *video_png_encode(const uint16_t *fb, int w, int h, int *len);
 void video_close(video_t *v);
 /* drawing = multi: present() may share its copy out among the pool's threads (NULL: on the caller's) */
 void video_set_pool(video_t *v, par_t *par);
+
+/* drawing = multi on an interlaced composite output: the frame's drawing may make present()'s copy out
+ * itself, band by band, each as soon as it is drawn, while it is in the cache (lcd_flush_bands).
+ * video_out_begin says where: the buffer the frame goes to (free now), as video_deflicker_lines'
+ * arguments (h picture lines of w from h * rows render lines); NULL when present() copies this frame
+ * (not interlaced, a flip still pending, the display down). After every band's video_out_band,
+ * video_out_done: present() then only flips. */
+typedef struct {
+  uint8_t *map;
+  int pitch, bpp;
+  int w, h, rows, pad, strength;
+} video_out_t;
+const video_out_t *video_out_begin(video_t *v);
+void video_out_done(video_t *v);
+/* the copy for render rows row0 .. row1 - 1 (multiples of o->rows), just drawn as band band of bands:
+ * the output lines inside it, and the two at each edge with a neighbour once both are drawn (edges:
+ * bands + 1 counters, 0 at the start of the frame, shared by the threads). Any order, any thread. */
+void video_out_band(const video_out_t *o, const uint16_t *fb, int band, int bands, int row0, int row1, int *edges);
 /* drawing = gpu: the GPU draws frames into the display's buffers (NULL: no more) */
 void video_set_gpu(video_t *v, gpu_t *g);
 /* present a frame drawn by the GPU from the recorded calls c[0 .. n - 1] (shot: a copy of it, or NULL).
@@ -180,6 +199,8 @@ typedef struct {
   void (*close)(video_t *v);
   int  (*debug)(video_t *v, const char *action);   /* optional */
   int  (*present_gpu)(video_t *v, const rcmd_t *c, int n, uint16_t *shot);   /* optional: drm */
+  const video_out_t *(*out_begin)(video_t *v);                                 /* optional: drm */
+  void (*out_done)(video_t *v);
 } video_ops_t;
 struct video {
   const video_ops_t *ops;

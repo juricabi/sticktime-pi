@@ -40,7 +40,10 @@ typedef struct {
   float frame_ms_avg, frame_ms_max;         /* time between shown frames */
   float run_ms_avg, run_ms_p95;             /* Lua run() incl. drawing */
   float present_ms_avg;                     /* scale + copy into the buffer */
-  float latency_ms;                         /* stick sample -> vblank, average */
+  float latency_ms;                         /* stick sample -> the middle of the frame's scanout, average */
+  float wait_ms;                            /* the frame done (drawn and copied) -> its vblank, average */
+  float margin_ms;                          /* the display's safety margin before a vblank (adaptive) */
+  float budget_ms;                          /* the pacer's: a frame starts this long before its deadline */
   uint32_t frames, missed;                  /* missed: frames that took more than one refresh */
   int game_state;                           /* GS_* */
   bool game_loaded;

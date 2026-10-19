@@ -18,7 +18,7 @@
  *     --scenario FILE   run a headless test scenario (virtual time, see scenario.c) and exit
  *     --stub-fonts ADV  fonts that draw nothing (engine.js comparisons)
  *     --rt-prio N       SCHED_FIFO priority of the frame loop (default 50 on Linux, 0 = off)
- *     --cpu N           pin the frame loop to CPU N (default 3 on a 4-core Pi, -1 = off)
+ *     --cpu N           pin the frame loop to CPU N (default 3, the last CPU when there are fewer, -1 = off)
  *     --print-template  print the default sticktime.txt      --version */
 #include "app.h"
 #include "host.h"
@@ -188,6 +188,7 @@ static int device_loop(host_t *h, int max_frames) {
     host_present(h);
     int64_t done = plat_now_us();
     pacer_note(&pc, done - sample, period, missed);
+    h->pacer_budget_us = pc.budget_us;
     host_publish(h, done);
     if (h->etx) etx_gc_step(h->etx, 2);
     frames++;

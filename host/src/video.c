@@ -422,7 +422,7 @@ static inline uint32_t spread565(uint16_t p) { return ((uint32_t)p | ((uint32_t)
 static inline uint16_t pack565(uint32_t v) { v &= SPREAD_MASK; return (uint16_t)(v | (v >> 16)); }
 /* video_deflicker_copy's spread lines (one display, filtered on the frame loop's thread: no allocation
  * per frame), and a black line (only read) */
-#define DEFLICKER_MAXW 2048
+#define DEFLICKER_MAXW VIDEO_DEFLICKER_MAXW
 static uint32_t dfl_lines[3][DEFLICKER_MAXW], dfl_black[DEFLICKER_MAXW];
 
 /* picture line y spread: the sum of its `rows` source lines */
@@ -502,6 +502,31 @@ void video_deflicker_lines(const uint16_t *src, int w, int h, int rows, void *ds
 
 void video_set_pool(video_t *v, par_t *par) {
   if (v) v->par = par;
+}
+
+const video_out_t *video_out_begin(video_t *v) {
+  return v && v->ops->out_begin ? v->ops->out_begin(v) : NULL;
+}
+
+void video_out_done(video_t *v) {
+  if (v && v->ops->out_done) v->ops->out_done(v);
+}
+
+/* picture lines y0 .. y1 - 1 (-1 and h: the pad lines) of o's copy */
+static void out_lines(const video_out_t *o, const uint16_t *fb, int y0, int y1, uint32_t *scratch) {
+  video_deflicker_lines(fb, o->w, o->h, o->rows, o->map, o->pitch, o->bpp, o->strength, o->pad > 0, y0 + o->pad,
+                        y1 + o->pad, scratch);
+}
+
+void video_out_band(const video_out_t *o, const uint16_t *fb, int band, int bands, int row0, int row1, int *edges) {
+  uint32_t scratch[3 * VIDEO_DEFLICKER_MAXW];
+  int a = row0 / o->rows, b = row1 / o->rows, last = band == bands - 1;
+  /* its own lines: those whose neighbours are in it too (the first band's top and the last's bottom
+   * have the border, or the edge line itself, for a neighbour) */
+  out_lines(o, fb, band == 0 ? -o->pad : a + 1, last ? o->h + o->pad : b - 1, scratch);
+  /* the two lines at an edge need both bands: the second of them to be drawn writes them */
+  if (band > 0 && __atomic_add_fetch(&edges[band], 1, __ATOMIC_ACQ_REL) == 2) out_lines(o, fb, a - 1, a + 1, scratch);
+  if (!last && __atomic_add_fetch(&edges[band + 1], 1, __ATOMIC_ACQ_REL) == 2) out_lines(o, fb, b - 1, b + 1, scratch);
 }
 
 void video_set_gpu(video_t *v, gpu_t *g) {
@@ -655,7 +680,7 @@ static int  none_wait(video_t *v, int timeout_ms, int64_t *t_us) { return video_
 static bool none_pending(const video_t *v) { return video_soft_pending(v); }
 static int  none_fd(const video_t *v) { (void)v; return -1; }
 static void none_close(video_t *v) { free(v); }
-static const video_ops_t none_ops = { none_present, none_wait, none_pending, none_fd, none_close, NULL, NULL };
+static const video_ops_t none_ops = { none_present, none_wait, none_pending, none_fd, none_close, NULL, NULL, NULL, NULL };
 
 video_t *video_none_open(const video_config_t *c, video_info_t *info, char *err, int errlen) {
   (void)err; (void)errlen;

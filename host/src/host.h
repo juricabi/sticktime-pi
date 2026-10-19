@@ -44,7 +44,7 @@ typedef struct {
 typedef struct {
   float run_ms[64];            /* ring of recent run() times */
   int run_n;
-  double run_sum, present_sum, frame_sum, lat_sum;
+  double run_sum, present_sum, frame_sum, lat_sum, wait_sum;
   int count;
   float frame_max;
   uint32_t frames, missed;
@@ -118,6 +118,8 @@ typedef struct host {
   int frames_drawn, frames_at_window;
   uint32_t src_updates_prev[INPUT_MAX_SOURCES];
   int64_t last_run_us, last_show_us, last_present_us, present_start_us, last_frame_us;
+  int64_t present_done_us;     /* when the last frame was drawn, copied and queued */
+  int64_t pacer_budget_us;     /* main.c's pacer, for the status */
   double lat_measured_s;       /* smoothed sample -> mid-scanout time (latency = auto) */
   int64_t last_publish_us;
   int64_t last_flip_us;

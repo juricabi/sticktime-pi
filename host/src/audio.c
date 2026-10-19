@@ -739,29 +739,6 @@ static int alsa_write(audio_t *a, int frames) {
   return 0;
 }
 
-/* the CPUs online; not sysconf(_SC_NPROCESSORS_ONLN): musl counts only the calling thread's affinity
- * mask, so a frame loop pinned to one core would see a single CPU */
-static long cpus_online(void) {
-  char b[64];
-  int fd = open("/sys/devices/system/cpu/online", O_RDONLY | O_CLOEXEC);
-  ssize_t r = fd >= 0 ? read(fd, b, sizeof b - 1) : -1;
-  if (fd >= 0) close(fd);
-  long n = 0;
-  if (r > 0) {                                   /* "0-3", "0,2-3" */
-    b[r] = 0;
-    for (char *p = b; *p && *p != '\n';) {
-      char *e;
-      long lo = strtol(p, &e, 10), hi = lo;
-      if (e == p) break;
-      if (*e == '-') hi = strtol(e + 1, &e, 10);
-      n = hi + 1 > n ? hi + 1 : n;               /* the highest CPU number + 1 */
-      p = *e == ',' ? e + 1 : e;
-    }
-  }
-  if (n <= 0) n = sysconf(_SC_NPROCESSORS_CONF);
-  return n > 0 ? (n < CPU_SETSIZE ? n : CPU_SETSIZE) : 1;
-}
-
 static void thread_sched(audio_t *a) {
   struct sched_param sp;
   memset(&sp, 0, sizeof sp);
@@ -774,7 +751,7 @@ static void thread_sched(audio_t *a) {
   } else {
     pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);   /* never above the frame loop */
   }
-  long ncpu = cpus_online();
+  long ncpu = plat_cpus_online();
   cpu_set_t set;
   CPU_ZERO(&set);
   if (a->cpu >= 0) CPU_SET(a->cpu, &set);
@@ -790,7 +767,7 @@ static void pick_sched(audio_t *a) {
   a->rt_prio = 0;
   if (pthread_getschedparam(pthread_self(), &pol, &sp) == 0 && (pol == SCHED_FIFO || pol == SCHED_RR) && sp.sched_priority > 1)
     a->rt_prio = sp.sched_priority - 1;
-  long ncpu = cpus_online();
+  long ncpu = plat_cpus_online();
   int pinned = -1;
   cpu_set_t cur;
   CPU_ZERO(&cur);
@@ -905,7 +882,7 @@ static void caller_normal(sched_save_t *s) {
   if (s->aff_ok) {
     cpu_set_t all;
     CPU_ZERO(&all);
-    for (long i = 0, n = cpus_online(); i < n; i++) CPU_SET((int)i, &all);
+    for (long i = 0, n = plat_cpus_online(); i < n; i++) CPU_SET((int)i, &all);
     s->aff_ok = sched_setaffinity(0, sizeof all, &all) == 0;
   }
 }

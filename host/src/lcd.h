@@ -50,6 +50,12 @@ void lcd_free(lcd_t *l);
  * default). Returns 0, or -1 when out of memory (then drawing goes on at once). */
 int  lcd_set_pool(lcd_t *l, par_t *par);
 void lcd_flush(lcd_t *l);
+/* lcd_flush on the pool with every band's edges on multiples of align rows (each band at least 2 * align
+ * rows), and done(ctx, band, bands, row0, row1) on the thread that drew a band, as soon as it has: the
+ * band is then still in that core's cache. false (nothing done): no pool, keep, or the rows don't fit. */
+typedef void (*lcd_band_fn)(void *ctx, int band, int bands, int row0, int row1);
+bool lcd_flush_bands(lcd_t *l, int align, lcd_band_fn done, void *ctx);
+int  lcd_bands(const lcd_t *l);              /* how many bands lcd_flush draws */
 /* drawing = gpu (keep): the calls are recorded and kept, lcd_flush() leaves them: another drawer (the
  * GPU) draws lcd_calls() and then lcd_drop()s them; lcd_play() draws them here after all (on the
  * pool when there is one). lcd_set_pool(l, par) is lcd_set_mode(l, par, false). */

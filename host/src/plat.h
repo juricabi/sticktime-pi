@@ -52,6 +52,9 @@ typedef pthread_cond_t plat_cond;   /* waits use CLOCK_MONOTONIC */
 int  plat_thread_start(plat_thread *t, void *(*fn)(void *), void *arg, bool detached);
 int  plat_thread_join(plat_thread t);
 void plat_thread_lower_priority(void);     /* calling thread: below the frame loop, on any core */
+/* the CPUs online (the highest number + 1); not sysconf(_SC_NPROCESSORS_ONLN): musl counts only the
+ * calling thread's affinity mask, so a frame loop pinned to one core would see a single CPU */
+int  plat_cpus_online(void);
 void plat_mutex_init(plat_mutex *m);
 void plat_mutex_lock(plat_mutex *m);
 void plat_mutex_unlock(plat_mutex *m);

@@ -743,6 +743,49 @@ static void rec_call(lcd_t *l, const int *v) {
   }
 }
 
+/* lcd_flush_bands: every band once, on rows aligned as asked, covering the screen; the pixels as ever */
+static int seen[64][3];
+static int nseen;
+static void band_done(void *ctx, int band, int bands, int row0, int row1) {
+  (void)ctx;
+  int i = __atomic_fetch_add(&nseen, 1, __ATOMIC_ACQ_REL);
+  if (i < 64) { seen[i][0] = band; seen[i][1] = row0; seen[i][2] = row1; }
+  (void)bands;
+}
+
+static void test_flush_bands(par_t *pool, fonts_t *f, const font_class_t *cls) {
+  lcd_t a, b;
+  lcd_init(&a, W, H, f, cls);
+  lcd_init(&b, W, H, f, cls);
+  CHECK(!lcd_flush_bands(&b, 2, band_done, NULL));           /* no pool: nothing done */
+  CHECK_INT(lcd_set_pool(&b, pool), 0);
+  for (int k = 0; k < 300; k++) {
+    int x = rnd_in(-50, W + 50), y = rnd_in(-50, H + 50), w = rnd_in(0, 200), h = rnd_in(0, 200);
+    uint16_t c = (uint16_t)rnd();
+    int opa = rnd_in(0, 15);
+    lcd_fill_rect(&a, x, y, w, h, c, opa);
+    lcd_fill_rect(&b, x, y, w, h, c, opa);
+    lcd_line(&a, x, y, x + w * 2, y - h, 0xFF, c);
+    lcd_line(&b, x, y, x + w * 2, y - h, 0xFF, c);
+  }
+  int bands = lcd_bands(&b);
+  nseen = 0;
+  CHECK(lcd_flush_bands(&b, 2, band_done, NULL));
+  CHECK(!memcmp(a.fb, b.fb, sizeof *a.fb * W * H));
+  CHECK_INT(nseen, bands);
+  int covered = 0, once = 1;
+  for (int i = 0; i < nseen && i < 64; i++) {
+    CHECK(seen[i][1] % 2 == 0 && seen[i][2] % 2 == 0 && seen[i][2] - seen[i][1] >= 4);
+    covered += seen[i][2] - seen[i][1];
+    for (int j = 0; j < i; j++) once &= seen[j][0] != seen[i][0];
+  }
+  CHECK_INT(covered, H);
+  CHECK(once);
+  CHECK(!lcd_flush_bands(&b, 7, band_done, NULL));           /* 272 rows aren't a multiple of 7 */
+  lcd_free(&a);
+  lcd_free(&b);
+}
+
 static void test_recorded(void) {
   char err[256];
   fonts_t *f = fonts_open("host/fonts", err, sizeof err);
@@ -816,6 +859,7 @@ static void test_recorded(void) {
   lcd_flush(&b);
   CHECK(!memcmp(a.fb, b.fb, sizeof *a.fb * W * H));
   CHECK(count_color(&b, 0) < W * H);
+  test_flush_bands(pool, f, &cls);
   /* dropping the pool draws what was recorded; drawing goes on at once */
   lcd_fill_rect(&a, 10, 10, 50, 50, 0xF800, 0);
   lcd_fill_rect(&b, 10, 10, 50, 50, 0xF800, 0);

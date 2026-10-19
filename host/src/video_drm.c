@@ -103,6 +103,10 @@ typedef struct {
   uint32_t *field_scratch;         /* video_deflicker_lines' spread lines, 3 * rw for each pool thread */
   size_t field_scratch_n;
   uint32_t buf_gen;                /* buf[] replaced (apply_mode): the GPU's target id */
+  video_out_t vout;                /* video_out_begin: the frame's copy into buf[vout_buf] (of buf_gen vout_gen) */
+  int vout_buf;
+  uint32_t vout_gen;
+  bool vout_ready;                 /* ... made by the drawing: present() only flips it */
   dbuf_t buf[NBUF], black, steal;
   uint16_t *xlut, *ylut;
   int front, pending;
@@ -1364,7 +1368,8 @@ static int drm_present(video_t *v, const uint16_t *fb) {
   if (!d->base.down && d->pending < 0 && d->active) {
     for (int tries = 0; tries < 2; tries++) {
       int b = d->front == 0 ? 1 : 0;       /* the one not on screen */
-      copy_frame(d, b, fb);
+      if (!(d->vout_ready && d->vout_buf == b && d->vout_gen == d->buf_gen)) copy_frame(d, b, fb);
+      d->vout_ready = false;
       int e = flip(d, b);
       if (!e) return 0;
       /* EBUSY with nothing pending = the plane lost its fb; EINVAL = CRTC off or format/size
@@ -1421,6 +1426,21 @@ static int drm_present_gpu(video_t *v, const rcmd_t *c, int n, uint16_t *shot) {
   }
   return 0;
 }
+
+static const video_out_t *drm_out_begin(video_t *v) {
+  drm_t *d = (drm_t *)v;
+  d->vout_ready = false;
+  if (d->base.down || !d->active || d->pending >= 0 || !d->field_rows || d->cpu_scale) return NULL;
+  int b = d->front == 0 ? 1 : 0;
+  if (!d->buf[b].map) return NULL;
+  d->vout = (video_out_t){ .map = d->buf[b].map, .pitch = (int)d->buf[b].pitch, .bpp = d->bpp, .w = d->rw,
+                          .h = d->lay.view_h, .rows = d->field_rows, .pad = d->field_pad, .strength = d->flicker };
+  d->vout_buf = b;
+  d->vout_gen = d->buf_gen;
+  return &d->vout;
+}
+
+static void drm_out_done(video_t *v) { ((drm_t *)v)->vout_ready = true; }
 
 static int drm_wait(video_t *v, int timeout_ms, int64_t *t_us) {
   drm_t *d = (drm_t *)v;
@@ -1520,7 +1540,8 @@ static int drm_debug(video_t *v, const char *a) {
   return -1;
 }
 
-static const video_ops_t drm_ops = { drm_present, drm_wait, drm_pending, drm_fd, drm_close, drm_debug, drm_present_gpu };
+static const video_ops_t drm_ops = { drm_present, drm_wait, drm_pending, drm_fd, drm_close, drm_debug, drm_present_gpu,
+                                     drm_out_begin, drm_out_done };
 
 static void cfg_str(char *dst, size_t n, const char *src, const char *def) {
   plat_strlcpy(dst, src && *src ? src : def, n);

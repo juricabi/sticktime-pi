@@ -744,6 +744,12 @@ static void r_status(web_conn_t *c) {
   sb_json_num(&b, st->present_ms_avg, 2);
   sb_puts(&b, ",\"latency_ms\":");
   sb_json_num(&b, st->latency_ms, 1);
+  sb_puts(&b, ",\"wait_ms\":");
+  sb_json_num(&b, st->wait_ms, 2);
+  sb_puts(&b, ",\"margin_ms\":");
+  sb_json_num(&b, st->margin_ms, 2);
+  sb_puts(&b, ",\"budget_ms\":");
+  sb_json_num(&b, st->budget_ms, 2);
   sb_printf(&b, ",\"frames\":%lu,\"missed\":%lu", (unsigned long)st->frames, (unsigned long)st->missed);
   sb_printf(&b, ",\"game\":{\"state\":%d,\"state_name\":\"%s\",\"loaded\":%s,\"error\":", st->game_state,
             state_name(st->game_state), st->game_loaded ? "true" : "false");

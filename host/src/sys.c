@@ -44,6 +44,8 @@ void sys_realtime(int prio, int cpu, char *msg, size_t msglen) {
   }
   if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
     n += (size_t)snprintf(buf + n, sizeof buf - n, "mlockall: %s; ", strerror(errno));
+  int ncpu = plat_cpus_online();
+  if (cpu >= ncpu) cpu = ncpu - 1;              /* fewer CPUs than asked for (maxcpus=): the last one */
   if (cpu >= 0 && cpu < CPU_SETSIZE) {
     cpu_set_t set;
     CPU_ZERO(&set);
