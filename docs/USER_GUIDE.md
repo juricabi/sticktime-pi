@@ -99,7 +99,7 @@ The main menu shows the web address at the bottom for a minute (`http://192.168.
 Analog video smears strong colors, turns fine detail into rainbows, and the screen sits right in front of your
 eyes. What helps:
 
-- **Settings → Colors** (StickTime releases after 1.8.0): **Auto** is **Summer** on the AV output and
+- **Settings → Colors** (StickTime 1.9.0 and later): **Auto** is **Summer** on the AV output and
   **Classic** (the radio's bright colors) on HDMI. **Summer**, **Evening** and **Overcast** have a natural sky
   that fades into the haze at the horizon, duller grass, and calmer object and text colors: the next gate is
   the brightest thing in view. Overcast is the softest.
