@@ -23,6 +23,7 @@ import json
 import pathlib
 import re
 import sys
+import threading
 import time
 import unittest
 
@@ -1121,6 +1122,24 @@ class UiTest(unittest.TestCase):
         p.wait_for_selector("#vtxPill:has-text('Ready')", timeout=8000)
         p.wait_for_selector("#vtxTemp:has-text('33 °C')")
         self.assertIn("Tramp", p.inner_text("#vtxDev"))
+
+    def test_vtx_late_poll(self):
+        """a poll that left before a pick and comes back after it doesn't undo the pick on the page"""
+        self.pi.file_values.update({"vtx": "auto", "vtx_band": "R", "vtx_channel": "1", "vtx_power": "1"})
+        p = self.open("video")
+        p.wait_for_selector("#vtxChan input[value='1']:checked", timeout=8000)
+        hold = threading.Event()
+        self.pi.vtx_hold = hold
+        self.until(lambda: self.pi.vtx_held, what="a VTX poll on its way")
+        p.check("#vtxPit")
+        self.until(lambda: self.posts("/api/vtx") and self.posts("/api/vtx")[-1]["body"] == b"pit = on\n", what="pit posted")
+        p.wait_for_selector("#vtxPowNow:has-text('pit mode')")
+        n = len(self.gets("/api/vtx"))
+        hold.set()                                 # the late answer: pit off
+        self.until(lambda: len(self.gets("/api/vtx")) > n, what="the late answer")
+        p.wait_for_timeout(300)
+        self.assertTrue(p.is_checked("#vtxPit"), "a late poll unchecked Pit mode")
+        self.assertIn("pit mode", p.inner_text("#vtxPowNow"))
 
     def test_vtx_phone(self):
         self.pi.file_values.update({"vtx": "auto", "vtx_band": "F", "vtx_channel": "8", "vtx_power": "3"})

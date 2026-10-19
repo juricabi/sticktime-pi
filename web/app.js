@@ -1639,7 +1639,7 @@
   // ---------------------------------------------------------------- Video page: VTX control
   // GET /api/vtx while the page is open (the VTX thread's view: what it found, what the VTX is set to,
   // the table); the pickers post to /api/vtx at once (saved like settings, applied by the VTX thread)
-  const V = { data: null, t: 0, fast: 0, sig: '', posting: false };
+  const V = { data: null, t: 0, fast: 0, sig: '', posting: false, gen: 0 };
   const VTX_STATE = { off: ['info', '', 'Off'], no_port: ['warn', 'warn', 'UART off'], searching: ['info', '', 'Searching'],
     not_found: ['warn', 'warn', 'Not found'], syncing: ['info', '', 'Setting'], ready: ['ok', 'ok', 'Ready'],
     send_only: ['warn', 'warn', 'Send-only'], error: ['bad', 'bad', 'Problem'] };
@@ -1733,10 +1733,14 @@
   async function vtxLoop() {
     clearTimeout(V.t);
     if (page !== 'video') return;
+    const gen = ++V.gen;           // a newer call (the reload after a pick) takes over: this answer may be from before the pick
     if (!document.hidden) {
-      try { vtxRender(await api('GET', '/api/vtx', undefined, { quiet: true, timeout: 5000 })); } catch (e) { /* the offline banner says it */ }
+      try {
+        const v = await api('GET', '/api/vtx', undefined, { quiet: true, timeout: 5000 });
+        if (gen === V.gen) vtxRender(v);
+      } catch (e) { /* the offline banner says it */ }
     }
-    V.t = setTimeout(vtxLoop, Date.now() < V.fast ? 400 : V.data && V.data.state === 'ready' ? 2000 : 1000);
+    if (gen === V.gen) V.t = setTimeout(vtxLoop, Date.now() < V.fast ? 400 : V.data && V.data.state === 'ready' ? 2000 : 1000);
   }
   $('#vtxBand').addEventListener('change', () => {
     const v = V.data, letter = $('#vtxBand').value;
