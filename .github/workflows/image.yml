@@ -197,6 +197,13 @@ jobs:
           {
             echo "StickTime Pi $VER"
             echo
+            # what's new and how to update, when the tagged commit has docs/releases/<tag>.md
+            if [ -f "docs/releases/$TAG.md" ]; then
+              cat "docs/releases/$TAG.md"
+              echo
+              echo "## New install"
+              echo
+            fi
             echo "Flash \`sticktime-pi-$VER.img.xz\` with Raspberry Pi Imager (\"Use custom\", and **No** to OS customisation)"
             echo "or any other SD card writer, then edit \`sticktime.txt\` on the card's boot partition from a PC."
             echo

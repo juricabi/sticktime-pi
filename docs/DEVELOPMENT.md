@@ -128,7 +128,8 @@ test those on a Pi 4.
 - `.github/workflows/build.yml` (push, pull request): the host on x86_64 with unit tests and scenarios,
   the static aarch64 program, the Python tests on 3.11 and 3.13, the web UI in headless Chromium.
 - `.github/workflows/image.yml` (tags `v*`, manual): the app package for the updater, the SD image and its
-  QEMU boot test, and on tags a GitHub release with all of it.
+  QEMU boot test, and on tags a GitHub release with all of it. The release notes: `docs/releases/<tag>.md`
+  (what's new, how to update) when the tagged commit has it, then the install text and the image's info.
 
 ## Layout
 
