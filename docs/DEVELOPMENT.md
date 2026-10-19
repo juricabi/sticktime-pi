@@ -110,8 +110,8 @@ It boots the image under QEMU `-M raspi3b` (QEMU's Pi 4 machine has no USB or ne
 first boot with its one reboot, settings changes, ssh on and off. It checks the services, the web page,
 the settings file and takes screenshots (`build/boot/screen-*.png` must show the StickTime menu). QEMU
 is found via `--qemu`, `$QEMU` (Windows), or the PATH. When QEMU's emulated SD controller times out
-during the first boot (seen with a virus scanner reading the image file), the test starts over with
-`-icount shift=auto`.
+during the first boot (seen with a virus scanner reading the image file, and on a busy CI runner, where
+the kernel's MMC driver can oops and the boot stops), the test starts over with `-icount shift=auto`.
 
 QEMU can't test composite video, HVS scaling, the WiFi and Bluetooth chips, real audio or real latency:
 test those on a Pi 4.
