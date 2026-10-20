@@ -33,11 +33,11 @@ by about a degree, so the Pi still gets room-temperature air moving over it.
 | M3 x 14 | 4 | fan to the lid |
 | M3 x 6 | 4 | frame to its posts |
 | M2.5 x 6 | 4 | Pi (they cut their own thread in the standoffs) |
-| M2.5 x 6 or M2 x 6, or two small zip ties | 4 | VTX to the frame, see below |
+| M2 x 6 (M3 x 6 on the 30.5 frame), or two small zip ties | 4 | VTX to the frame, see below |
 | SMA bulkhead pigtail | 1 | optional: 6.5 mm hole in the bay's SD-card end wall, level with the VTX |
 
 PETG or PLA, 0.2 mm layers, 3 walls, no supports: nothing overhangs more than 45 degrees (the lid
-bosses' undersides, the chamfer, the flared foot). Outside: 92 x 110 x 42 mm (the foot 1.5 mm wider).
+bosses' undersides, the lid's chamfer). Outside: 92 x 110 x 42 mm.
 
 ## Assembly
 
@@ -69,20 +69,21 @@ The lid has an optional slot over the GPIO header for wires to the outside (`gpi
 ## VTX mounting
 
 The frame has four standoffs at the VTX's hole spacing, 5 mm tall, on a ring that leaves the middle of
-the board open. The holes are 2.2 mm on the 16, 20 and 25.5 frames (M2.5 screws cut their own thread;
-M2 screws fit loosely, use the nut trap or zip ties) and 2.7 mm on the 30.5 frame (M3). A VTX with odd
-holes, or none, is strapped to the frame's bars with two zip ties. There are 10 mm between the board
-and the fan for a heatsink, and 10 mm of air under the board.
+the board open. On the 16, 20 and 25.5 frames the standoffs are thin (4.4 mm, so the parts next to a
+small board's holes stay clear) with 1.8 mm holes for M2 screws, which cut their own thread; the 30.5
+frame has 6 mm standoffs with 2.7 mm holes for M3. A VTX with odd holes, or none, is strapped to the
+frame's bars with two zip ties. There are 10 mm between the board and the fan for a heatsink, and
+10 mm of air under the board.
 
 Everything about the frame is a parameter in `sticktime_case.scad`:
 
 | Parameter | What it is | Default |
 |---|---|---|
 | `vtx_pattern` | hole spacing | 16 |
-| `vtx_hole_d` | hole in the standoffs: 2.2 (M2.5 self-tapping), 1.7 (M2), 2.7 (M3), or a clearance size with a nut | 2.2 |
+| `vtx_hole_d` | hole in the standoffs: 1.8 (M2 self-tapping), 2.2 (M2.5), 2.7 (M3), or a clearance size with a nut | 1.8 |
 | `vtx_nut_af` | nut trap in the top of each standoff, across flats (M2 4.0, M2.5 5.0, M3 5.5); 0 = none | 0 |
 | `vtx_standoff_h` | the board's height above the frame | 5 |
-| `vtx_standoff_d` | the standoffs' diameter | 5.5 |
+| `vtx_standoff_d` | the standoffs' diameter (M2.5 wants 5, M3 wants 6) | 4.4 |
 
 To render a frame for your VTX (OpenSCAD 2021.01 or newer; the name uses `host/fonts/Roboto-Bold.ttf`
 from this repo, so render from a checkout):

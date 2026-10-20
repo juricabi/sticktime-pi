@@ -19,7 +19,7 @@
 //   exploded, step1, step2, step3, step4: the README's pictures
 //
 // Everything prints without supports: the raised name on a vertical wall, the bosses' 45 degree
-// undersides, the chamfer and the flared foot. Units are mm. x runs along the Pi's long edge from the
+// undersides, the lid's chamfer. Units are mm. x runs along the Pi's long edge from the
 // SD card end, y across the board from the HDMI side, z up from the bottom of the case. The Pi's board
 // corner is at (0, 0); its ports and holes are placed from the official mechanical drawing.
 
@@ -40,7 +40,7 @@ clr = 1.5;              // Pi board edge to the inner walls
 inner_h = 37;           // floor top to lid underside: 10 mm between the VTX board and the fan for a heatsink
 bay_w = 46;             // VTX bay along the GPIO edge, inner width: the fan's pad fits over it
 corner_r = 5;
-flare = 1.5;            // the base's foot widens by this much at the bottom
+flare = 0;              // the base's foot widens by this much at the bottom; 0 = straight walls
 chamfer = 1.5;          // on the lid's top edge
 insert_d = 4.4;         // hole for an M3 x D5 x L4 heat-set insert (4.0 if yours want a tighter press)
 insert_h = 6;
@@ -61,11 +61,11 @@ pad = 42; pad_t = 4;    // the thick square under the lid that the fan screws in
 
 /* [VTX frame] */
 vtx_pattern = 16;       // hole spacing: 16, 20, 25.5 or 30.5
-vtx_hole_d = 2.2;       // 2.2: M2.5 cuts its own thread; 1.7: M2; 2.7 or 3.4: clearance, with a nut below
+vtx_hole_d = 1.8;       // 1.8: M2 cuts its own thread; 2.2: M2.5; 2.7: M3; or a clearance size, with a nut below
 vtx_nut_af = 0;         // nut trap in the top of each standoff, across flats (M2 4.0, M2.5 5.0, M3 5.5); 0 = none
 vtx_nut_t = 2;
 vtx_standoff_h = 5;     // the VTX board sits this high above the frame; what is under the board hangs free
-vtx_standoff_d = 5.5;
+vtx_standoff_d = 4.4;   // thin, so the parts next to a small board's holes stay clear; 6 for M3 on a 30.5 board
 vtx_board = [26, 26];   // the VTX board's outline, only drawn in the assembly
 frame_size = [48, 36]; frame_t = 2.5; frame_bar = 4;
 frame_post_h = 5;       // frame underside above the floor
@@ -105,9 +105,9 @@ module plate(h, steps = 6) {
         linear_extrude(chamfer / steps + 0.01) offset(r = -(i + 1) * chamfer / steps) outline2d();
 }
 
-// the base's outer shape: the foot flares out at 45 degrees, then the walls go straight up
+// the base's outer shape: straight walls, or a foot that flares out at 45 degrees first
 module shell(h, steps = 6) {
-    for (i = [0 : steps - 1]) translate([0, 0, i * flare / steps])
+    if (flare > 0) for (i = [0 : steps - 1]) translate([0, 0, i * flare / steps])
         linear_extrude(flare / steps + 0.01) offset(r = flare - i * flare / steps) outline2d();
     translate([0, 0, flare]) linear_extrude(h - flare) outline2d();
 }
