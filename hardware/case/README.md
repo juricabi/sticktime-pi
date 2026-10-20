@@ -26,14 +26,14 @@ by about a degree, so the Pi still gets room-temperature air moving over it.
 |---|---|---|
 | `stl/base.stl` | 1 | print as is |
 | `stl/lid.stl` | 1 | print as is (the STL is already upside down) |
-| `stl/frame_16.stl`, `frame_20.stl`, `frame_25.stl` or `frame_30.stl` | 1 | the frame for your VTX's hole spacing (16x16, 20x20, 25.5x25.5, 30.5x30.5) |
+| `stl/frame_<spacing>_<screw>.stl` | 1 | the frame for your VTX: spacing 16, 20, 25.5 or 30.5, screw M2, M2.5 or M3 (12 files) |
 | 40x40x10 mm fan, 5 V, 2 wires | 1 | to GPIO pins 4 (5 V) and 6 (GND) |
 | Heat-set inserts M3 x D5 x L4 ("Voron" inserts) | 12 | 4 lid, 4 fan, 4 frame; hole 4.4 mm (`insert_d`) |
 | M3 x 8, button head or countersunk | 4 | lid; the heads sit flush in the lid |
 | M3 x 14 | 4 | fan to the lid |
 | M3 x 6 | 4 | frame to its posts |
 | M2.5 x 6 | 4 | Pi (they cut their own thread in the standoffs) |
-| M2 x 6 (M3 x 6 on the 30.5 frame), or two small zip ties | 4 | VTX to the frame, see below |
+| M2, M2.5 or M3 x 6, to match the frame, or two small zip ties | 4 | VTX to the frame, see below |
 | SMA bulkhead pigtail | 1 | optional: 6.5 mm hole in the bay's SD-card end wall, level with the VTX |
 
 PETG or PLA, 0.2 mm layers, 3 walls, no supports: nothing overhangs more than 45 degrees (the lid
@@ -69,11 +69,18 @@ The lid has an optional slot over the GPIO header for wires to the outside (`gpi
 ## VTX mounting
 
 The frame has four standoffs at the VTX's hole spacing, 5 mm tall, on a ring that leaves the middle of
-the board open. On the 16, 20 and 25.5 frames the standoffs are thin (4.4 mm, so the parts next to a
-small board's holes stay clear) with 1.8 mm holes for M2 screws, which cut their own thread; the 30.5
-frame has 6 mm standoffs with 2.7 mm holes for M3. A VTX with odd holes, or none, is strapped to the
-frame's bars with two zip ties. There are 10 mm between the board and the fan for a heatsink, and
-10 mm of air under the board.
+the board open. The screws cut their own thread in the standoffs. Measure your board's holes and pick
+the frame with the screw that fits through them; the standoffs are as thin as the screw allows, so the
+parts next to a small board's holes stay clear:
+
+| Screw | Hole in the standoff | Standoff | Boards |
+|---|---|---|---|
+| M2 | 1.8 mm | 4.4 mm | 2.0 to 2.5 mm holes: most 16x16, 20x20 and 25.5x25.5 VTXes |
+| M2.5 | 2.2 mm | 5.0 mm | 2.5 to 3 mm holes |
+| M3 | 2.7 mm | 6.0 mm | 3 mm holes: most 30.5x30.5 VTXes, 20x20 boards with their rubber grommets taken out |
+
+A VTX with odd holes, or none, is strapped to the frame's bars with two zip ties. There are 10 mm
+between the board and the fan for a heatsink, and 10 mm of air under the board.
 
 Everything about the frame is a parameter in `sticktime_case.scad`:
 
