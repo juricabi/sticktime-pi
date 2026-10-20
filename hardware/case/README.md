@@ -43,7 +43,9 @@ by about a degree, so the Pi still gets room-temperature air moving over it.
 | SMA bulkhead pigtail | 1 | only with `sma = true`, which adds a 6.5 mm hole in the bay's SD-card end wall; the VTX's own whip goes out through the notch otherwise |
 
 PETG or PLA, 0.2 mm layers, 3 walls, no supports: nothing overhangs more than 45 degrees (the lid
-bosses' undersides, the lid's chamfer). Outside: 92 x 110 x 42 mm.
+bosses' undersides, the lid's chamfer). Outside: 92 x 110 x 42 mm. Every part is one colour, so a
+single-colour printer prints each in its own filament; the pictures show StickTime's colours, a navy
+base (`#1b2130`, the game's panels) with an orange lid and frame (`#ff8a00`, its accent).
 
 ## Assembly
 
@@ -113,6 +115,6 @@ with a comment each. `part="assembly"` shows everything in place with a Pi, a fa
 
 The pictures above are rendered by `render.py` in Blender 4.1 or newer with Cycles: `blender -b -P
 render.py`, with `openscad` on the PATH (or in `OPENSCAD`) to export the pieces. After `--`, shot names
-render only those (`-- case open`), `--color "#c8102e"` shows another filament, `--acrylic` clear
-acrylic, `--out DIR` writes somewhere other than `images/`, `--preview` renders small and fast. The
-assembly steps are OpenSCAD previews.
+render only those (`-- case open`), `--color "#c8102e"` shows another filament (or `"#base,#lid,#frame"`
+one per part), `--acrylic` clear acrylic, `--out DIR` writes somewhere other than `images/`, `--preview`
+renders small and fast.

@@ -98,11 +98,10 @@ module rrect(x0, y0, x1, y1, r) translate([x0 + r, y0 + r]) offset(r = r) square
 module outline2d() rrect(ox0, oy0, ox1, oy1, corner_r);
 module cavity2d() rrect(ix0, iy0, ix1, iy1, corner_r - wall);
 
-// the outline extruded h high, its top edge chamfered in small steps (45 degrees, prints without supports)
-module plate(h, steps = 6) {
+// the outline extruded h high, its top edge chamfered at 45 degrees (prints without supports)
+module plate(h) hull() {
     linear_extrude(h - chamfer) outline2d();
-    for (i = [0 : steps - 1]) translate([0, 0, h - chamfer + i * chamfer / steps])
-        linear_extrude(chamfer / steps + 0.01) offset(r = -(i + 1) * chamfer / steps) outline2d();
+    translate([0, 0, h - 0.01]) linear_extrude(0.01) offset(r = -chamfer) outline2d();
 }
 
 // the base's outer shape: straight walls, or a foot that flares out at 45 degrees first
@@ -276,7 +275,8 @@ module screw(d, l) color("silver") { translate([0, 0, -l]) cylinder(d = d, h = l
 // the whole thing; ex lifts the inner parts apart, ex_lid the lid and the fan, with its screws above it
 module scene(ex = 0, ex_lid = 0, pi = true, fr = true, top = true, alpha = 1, screws = true) {
     color("lightgray") base();
-    if (pi) translate([0, 0, ex * 0.5]) pi4();
+    // the Pi's ports sit in the walls' openings: lifted, it has to clear the walls before it is free
+    if (pi) translate([0, 0, ex > 0 ? max(ex * 0.5, z_top - z_pcb + 4) : 0]) pi4();
     if (fr) {
         translate([0, 0, ex]) color("orange") frame();
         translate([0, 0, ex * 1.5]) vtx();
@@ -300,7 +300,7 @@ else if (part == "pi_board") pi4_board();
 else if (part == "pi_ports") pi4_ports();
 else if (part == "pi_black") pi4_black();
 else if (part == "screws") for (b = bosses) translate([b[0], b[1], z_top + lid_t - head_h]) screw(3, 8);
-else if (part == "exploded") scene(explode, explode * 2.2);
+else if (part == "exploded") scene(explode, explode * 3.2);
 else if (part == "step1") scene(pi = true, fr = false, top = false);
 else if (part == "step2") scene(pi = true, fr = true, top = false);
 else if (part == "step3") {   // the lid on the bench, upside down, the fan going in from above

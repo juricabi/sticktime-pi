@@ -3,14 +3,16 @@
     blender -b -P render.py                      # every shot
     blender -b -P render.py -- case open         # only these
     blender -b -P render.py -- --color "#c8102e" # another filament colour (sRGB hex)
+    blender -b -P render.py -- --color "#2e3136,#2e3136,#ff8a00"   # base, lid, frame each their own
     blender -b -P render.py -- --preview         # small and quick, for checking
     blender -b -P render.py -- --acrylic --out build/renders/acrylic   # clear acrylic, elsewhere
 
 The printed parts come from STL files in build/parts/ (base, lid_place, frame_place, pi_board),
 exported with OpenSCAD; this script does that itself when `openscad` is on the PATH (or in the
 OPENSCAD environment variable) and one is missing. The Pi 4, the VTX, the fan, the screws, the
-antenna and the cables are built here from their dimensions. All printed parts are one colour, as a
-single-colour printer makes them. The helpers take mm; the scene is in metres.
+antenna and the cables are built here from their dimensions. Each printed part is one colour, as a
+single-colour printer makes it; by default StickTime's: a navy base, an orange lid and frame. The helpers
+take mm; the scene is in metres.
 """
 import math
 import os
@@ -33,7 +35,8 @@ S = 0.001
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 PREVIEW = "--preview" in ARGS
 ACRYLIC = "--acrylic" in ARGS
-COLOR = ARGS[ARGS.index("--color") + 1] if "--color" in ARGS else ("#f4f8fa" if ACRYLIC else "#2e3136")
+# StickTime's colours (the game's panel navy, its orange accent): the base navy, the lid and the frame orange
+COLOR = ARGS[ARGS.index("--color") + 1] if "--color" in ARGS else ("#f4f8fa" if ACRYLIC else "#1b2130,#ff8a00,#ff8a00")
 if "--out" in ARGS:
     OUT = os.path.abspath(ARGS[ARGS.index("--out") + 1])
 WANTED = [a for a in ARGS if not a.startswith("--") and a != COLOR and os.path.abspath(a) != OUT]
@@ -147,6 +150,7 @@ def print_mat(color, layer=0.2, grain=0.35):
     m = mat("print", color, rough=0.48, bevel=0.3, sheen=0.2, spec=0.4)
     nt = m.node_tree
     b = nt.nodes["Principled BSDF"]
+    b.inputs["Sheen Tint"].default_value = (*color, 1)   # a white sheen would wash out a coloured filament
     bevel = [n for n in nt.nodes if n.bl_idname == "ShaderNodeBevel"][0]
     tc = nt.nodes.new("ShaderNodeTexCoord")
     node = nt.nodes.new
@@ -269,7 +273,12 @@ def acrylic_mat(color):
 
 
 def materials():
-    M["print"] = acrylic_mat(srgb(COLOR)) if ACRYLIC else print_mat(srgb(COLOR))
+    # one colour, or one per part (each part is printed on its own, so a single-colour printer can still
+    # print them in different filaments): base, lid, frame
+    cols = [srgb(c) for c in COLOR.split(",")]
+    cols += [cols[-1]] * (3 - len(cols))
+    for part, c in zip(("print", "print_lid", "print_frame"), cols):
+        M[part] = acrylic_mat(c) if ACRYLIC else print_mat(c)
     M["pcb"] = mat("pcb", (0.012, 0.11, 0.035), rough=0.45, coat=0.6, bevel=0.1)
     M["vtx_pcb"] = mat("vtx_pcb", (0.008, 0.008, 0.01), rough=0.4, coat=0.7, bevel=0.1)
     M["silk"] = mat("silk", (0.85, 0.85, 0.82), rough=0.7)
@@ -500,8 +509,8 @@ def load(name, path, m, grp):
 # ---- the parts ----
 def build_case():
     load("base", os.path.join(PARTS, "base.stl"), M["print"], "base")
-    load("lid", os.path.join(PARTS, "lid_place.stl"), M["print"], "lid")
-    load("frame", os.path.join(PARTS, "frame_place.stl"), M["print"], "frame")
+    load("lid", os.path.join(PARTS, "lid_place.stl"), M["print_lid"], "lid")
+    load("frame", os.path.join(PARTS, "frame_place.stl"), M["print_frame"], "frame")
     for i, (x, y) in enumerate(BOSSES):
         screw(f"lid_screw{i}", 3, 8, (x, y, Z_TOP + LID_T - 1.65), "lid_screws")
     for i, (dx, dy) in enumerate(((-21, -15), (21, -15), (-21, 15), (21, 15))):
@@ -640,7 +649,7 @@ def blade(name, r0, r1, a0, span, rise, grp):
 
 
 def build_fan():
-    g = "lid"
+    g = "fan"
     cx, cy = BAY
     zb = Z_FAN
     bpy.ops.mesh.primitive_cube_add(size=1, location=(cx * S, cy * S, (zb + 5) * S))
@@ -777,7 +786,7 @@ def build_grid():
     for r, pattern in enumerate(PATTERNS):
         for c, screw_size in enumerate(SCREWS):
             o = load(f"frame_{pattern}_{screw_size}", os.path.join(HERE, "stl", f"frame_{pattern}_{screw_size}.stl"),
-                     M["print"], g)
+                     M["print_frame"], g)
             o.location = (CENTER.x + (c - 1) * 0.062, CENTER.y + (r - 1.5) * 0.05, 0)
         text(f"row{r}", f"{pattern}×{pattern}", 6, (CX - 98, 51 + (r - 1.5) * 50 - 3, 0.02), M["ink"], g, align="RIGHT")
     for c, screw_size in enumerate(SCREWS):
@@ -879,7 +888,7 @@ def setup():
     scene.render.image_settings.file_format = "PNG"
     try:
         scene.view_settings.view_transform = "AgX"
-        scene.view_settings.look = "AgX - Medium High Contrast"
+        scene.view_settings.look = "AgX - Punchy"   # keeps a bright filament saturated
     except Exception:
         pass
     world = bpy.data.worlds.new("studio")
@@ -952,7 +961,7 @@ def main():
     shot(scene, cam, stage, "front", (0.0, 0.34, 0.07), target=CENTER + Vector((0, 0, -0.003)), lens=65)
     shot(scene, cam, stage, "back", (-0.22, -0.205, 0.115), target=CENTER + Vector((-0.004, 0, -0.003)), lens=60)
 
-    pose({"lid": flip}, hide=("lid_screws",))
+    pose({"lid": flip, "fan": flip}, hide=("lid_screws",))
     build_fan_wires("beside")
     # from high over the HDMI side: the Pi, the header's wires, the VTX on its frame, the AV cable, the
     # antenna's pigtail, and the fan on the lid beside the case with its leads, all in view
@@ -960,10 +969,22 @@ def main():
     shot(scene, cam, stage, "detail", (0.045, 0.07, 0.115), target=vtx_c + Vector((-0.004, -0.004, 0)), lens=55,
          fstop=22)
 
-    pose({"pi": lift(12), "frame": lift(30), "vtx": lift(48), "lid": lift(95), "lid_screws": lift(122)},
-         hide=("cables", "fan_wires"))
+    # the Pi's ports sit in the walls' openings, so it has to clear the walls (39.4 mm) before it is free
+    pose({"pi": lift(44), "frame": lift(30), "vtx": lift(50), "fan": lift(84), "lid": lift(104),
+          "lid_screws": lift(132)}, hide=("cables", "fan_wires"))
     build_fan_wires(None)
     shot(scene, cam, stage, "exploded", (0.27, 0.30, 0.25), target=CENTER + Vector((0, 0, 0.05)), lens=50)
+
+    # the assembly steps
+    inside = Vector((CX * S, 60 * S, 8 * S))
+    pose(only=("base", "pi"))
+    shot(scene, cam, stage, "step1", (-0.03, -0.17, 0.24), target=inside, lens=50)
+    pose(only=("base", "pi", "frame", "vtx"))
+    shot(scene, cam, stage, "step2", (-0.03, -0.17, 0.24), target=inside, lens=50)
+    pose({"lid": flip, "fan": lift(30) @ flip}, only=("lid", "fan"))   # the lid on the bench, the fan going on
+    shot(scene, cam, stage, "step3", (0.12, -0.17, 0.17), target=Vector(((2 * XP - CX) * S, 51 * S, 0.012)), lens=50)
+    pose({"lid": lift(45), "fan": lift(45), "lid_screws": lift(70)}, hide=("fan_wires",))
+    shot(scene, cam, stage, "step4", (0.24, 0.27, 0.22), target=CENTER + Vector((0, 0, 0.03)), lens=50)
 
     pose(only=("grid",))
     shot(scene, cam, stage, "frames", (0.0, -0.28, 0.27), target=Vector((CENTER.x - 0.01, CENTER.y - 0.022, 0)),
