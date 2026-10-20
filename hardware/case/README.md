@@ -7,7 +7,9 @@ antenna come out.
 
 ![The case: grill over the VTX, four screws, the name on the front, vents on the Pi's walls](images/case.png)
 
-![Lid off: the Pi, the VTX on its frame under the fan, the wires from the GPIO header](images/open.png)
+![Lid off and laid beside the case: the Pi, the wires from the GPIO header, the VTX on its frame, the fan on the lid](images/open.png)
+
+![Close-up: the VTX on its open frame, its pads soldered to the jumpers and the AV cable's cores](images/detail.png)
 
 ![Exploded: base, Pi, VTX frame, VTX, fan, lid, screws](images/exploded.png)
 
@@ -21,6 +23,8 @@ and out through the slots in the Pi's three walls above the ports. The VTX's wat
 by about a degree, so the Pi still gets room-temperature air moving over it.
 
 ![The back: the Pi's ports, the vent slots above them, the AV opening up to the rim](images/back.png)
+
+![The front](images/front.png)
 
 ## Parts
 
@@ -107,6 +111,7 @@ The other parameters (`inner_h`, `bay_w`, `insert_d`, the logo, the openings) ar
 with a comment each. `part="assembly"` shows everything in place with a Pi, a fan and a VTX drawn in;
 `exploded` pulls it apart.
 
-The pictures above are rendered by `render.py` in Blender (`blender -b -P render.py`, with `openscad`
-on the PATH to export the pieces; `-- case open` after it renders only those); the assembly steps are
-OpenSCAD previews.
+The pictures above are rendered by `render.py` in Blender 4.1 or newer with Cycles: `blender -b -P
+render.py`, with `openscad` on the PATH (or in `OPENSCAD`) to export the pieces. After `--`, shot names
+render only those (`-- case open`), `--color "#c8102e"` shows another filament, `--preview` renders small
+and fast. The assembly steps are OpenSCAD previews.
