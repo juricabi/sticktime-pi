@@ -52,8 +52,8 @@ font = "Roboto:style=Bold";
 logo = "StickTime";     // raised on the bay's outer wall; "" for none
 logo_size = 12; logo_h = 1;
 gpio_slot = false;      // slot in the lid over the GPIO header, for wires to the outside
-sma = true;             // 6.5 mm hole for an SMA bulkhead in the bay's SD-card end wall
-ant_notch = true;       // notch at the top of the bay's USB-end wall, for a whip antenna or a cable
+ant_notch = true;       // notch at the top of the bay's USB-end wall: the VTX's whip antenna goes out there
+sma = false;            // 6.5 mm hole for an SMA bulkhead in the bay's SD-card end wall instead
 
 /* [Fan] */
 fan = 40; fan_t = 10; fan_pitch = 32; fan_open = 38;
@@ -237,22 +237,23 @@ module frame() {
 }
 
 // ---- things that are not printed, drawn in the assembly ----
-module pi4() {
-    color("darkgreen") translate([0, 0, z_pcb]) linear_extrude(pi_pcb) difference() {
-        rrect(0, 0, pi_x, pi_y, pi_r);
-        for (h = pi_holes) translate(h) circle(d = 2.7);
-    }
-    color("silver") translate([0, 0, z_ptop]) {
-        translate([11.2 - 4.5, -1.3, 0]) cube([9, 8.8, 3.2]);                      // USB-C
-        for (x = [26, 39.5]) translate([x - 3.5, -0.8, 0]) cube([7, 7.5, 3]);      // micro HDMI
-        translate([54, 12, 3]) rotate([90, 0, 0]) cylinder(d = 6, h = 14);         // AV jack
-        for (y = [9, 27]) translate([72, y - 6.6, 0]) cube([15.5, 13.2, 16]);      // USB 2, USB 3
-        translate([66, 45.75 - 8, 0]) cube([21.5, 16, 13.5]);                      // Ethernet
-        translate([22, 24, 0]) cube([15, 15, 2.4]);                                // SoC
-    }
-    color("black") translate([7.1, 50, z_ptop]) cube([50.8, 5.08, 8.5]);            // GPIO header
-    color("black") translate([-2.5, 24, z_pcb - 2.5]) cube([15, 11, 1]);            // SD card
+module pi4_board() color("darkgreen") translate([0, 0, z_pcb]) linear_extrude(pi_pcb) difference() {
+    rrect(0, 0, pi_x, pi_y, pi_r);
+    for (h = pi_holes) translate(h) circle(d = 2.7);
 }
+module pi4_ports() color("silver") translate([0, 0, z_ptop]) {
+    translate([11.2 - 4.5, -1.3, 0]) cube([9, 8.8, 3.2]);                      // USB-C
+    for (x = [26, 39.5]) translate([x - 3.5, -0.8, 0]) cube([7, 7.5, 3]);      // micro HDMI
+    translate([54, 12, 3]) rotate([90, 0, 0]) cylinder(d = 6, h = 14);         // AV jack
+    for (y = [9, 27]) translate([72, y - 6.6, 0]) cube([15.5, 13.2, 16]);      // USB 2, USB 3
+    translate([66, 45.75 - 8, 0]) cube([21.5, 16, 13.5]);                      // Ethernet
+    translate([22, 24, 0]) cube([15, 15, 2.4]);                                // SoC
+}
+module pi4_black() color("black") {
+    translate([7.1, 50, z_ptop]) cube([50.8, 5.08, 8.5]);                      // GPIO header
+    translate([-2.5, 24, z_pcb - 2.5]) cube([15, 11, 1]);                      // SD card
+}
+module pi4() { pi4_board(); pi4_ports(); pi4_black(); }
 
 module fan40() color("dimgray") translate([fan_c[0], fan_c[1], z_top - pad_t - fan_t]) difference() {
     linear_extrude(fan_t) offset(r = 4) offset(r = -4) square(fan, center = true);
@@ -290,6 +291,15 @@ module scene(ex = 0, ex_lid = 0, pi = true, fr = true, top = true, alpha = 1, sc
 if (part == "base") base();
 else if (part == "lid") translate([0, 0, z_top + lid_t]) mirror([0, 0, 1]) lid();
 else if (part == "frame") translate([-bay_c[0], -bay_c[1], -z_frame]) frame();
+// the pieces in place, one by one, for rendering elsewhere
+else if (part == "lid_place") lid();
+else if (part == "frame_place") frame();
+else if (part == "fan") fan40();
+else if (part == "vtx") vtx();
+else if (part == "pi_board") pi4_board();
+else if (part == "pi_ports") pi4_ports();
+else if (part == "pi_black") pi4_black();
+else if (part == "screws") for (b = bosses) translate([b[0], b[1], z_top + lid_t - head_h]) screw(3, 8);
 else if (part == "exploded") scene(explode, explode * 2.2);
 else if (part == "step1") scene(pi = true, fr = false, top = false);
 else if (part == "step2") scene(pi = true, fr = true, top = false);

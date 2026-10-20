@@ -7,6 +7,8 @@ antenna come out.
 
 ![The case: grill over the VTX, four screws, the name on the front, vents on the Pi's walls](images/case.png)
 
+![Lid off: the Pi, the VTX on its frame under the fan, the wires from the GPIO header](images/open.png)
+
 ![Exploded: base, Pi, VTX frame, VTX, fan, lid, screws](images/exploded.png)
 
 ## How it cools
@@ -34,7 +36,7 @@ by about a degree, so the Pi still gets room-temperature air moving over it.
 | M3 x 6 | 4 | frame to its posts |
 | M2.5 x 6 | 4 | Pi (they cut their own thread in the standoffs) |
 | M2, M2.5 or M3 x 6, to match the frame, or two small zip ties | 4 | VTX to the frame, see below |
-| SMA bulkhead pigtail | 1 | optional: 6.5 mm hole in the bay's SD-card end wall, level with the VTX |
+| SMA bulkhead pigtail | 1 | only with `sma = true`, which adds a 6.5 mm hole in the bay's SD-card end wall; the VTX's own whip goes out through the notch otherwise |
 
 PETG or PLA, 0.2 mm layers, 3 walls, no supports: nothing overhangs more than 45 degrees (the lid
 bosses' undersides, the lid's chamfer). Outside: 92 x 110 x 42 mm.
@@ -52,8 +54,8 @@ bosses' undersides, the lid's chamfer). Outside: 92 x 110 x 42 mm.
 
    ![The Pi on its standoffs](images/step1.png)
 4. **VTX onto the frame** (screws into the standoffs, or zip ties round the bars), **frame onto its
-   posts**, 4x M3 x 6. Antenna: an SMA bulkhead in the hole in the bay's end wall, or a whip out through
-   the notch at the top of the other end wall.
+   posts**, 4x M3 x 6. The VTX's whip antenna goes out through the notch at the top of the USB-end wall
+   (with `sma = true` the case has a hole for an SMA bulkhead in the other end wall instead).
 
    ![The frame with the VTX in the bay](images/step2.png)
 5. **Wires.** The AV cable's plug goes into the jack from outside and the cable comes back in through
@@ -82,6 +84,8 @@ parts next to a small board's holes stay clear:
 A VTX with odd holes, or none, is strapped to the frame's bars with two zip ties. There are 10 mm
 between the board and the fan for a heatsink, and 10 mm of air under the board.
 
+![The twelve frames: a row per spacing, a column per screw](images/frames.png)
+
 Everything about the frame is a parameter in `sticktime_case.scad`:
 
 | Parameter | What it is | Default |
@@ -102,3 +106,7 @@ openscad -D 'part="frame"' -D vtx_pattern=20 -o frame.stl sticktime_case.scad
 The other parameters (`inner_h`, `bay_w`, `insert_d`, the logo, the openings) are at the top of the file
 with a comment each. `part="assembly"` shows everything in place with a Pi, a fan and a VTX drawn in;
 `exploded` pulls it apart.
+
+The pictures above are rendered by `render.py` in Blender (`blender -b -P render.py`, with `openscad`
+on the PATH to export the pieces; `-- case open` after it renders only those); the assembly steps are
+OpenSCAD previews.

@@ -11,3 +11,4 @@ node_modules/
 *.pyc
 # your own notes, never published
 /.local/
+/hardware/case/build/
