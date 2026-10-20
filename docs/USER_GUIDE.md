@@ -117,7 +117,8 @@ eyes. What helps:
   core, in about half the time, which high detail on interlaced needs. **GPU** draws it on the graphics chip:
   the cores stay free, but on a Pi 4 it is slower than Multi-core at high
   detail, and edges may differ by a pixel. **One core** is how 0.2.5 drew. High detail on interlaced keeps a
-  Pi 4 busy and warm: a heatsink or a small fan keeps it below the 80 °C where it slows itself down.
+  Pi 4 busy and warm: a heatsink or a small fan keeps it below the 80 °C where it slows itself down (the
+  [printed case](../hardware/case/README.md) puts a 40 mm fan over the SoC and cools the VTX with the same air).
 - Staying with interlaced? The flicker filter (`av_flicker`, web page → Video → Flicker filter) blends each line
   with the lines above and below it, so a thin line or text lands in both fields and stops flickering: **Full**
   (the default) stops it completely at a little vertical softness, as a GameCube does in 480i;

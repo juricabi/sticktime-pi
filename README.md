@@ -63,6 +63,7 @@ updates, troubleshooting).
 - For analog goggles: a 5.8 GHz VTX with its own power, and a 3.5 mm TRRS plug or cable. For goggles
   with an HDMI input, or a screen: a micro-HDMI cable (set `video = hdmi`).
 - Your radio (see Features), or a gamepad.
+- Optional: the 3D-printed [case](hardware/case/README.md) that holds the Pi, the VTX and a 40 mm fan.
 
 **Raspberry Pi models:** StickTime Pi runs on Raspberry Pis that run 64-bit Raspberry Pi OS (so not on a
 Pi 1, Zero, Zero W or early Pi 2). It is developed and tested on a Pi 4, which has the AV jack for the VTX.
