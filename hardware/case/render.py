@@ -885,7 +885,8 @@ def setup():
     scene.render.resolution_x = 2000
     scene.render.resolution_y = 1400
     scene.render.resolution_percentage = 40 if PREVIEW else 100
-    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.file_format = "JPEG"   # a tenth of a PNG's size, and the same to the eye
+    scene.render.image_settings.quality = 90
     try:
         scene.view_settings.view_transform = "AgX"
         scene.view_settings.look = "AgX - Punchy"   # keeps a bright filament saturated
@@ -930,7 +931,7 @@ def shot(scene, cam, stage, name, offset, target=None, lens=50, fstop=None):
         cam.data.dof.aperture_fstop = fstop
         cam.data.dof.focus_distance = (target - cam.location).length
     stage.rotation_euler = (0, 0, math.atan2(offset[1], offset[0]) + math.pi / 2)
-    scene.render.filepath = os.path.join(OUT, name + ".png")
+    scene.render.filepath = os.path.join(OUT, name + ".jpg")
     bpy.ops.render.render(write_still=True)
     print("rendered", scene.render.filepath)
 

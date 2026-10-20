@@ -5,13 +5,13 @@ the hot part, so it gets the fan head-on; the Pi gets the same air on its way ou
 SmartAudio wire and the fan's wires stay inside, next to the GPIO header; only the AV plug and the
 antenna come out.
 
-![The case: grill over the VTX, four screws, the name on the front, vents on the Pi's walls](images/case.png)
+![The case: grill over the VTX, four screws, the name on the front, vents on the Pi's walls](images/case.jpg)
 
-![Lid off and laid beside the case: the Pi, the wires from the GPIO header, the VTX on its frame, the fan on the lid](images/open.png)
+![Lid off and laid beside the case: the Pi, the wires from the GPIO header, the VTX on its frame, the fan on the lid](images/open.jpg)
 
-![Close-up: the VTX on its open frame, its pads soldered to the jumpers and the AV cable's cores](images/detail.png)
+![Close-up: the VTX on its open frame, its pads soldered to the jumpers and the AV cable's cores](images/detail.jpg)
 
-![Exploded: base, Pi, VTX frame, VTX, fan, lid, screws](images/exploded.png)
+![Exploded: base, Pi, VTX frame, VTX, fan, lid, screws](images/exploded.jpg)
 
 ## How it cools
 
@@ -22,9 +22,9 @@ walls are closed, so the air then has to cross the Pi to get out: over the GPIO 
 and out through the slots in the Pi's three walls above the ports. The VTX's watt or two warms that air
 by about a degree, so the Pi still gets room-temperature air moving over it.
 
-![The back: the Pi's ports, the vent slots above them, the AV opening up to the rim](images/back.png)
+![The back: the Pi's ports, the vent slots above them, the AV opening up to the rim](images/back.jpg)
 
-![The front](images/front.png)
+![The front](images/front.jpg)
 
 ## Parts
 
@@ -54,23 +54,23 @@ base (`#1b2130`, the game's panels) with an orange lid and frame (`#ff8a00`, its
 2. **Fan into the lid.** Lid upside down on the bench, fan onto the pad with its label (the side the
    air comes out of) *away* from the lid, 4x M3 x 14.
 
-   ![The lid upside down, the fan going onto its pad](images/step3.png)
+   ![The lid upside down, the fan going onto its pad](images/step3.jpg)
 3. **Pi into the base**, onto its four standoffs, 4x M2.5 x 6. The SD card goes in and out through the
    slot in the end wall.
 
-   ![The Pi on its standoffs](images/step1.png)
+   ![The Pi on its standoffs](images/step1.jpg)
 4. **VTX onto the frame** (screws into the standoffs, or zip ties round the bars), **frame onto its
    posts**, 4x M3 x 6. The VTX's whip antenna goes out through the notch at the top of the USB-end wall
    (with `sma = true` the case has a hole for an SMA bulkhead in the other end wall instead).
 
-   ![The frame with the VTX in the bay](images/step2.png)
+   ![The frame with the VTX in the bay](images/step2.jpg)
 5. **Wires.** The AV cable's plug goes into the jack from outside and the cable comes back in through
    the same opening (it runs up to the rim). From the header to the VTX: the SmartAudio wire (pin 7
    through 1 kΩ), and 5 V (pin 2) with ground (pin 9) if the VTX takes 5 V from the Pi. The fan goes on
    pins 4 and 6.
 6. **Lid on**, 4x M3 x 8 into the bosses. The lip inside the rim locates it.
 
-   ![The lid coming down onto the base](images/step4.png)
+   ![The lid coming down onto the base](images/step4.jpg)
 
 The lid has an optional slot over the GPIO header for wires to the outside (`gpio_slot = true`).
 
@@ -90,7 +90,7 @@ parts next to a small board's holes stay clear:
 A VTX with odd holes, or none, is strapped to the frame's bars with two zip ties. There are 10 mm
 between the board and the fan for a heatsink, and 10 mm of air under the board.
 
-![The twelve frames: a row per spacing, a column per screw](images/frames.png)
+![The twelve frames: a row per spacing, a column per screw](images/frames.jpg)
 
 Everything about the frame is a parameter in `sticktime_case.scad`:
 
