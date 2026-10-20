@@ -4,6 +4,7 @@
     blender -b -P render.py -- case open         # only these
     blender -b -P render.py -- --color "#c8102e" # another filament colour (sRGB hex)
     blender -b -P render.py -- --preview         # small and quick, for checking
+    blender -b -P render.py -- --acrylic --out build/renders/acrylic   # clear acrylic, elsewhere
 
 The printed parts come from STL files in build/parts/ (base, lid_place, frame_place, pi_board),
 exported with OpenSCAD; this script does that itself when `openscad` is on the PATH (or in the
@@ -31,8 +32,11 @@ S = 0.001
 
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 PREVIEW = "--preview" in ARGS
-COLOR = ARGS[ARGS.index("--color") + 1] if "--color" in ARGS else "#2e3136"
-WANTED = [a for a in ARGS if not a.startswith("--") and a != COLOR]
+ACRYLIC = "--acrylic" in ARGS
+COLOR = ARGS[ARGS.index("--color") + 1] if "--color" in ARGS else ("#f4f8fa" if ACRYLIC else "#2e3136")
+if "--out" in ARGS:
+    OUT = os.path.abspath(ARGS[ARGS.index("--out") + 1])
+WANTED = [a for a in ARGS if not a.startswith("--") and a != COLOR and os.path.abspath(a) != OUT]
 
 PIECES = ["base", "lid_place", "frame_place", "pi_board"]
 PATTERNS = ["16", "20", "25.5", "30.5"]
@@ -248,8 +252,24 @@ def sweep_mat():
     return m
 
 
+def acrylic_mat(color):
+    """Clear cast acrylic: polished, refracting (IOR 1.49), with a faint cyan where the light runs through
+    the thickness, as acrylic's edges show."""
+    m = mat("acrylic", color, rough=0.02, bevel=0.3, spec=0.5)
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Transmission Weight"].default_value = 1.0
+    b.inputs["IOR"].default_value = 1.49
+    vol = nt.nodes.new("ShaderNodeVolumeAbsorption")
+    vol.inputs["Color"].default_value = (0.78, 0.95, 0.93, 1)
+    vol.inputs["Density"].default_value = 12
+    out = [n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputMaterial"][0]
+    nt.links.new(vol.outputs["Volume"], out.inputs["Volume"])
+    return m
+
+
 def materials():
-    M["print"] = print_mat(srgb(COLOR))
+    M["print"] = acrylic_mat(srgb(COLOR)) if ACRYLIC else print_mat(srgb(COLOR))
     M["pcb"] = mat("pcb", (0.012, 0.11, 0.035), rough=0.45, coat=0.6, bevel=0.1)
     M["vtx_pcb"] = mat("vtx_pcb", (0.008, 0.008, 0.01), rough=0.4, coat=0.7, bevel=0.1)
     M["silk"] = mat("silk", (0.85, 0.85, 0.82), rough=0.7)
@@ -846,8 +866,13 @@ def setup():
                 break
         except Exception:
             continue
-    scene.cycles.samples = 48 if PREVIEW else 400
+    scene.cycles.samples = 48 if PREVIEW else (600 if ACRYLIC else 400)
     scene.cycles.use_denoising = True
+    if ACRYLIC:   # light goes through several walls and the parts behind them
+        scene.cycles.max_bounces = 24
+        scene.cycles.transmission_bounces = 16
+        scene.cycles.transparent_max_bounces = 16
+        scene.cycles.glossy_bounces = 8
     scene.render.resolution_x = 2000
     scene.render.resolution_y = 1400
     scene.render.resolution_percentage = 40 if PREVIEW else 100

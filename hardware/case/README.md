@@ -113,5 +113,6 @@ with a comment each. `part="assembly"` shows everything in place with a Pi, a fa
 
 The pictures above are rendered by `render.py` in Blender 4.1 or newer with Cycles: `blender -b -P
 render.py`, with `openscad` on the PATH (or in `OPENSCAD`) to export the pieces. After `--`, shot names
-render only those (`-- case open`), `--color "#c8102e"` shows another filament, `--preview` renders small
-and fast. The assembly steps are OpenSCAD previews.
+render only those (`-- case open`), `--color "#c8102e"` shows another filament, `--acrylic` clear
+acrylic, `--out DIR` writes somewhere other than `images/`, `--preview` renders small and fast. The
+assembly steps are OpenSCAD previews.
