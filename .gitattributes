@@ -3,3 +3,5 @@
 *.png binary
 *.ttf binary
 *.woff2 binary
+*.stl binary
+*.jpg binary
