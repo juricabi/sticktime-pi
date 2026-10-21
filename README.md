@@ -14,8 +14,6 @@ picture to an analog FPV monitor or goggles, and an EdgeTX radio flies it over i
 
 ![The web page: status with the live game screen, frame rate and stick latency](docs/images/web-status.png)
 
-<img src="docs/images/web-vtx.png" alt="VTX control on the web page: the VTX found over Tramp, band, channel and power" width="300" align="right">
-
 ## Features
 
 - **Video for goggles**: composite NTSC or PAL (4:3 or 16:9, adjustable margin) straight into a VTX for
@@ -78,6 +76,10 @@ and no audio jack; the Pi 400 has no composite output (HDMI only). Reports from 
 ![The open case: the Raspberry Pi, the VTX and the 40 mm fan on the lid, the AV cable from the Pi's jack to the VTX](docs/images/case-open.jpg)
 
 *Inside the case: the AV cable (yellow) from the Pi's jack to the VTX's video pad, pin 7 through 1 kΩ to its control pad, a shared ground, and the fan on the lid.*
+
+<img src="docs/images/web-vtx.png" alt="VTX control on the web page: the VTX found over Tramp, its band, channel and power, the line timing" width="520">
+
+*VTX control on the web page (Video → VTX control): the VTX found on one pin, its table loaded, band, channel, power and pit mode set from here.*
 
 The Pi's 3.5 mm jack is TRRS:
 
