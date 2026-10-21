@@ -474,7 +474,9 @@ class MockPi:
         device = f"GPIO{port[4:]}, pin {pins.get(port, 0)} (single pin)" if port.startswith("gpio") else f"/dev/ttyAMA{port[4:]} ({port})"
         v["single_pin"] = port.startswith("gpio")
         if v["single_pin"]:
-            v["line_stats"] = "40 frames sent; TX edges late by 6 us on average, 31 us at most (last frame 12 us); 0 sent again; RX 300 bytes, 0 framing errors, 0 glitches"
+            v["line_stats"] = ("40 frames sent; TX edges late by 2 us on average, 31 us at most (last frame 12 us), 3 of 1680 edges over a quarter bit late, "
+                               "0 over half a bit; 0 sent again, 0 went out late; the pin switched to output in up to 24 us, back to input in up to 25 us; "
+                               "own edges seen back: 1680 (1680 driven); RX 640 bytes, 0 framing errors, 0 glitches")
         v.update({"device": device, "protocol": "tramp" if tramp else "smartaudio", "version": "" if tramp else "2.1",
                   "line": "9600 baud 8N1" if tramp else "4800 baud 8N2, a 0x00 before each frame", "baud": 9600 if tramp else 4800})
         if send_only:

@@ -83,7 +83,7 @@ typedef struct {
   int baud;
   bool clone_zero;               /* sends a 0x00 after each frame (AKK/RDQ clones) */
   char line_desc[96];            /* "4800 baud 8N2, a 0x00 before each frame" */
-  char line_stats[200];          /* single pin: "TX edges late by 9 us on average, 38 us at most; 0 sent again" */
+  char line_stats[400];          /* single pin: "TX edges late by 9 us on average, 38 us at most ...; 0 sent again ..." */
   bool found;                    /* the VTX answers (two-way) */
   bool in_sync;                  /* found and set like the settings */
   int freq;                      /* MHz, 0 = unknown */
@@ -100,6 +100,7 @@ typedef struct {
   vtx_config_t cfg;              /* the settings in use */
   vtx_table_t table;             /* in use: the file's, or the default for the protocol */
   uint32_t sent, replies, timeouts, bad_frames, echo_ok, echo_missing, echo_bad;
+  uint32_t tx_late;              /* frames the line itself sent with bad timing (a single pin) */
   int64_t found_us, updated_us;
 } vtx_status_t;
 
@@ -116,6 +117,8 @@ struct vtx_io {
   int  (*set_break)(vtx_io_t *io, bool low);                 /* hold TX low (a break) or release it; NULL = can't */
   void (*set_proto)(vtx_io_t *io, vtx_proto_t proto);        /* a hint: the protocol about to be used (bias); NULL */
   void (*stats)(vtx_io_t *io, char *out, size_t n);          /* one line about the line's timing; NULL */
+  uint32_t (*late_frames)(vtx_io_t *io);                     /* frames sent with an edge too late even after
+                                                              * retries (a single pin's own timing); NULL = never */
   void (*sleep_us)(vtx_io_t *io, int64_t us);                /* NULL = plat_sleep_us */
   int64_t (*now_us)(vtx_io_t *io);
   void (*destroy)(vtx_io_t *io);

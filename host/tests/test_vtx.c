@@ -1081,6 +1081,42 @@ static void test_engine_echo(void) {
   vtx_engine_free(e);
 }
 
+/* a single pin's own timing: every frame went out with a late edge / none did */
+static uint32_t f_late_all(vtx_io_t *io) { return (uint32_t)FK(io)->writes; }
+static uint32_t f_late_none(vtx_io_t *io) { return 0; }
+
+static void test_engine_timing(void) {
+  static fake_t f;
+  /* no VTX hears a line whose every frame is late: the message blames the Pi's timing, not the wire */
+  fake_init(&f, VTX_PROTO_TRAMP, 0);
+  f.plugged = false;
+  vtx_engine_t *e = engine(&f, "vtx = tramp\n");
+  IO.late_frames = f_late_all;
+  run(e, &f, 30000);
+  CHECK_INT(ST.state, VTX_ST_NOT_FOUND);
+  CHECK(strstr(ST.message, "bit timing") != NULL);
+  CHECK(ST.tx_late > 0 && ST.tx_late == (uint32_t)f.writes);
+  vtx_engine_free(e);
+  /* the line keeps time, nothing answers: the usual message */
+  fake_init(&f, VTX_PROTO_TRAMP, 0);
+  f.plugged = false;
+  e = engine(&f, "vtx = tramp\n");
+  IO.late_frames = f_late_none;
+  run(e, &f, 30000);
+  CHECK_INT(ST.state, VTX_ST_NOT_FOUND);
+  CHECK(strstr(ST.message, "No answer from the VTX") != NULL);
+  CHECK_INT(ST.tx_late, 0);
+  vtx_engine_free(e);
+  /* a late line, but the VTX still answers: found, and the count is reported */
+  fake_init(&f, VTX_PROTO_TRAMP, 0);
+  e = engine(&f, "vtx = tramp\n");
+  IO.late_frames = f_late_all;
+  run(e, &f, 5000);
+  CHECK_INT(ST.state, VTX_ST_READY);
+  CHECK(ST.tx_late > 0);
+  vtx_engine_free(e);
+}
+
 static void test_engine_send_only(void) {
   static fake_t f;
   fake_init(&f, VTX_PROTO_SA, 2);
@@ -1322,6 +1358,7 @@ int main(void) {
   test_engine_tramp();
   test_engine_variants();
   test_engine_echo();
+  test_engine_timing();
   test_engine_send_only();
   test_engine_table_file();
 #ifdef __linux__

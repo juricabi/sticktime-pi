@@ -167,7 +167,7 @@ the thread's last state and tell it to re-read the files.
 {"enabled":true,"state":"ready","message":"SmartAudio 2.1: R1 5658 MHz, 25 mW, pit mode off.","error":"",
  "mode":"auto","port":"gpio4","device":"GPIO4, pin 7 (single pin)","single_pin":true,"send_only":false,"needs_reboot":false,
  "protocol":"smartaudio","version":"2.1","line":"4800 baud 8N2, a 0x00 before each frame",
- "line_stats":"40 frames sent; TX edges late by 6 us on average, 31 us at most (last frame 12 us); 0 sent again; RX 300 bytes, 0 framing errors, 0 glitches",
+ "line_stats":"40 frames sent; TX edges late by 2 us on average, 31 us at most (last frame 12 us), 3 of 1680 edges over a quarter bit late, 0 over half a bit; 0 sent again, 0 went out late; the pin switched to output in up to 24 us, back to input in up to 25 us; own edges seen back: 1680 (1680 driven); RX 640 bytes, 0 framing errors, 0 glitches",
  "baud":4800,
  "found":true,"in_sync":true,"freq":5658,"freq_mode":false,"band":"R","channel":1,
  "power":{"level":1,"label":"25","value":14,"mw":25},"pit":false,"pit_at_boot":false,"locked":false,
@@ -176,11 +176,13 @@ the thread's last state and tell it to re-read the files.
  "table":{"source":"default","error":"","description":"StickTime Pi default: SmartAudio 2.1","channels":8,
           "bands":[{"name":"BOSCAM_A","letter":"A","factory":true,"frequencies":[5865,5845,5825,5805,5785,5765,5745,5725]}, ...],
           "powers":[{"value":14,"label":"25"},{"value":20,"label":"100"},{"value":26,"label":"400"}]},
- "stats":{"sent":40,"replies":38,"timeouts":2,"bad_frames":0,"echo_ok":40,"echo_missing":0,"echo_bad":0},"age_ms":180}
+ "stats":{"sent":40,"replies":38,"timeouts":2,"bad_frames":0,"echo_ok":40,"echo_missing":0,"echo_bad":0,"tx_late":0},"age_ms":180}
 ```
 - `port`: `gpio4`, `gpio17`, `gpio22`, `gpio23`, `gpio27` (one pin, in software; `single_pin` true) or `uart3`,
-  `uart4`, `uart5` (two pins on a PL011 UART). `line_stats`: the one-pin line's timing (how late its edges went out,
-  frames sent again because an edge was more than a quarter bit late, receive errors); `""` otherwise.
+  `uart4`, `uart5` (two pins on a PL011 UART). `line_stats`: the one-pin line's timing (how late its edges went out
+  and how many were over a quarter / half a bit late, frames sent again because an edge was more than half a bit
+  late and frames that went out late even so, how long the pin's switches took, the sender's own edges seen back,
+  receive errors); `""` otherwise. `stats.tx_late`: the frames the line itself sent with bad timing (0 on a UART).
 - `state`: `off`, `no_port` (the UART isn't there: its overlay comes at the next boot, `needs_reboot` true; or the
   tty can't be opened; for a pin: no GPIO chip has it, i.e. not a Pi), `searching`, `not_found` (a whole round without an answer; it keeps trying, `message` says
   what to check), `syncing` (sending the settings), `ready` (set like the settings), `send_only` (sent, nothing read

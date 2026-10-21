@@ -85,9 +85,9 @@ static void status_json(sb_t *b, const vtx_status_t *s) {
   sb_puts(b, ",");
   table_json(b, t);
   sb_printf(b, "},\"stats\":{\"sent\":%lu,\"replies\":%lu,\"timeouts\":%lu,\"bad_frames\":%lu,\"echo_ok\":%lu,\"echo_missing\":%lu,"
-            "\"echo_bad\":%lu},\"age_ms\":%lld}",
+            "\"echo_bad\":%lu,\"tx_late\":%lu},\"age_ms\":%lld}",
             (unsigned long)s->sent, (unsigned long)s->replies, (unsigned long)s->timeouts, (unsigned long)s->bad_frames,
-            (unsigned long)s->echo_ok, (unsigned long)s->echo_missing, (unsigned long)s->echo_bad,
+            (unsigned long)s->echo_ok, (unsigned long)s->echo_missing, (unsigned long)s->echo_bad, (unsigned long)s->tx_late,
             (long long)(s->updated_us ? (plat_now_us() - s->updated_us) / 1000 : -1));
 }
 

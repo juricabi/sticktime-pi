@@ -6,12 +6,18 @@
  * and a bias: pull-down for SmartAudio (both sides inputs when idle, the line low before a frame: the
  * TBS spec; Betaflight pulls SmartAudio down), pull-up for Tramp (Betaflight opens Tramp as plain half
  * duplex: open-drain with a pull-up, idle high). The UART bytes are decoded from the edge times.
- * Send: the same line becomes an output for the frame. Every edge is driven at its own absolute time,
- * counted from the frame's start so errors never add up: clock_nanosleep(TIMER_ABSTIME) to ~60 us
- * before it, then a spin on CLOCK_MONOTONIC. For the frame the thread runs SCHED_FIFO (on a core away
- * from the frame loop's and the audio thread's); right after the last stop bit the pin is an input again,
- * so the VTX can answer. An edge later than a quarter of a bit makes the frame go again. What was driven
- * is handed back as the line's "echo" (the input is off while sending), so vtx.c's echo check sees it.
+ * Send: the same pin drives the frame. Every edge is driven at its own absolute time, counted from the
+ * frame's start so errors never add up: clock_nanosleep(TIMER_ABSTIME) to ~60 us before it, then a spin
+ * on CLOCK_MONOTONIC. For the frame the thread runs SCHED_FIFO above the drawing threads that share its
+ * core (vtx_soft_set_rt_prio). On a Pi (BCM283x/2711) the pin's function and level are written straight
+ * into the GPIO registers through /dev/gpiomem, as pigpio does: the character device keeps the line as
+ * an input with edge detection the whole time, so the kernel's edge interrupt (a thread, raised above
+ * the sender) stays armed and no setup is torn down and built again for every frame (through the ioctls
+ * that took up to 7 ms on a busy Pi 4, and the VTX's reply had begun). The sender's own edges come back
+ * as events too; they are told apart by their timestamps and counted (a wiring check). Elsewhere, and
+ * on another chip, the line is switched between input and output with the ioctls. An edge later than
+ * half a bit makes the frame go again (a UART reads a bit in its middle). What was driven is handed
+ * back as the line's "echo", so vtx.c's echo check sees it.
  *
  * The decoder and the bit schedule are pure functions, tested on every OS; the GPIO part is Linux only. */
 #ifndef VTX_SOFT_H
@@ -62,5 +68,10 @@ int  vtx_soft_header_pin(int gpio);              /* 4 -> 7, ...; 0 if not one of
 /* the line; NULL + err when the spec isn't a GPIO one (or out of memory). Not Linux: a line whose open()
  * says GPIO pins work on the Pi only. */
 vtx_io_t *vtx_soft_io_new(const char *spec, char *err, size_t errlen);
+/* The SCHED_FIFO priority the line's thread takes for each frame (default 40: a line test run by hand).
+ * The VTX thread sets it to the frame loop's priority minus one: above the drawing threads (minus two)
+ * that share its core, which otherwise preempt a frame for milliseconds (seen on a Pi 4: edges 1.3 ms
+ * late on average, every frame sent again, a Tramp VTX answered 4 frames of 1700). */
+void vtx_soft_set_rt_prio(int prio);
 
 #endif

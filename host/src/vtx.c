@@ -33,6 +33,7 @@
 #define POLL_SA_MS 2000            /* reading the state while it is set right (a VTX button press shows) */
 #define POLL_TRAMP_MS 1000
 #define LOST_AFTER 3               /* polls in a row without an answer: search again */
+#define LOST_AFTER_SOFT 10         /* on a single pin: the kernel's stalls lose exchanges (RESEARCH.md); the VTX is still there */
 #define TRIES_SA 5                 /* sending one setting without the VTX taking it, then an error */
 #define TRIES_TRAMP 10             /* (some Tramp VTXes miss requests) */
 #define RETRY_FAILED_MS 30000      /* a setting the VTX didn't take is tried again after this */
@@ -519,6 +520,7 @@ struct vtx_engine {
   cand_t good;
   bool have_good, alt;
   int round_echo[4];
+  uint32_t round_sent0, round_late0;          /* st.sent and the line's late frames when the round began */
   /* found */
   cand_t cur;
   vtx_sa_settings_t sa;
@@ -563,6 +565,15 @@ static void close_line(vtx_engine_t *e) {
 static void io_sleep(vtx_engine_t *e, int64_t us) {
   if (e->io && e->io->sleep_us) e->io->sleep_us(e->io, us);
   else plat_sleep_us(us);
+}
+
+/* frames the line itself sent with bad timing so far (a single pin), 0 for a line that can't */
+static uint32_t line_late(const vtx_engine_t *e) { return e->io && e->io->late_frames ? e->io->late_frames(e->io) : 0; }
+
+static void round_mark(vtx_engine_t *e) {
+  memset(e->round_echo, 0, sizeof e->round_echo);
+  e->round_sent0 = e->st.sent;
+  e->round_late0 = line_late(e);
 }
 
 void vtx_engine_free(vtx_engine_t *e) {
@@ -615,7 +626,7 @@ static void start_search(vtx_engine_t *e) {
       if (same_cand(&e->cands[i], &e->good)) e->ci = i;
   e->round_start = e->ci;
   e->tries = 0;
-  memset(e->round_echo, 0, sizeof e->round_echo);
+  round_mark(e);
 }
 
 /* the table in use: the file's, or the built-in one for what was found (or is configured) */
@@ -1192,7 +1203,12 @@ static int step_detect(vtx_engine_t *e) {
   if (e->ci != e->round_start) return 20;
   const char *what = e->cfg.mode == VTX_MODE_SA ? "SmartAudio" : e->cfg.mode == VTX_MODE_TRAMP ? "Tramp" : "SmartAudio and Tramp";
   int ok = e->round_echo[ECHO_OK], miss = e->round_echo[ECHO_MISSING], bad = e->round_echo[ECHO_BAD];
-  if (ok >= miss && ok >= bad && ok > 0)
+  uint32_t sent = e->st.sent - e->round_sent0, late = line_late(e) - e->round_late0;
+  if (sent > 0 && late * 2 >= sent)             /* a single pin: the Pi's own timing was off in most frames */
+    set_state(e, VTX_ST_NOT_FOUND, "The Pi couldn't keep the bit timing on %s in %lu of %lu frames (its core was busy; see the line "
+              "timing). It keeps trying; if this stays, use a UART with two wires (vtx_port = uart3, see the guide).",
+              e->st.device[0] ? e->st.device : "the pin", (unsigned long)late, (unsigned long)sent);
+  else if (ok >= miss && ok >= bad && ok > 0)
     set_state(e, VTX_ST_NOT_FOUND, "No answer from the VTX (tried %s). Check the wire to its SmartAudio/Tramp pad, that the VTX has power, "
               "and the protocol; or try send-only.", what);
   else if (miss >= bad)
@@ -1201,7 +1217,7 @@ static int step_detect(vtx_engine_t *e) {
   else
     set_state(e, VTX_ST_NOT_FOUND, "What comes back on RX is garbled. Check the resistors, the ground, and that the VTX's pad "
               "isn't a 5 V one (see the guide).");
-  memset(e->round_echo, 0, sizeof e->round_echo);
+  round_mark(e);
   return NOT_FOUND_WAIT_MS;
 }
 
@@ -1213,7 +1229,7 @@ static int step_online(vtx_engine_t *e) {
     int k = poll_state(e);
     if (k < 0) { line_lost(e); return REOPEN_MS; }
     if (k == 0) {
-      if (++e->fails >= LOST_AFTER) {
+      if (++e->fails >= (e->io && e->io->late_frames ? LOST_AFTER_SOFT : LOST_AFTER)) {
         start_search(e);
         set_state(e, VTX_ST_SEARCHING, "The VTX stopped answering: looking for it again.");
         plat_strlcpy(e->st.error, "The VTX stopped answering (unplugged, or no power?).", sizeof e->st.error);
@@ -1394,6 +1410,7 @@ int vtx_engine_step(vtx_engine_t *e) {
     plat_strlcpy(e->st.error, e->cfg.table_error, sizeof e->st.error);
   }
   if (e->io && e->io_open && e->io->stats) e->io->stats(e->io, e->st.line_stats, sizeof e->st.line_stats);
+  e->st.tx_late = line_late(e);
   e->st.updated_us = now_us(e);
   return r;
 }
@@ -1427,7 +1444,9 @@ static int cpus_present(void) {
 }
 
 /* The VTX thread on core 1 of a 4-core Pi: the frame loop has core 3, the audio thread core 2, and most
- * interrupts go to core 0; the single-pin line's bit timing wants a quiet core. Smaller machines: any. */
+ * interrupts go to core 0. A drawing thread (par.c, the frame loop's priority minus two) shares core 1:
+ * for a frame on a single pin the thread goes above it (vtx_soft_set_rt_prio), else the drawing preempts
+ * the frame's bits for milliseconds. Smaller machines: any core. */
 static void vtx_pin_thread(void) {
   int n = cpus_present();
   cpu_set_t set;
@@ -1440,6 +1459,15 @@ static void vtx_pin_thread(void) {
 
 static void *vtx_main(void *arg) {
   vtx_t *v = arg;
+#ifdef __linux__
+  {                                             /* inherited from the frame loop: its SCHED_FIFO priority */
+    int pol = SCHED_OTHER;
+    struct sched_param sp;
+    memset(&sp, 0, sizeof sp);
+    if (pthread_getschedparam(pthread_self(), &pol, &sp) == 0 && (pol == SCHED_FIFO || pol == SCHED_RR) && sp.sched_priority > 1)
+      vtx_soft_set_rt_prio(sp.sched_priority + 1);
+  }
+#endif
   plat_thread_lower_priority();
 #ifdef __linux__
   vtx_pin_thread();
@@ -1479,12 +1507,12 @@ static void *vtx_main(void *arg) {
       app_log(v->app, "vtx: %s: %s", vtx_state_name(st->state), st->message);
       last_state = (int)st->state;
     }
-    if (st->line_stats[0]) {                    /* the single pin's timing: every 10 min, and when a frame went again */
+    if (st->line_stats[0]) {                    /* the single pin's timing: every 10 min, and when frames went again (at most every 30 s) */
       const char *re = strstr(st->line_stats, " sent again");
       long resent = 0;
       if (re) { const char *q = re; while (q > st->line_stats && q[-1] >= '0' && q[-1] <= '9') q--; resent = atol(q); }
       int64_t now = plat_now_us();
-      if (resent != last_resent || now - last_stats_us > 600000000LL) {
+      if ((resent != last_resent && now - last_stats_us > 30000000LL) || now - last_stats_us > 600000000LL) {
         app_log(v->app, "vtx: line: %s", st->line_stats);
         last_resent = resent;
         last_stats_us = now;
@@ -1648,7 +1676,7 @@ int vtx_line_test(const char *spec, const char *proto, int frames, FILE *out) {
     fprintf(out, "frame %d: %s (%u bytes back%s)\n", i + 1, what, (unsigned)got, skip ? ", echo first" : "");
     plat_sleep_us(500000);
   }
-  char st[200] = "";
+  char st[400] = "";
   if (io->stats) io->stats(io, st, sizeof st);
   fprintf(out, "%d of %d frames answered%s%s\n", answered, frames, st[0] ? "\nline: " : "", st);
   io->close(io);
@@ -1679,7 +1707,7 @@ int vtx_loopback_test(const char *tx_spec, const char *rx_spec, int frames, FILE
       if (diff) fprintf(out, "%s frame %d: %u of 20 bytes back, %d wrong\n", tramp ? "Tramp" : "SmartAudio", i + 1, (unsigned)n, diff);
       plat_sleep_us(20000);
     }
-    char ts[200] = "", rs[200] = "";
+    char ts[400] = "", rs[400] = "";
     if (tx->stats) tx->stats(tx, ts, sizeof ts);
     if (rx->stats) rx->stats(rx, rs, sizeof rs);
     fprintf(out, "%s (%d baud): %d frames, %d with lost bytes, %d byte errors\n  TX %s: %s\n  RX %s: %s\n", tramp ? "Tramp" : "SmartAudio",

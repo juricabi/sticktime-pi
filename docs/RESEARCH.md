@@ -295,7 +295,7 @@ misinterpretations, and shoddy cloned implementations"; pit mode found unpredict
 - Send-only (TX wire only) works like ExpressLRS: nothing is read; frames go 200 ms apart, because a SmartAudio VTX
   still answers on the wire.
 
-### Single-pin soft serial (the default `vtx_port = gpio4`; our design, **VERIFY ON HARDWARE**)
+### Single-pin soft serial (the default `vtx_port = gpio4`; our design, verified on a Pi 4: the end of this section)
 - Why: one wire on one pin, like a flight controller. Betaflight's soft serial (`src/main/drivers/serial_softserial.c`,
   a timer-driven bit-banged UART) is the precedent: it is the usual way to run SmartAudio/Tramp on a pad without a
   free UART, and its `vtx_softserial_alt` option exists for exactly this line's 0x00 quirk. Linux has no single-wire
@@ -329,3 +329,40 @@ misinterpretations, and shoddy cloned implementations"; pit mode found unpredict
   ~0.8 ms late), so that ran at 50 baud; the real timing at 4800/9600 baud is for the Pi: `sticktime-pi --vtx-test
   gpio4` and `--vtx-loopback-test gpio4 gpio17` (pins 7 and 11 joined through 1 kΩ) print it.
 - When one pin isn't good enough on some Pi, the two-pin UART mode above is the fallback (hardware timing).
+
+**On the hardware (2026-10-21):** a Pi 4, Pi OS kernel 6.12.75 (`CONFIG_PREEMPT`, HZ 250, no `NO_HZ_FULL`, not
+PREEMPT_RT), a GEPRC F411 Stable 16x16 VTX (Tramp, 9600 baud) on pin 7 through 1 kΩ, `drawing = multi`.
+- With the service stopped the design works as drawn: 10 of 10 frames answered, edges 2 µs late on average, 13 µs at
+  most (`--vtx-test gpio4 --vtx-test-proto tramp`).
+- In the running service the drawing threads (par.c: SCHED_FIFO at the frame loop's priority − 2, on cores 0 and 1)
+  preempted the VTX thread (FIFO 40, only for a frame, on core 1): edges 1.3 ms late on average, 7.7 ms at most, every
+  frame sent again, 4 answers in 1743 frames. Fixed: the thread sends at the frame loop's priority + 1
+  (`vtx_soft_set_rt_prio`), above the drawing threads and the kernel's interrupt threads (50).
+- Switching the line with the character device for every frame (output for the frame, input with edges after it)
+  frees and requests the edge interrupt each time, and the kernel kills and creates its thread
+  (`irq/N-sticktime-vtx`): the switch back to input took up to 7.4 ms on the busy Pi (a kernel thread's creation),
+  by when the VTX's reply had begun, the switch to output up to 0.3 ms, and the churn fed RCU and timer softirqs.
+  Fixed: the pin's function and level are written straight into the GPIO registers through `/dev/gpiomem`
+  (BCM2835 ARM Peripherals §6: GPFSELn, GPSET0, GPCLR0, GPLEV0; the same block on the BCM2711), as pigpio does; the
+  character device keeps the line as an input with edge detection the whole time, the sender's own edges come back
+  as events and are dropped by their timestamps (and counted: a check that the pin toggles). Both switches now take
+  24 µs. The edge interrupt is threaded (`IRQF_ONESHOT`, SCHED_FIFO 50; the thread reads the level to tell a rising
+  edge from a falling one, and the interrupt stays masked until it has run): the thread is raised to the sender's
+  priority + 1 once per open, which the per-frame recreation had made impossible. The function select is a
+  read-modify-write of a register shared by ten pins: the kernel only writes it when a pin's function changes, never
+  for ours between frames.
+- A frame was repeated when an edge went out more than a quarter bit late. A UART samples a bit in its middle, so most
+  such frames had gone through, and the repeat collided with the reply: a third of the exchanges answered. Now only
+  an edge later than half a bit (surely garbled) repeats the frame.
+- What remains is the kernel's own latency while the simulator runs. ftrace on the busy Pi: the scheduler tick
+  (`tick_nohz_handler`) takes 18 µs on average and up to 113-188 µs, on every core (5 µs and 21 µs at most with the
+  service stopped; 7.6 and 48 µs under three plain memory hogs), hrtimer wake-ups up to 45 µs, function-call IPIs
+  (remote wake-ups) up to 120 µs. 0.8 % of the edges go out more than a quarter bit late at 9600 baud, 0.5 % more than
+  half a bit: a fifth of the Tramp frames are repeated, and about half of the exchanges fail (the receive side's edge
+  timestamps suffer the same stalls: about a tenth of the replies have a bad checksum). SmartAudio's 4800 baud has
+  twice the margin (no SmartAudio VTX was at hand). The frame loop is unaffected (0.3 % missed frames before and
+  after). The engine on a single pin therefore declares the VTX lost only after 10 unanswered polls (3 on a UART).
+- Not taken: `nohz_full` for the VTX core (not built into the Pi kernel), PREEMPT_RT (not the stock kernel),
+  DMA-paced GPIO writes and samples like pigpio's waves (the robust way on this chip, and a large piece of work),
+  UART3's TX on GPIO4 (ALT4) with the receive side on the edges (needs the uart3 overlay and GPIO5: then the
+  two-pin mode is one resistor away). **The two-pin UART mode is the recommendation for a link without misses.**

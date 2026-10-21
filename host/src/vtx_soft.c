@@ -19,6 +19,8 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #endif
@@ -161,25 +163,33 @@ static void sfmt(char *out, size_t n, const char *f, ...) {
   va_end(ap);
 }
 
+#define SOFT_RT_PRIO_DEFAULT 40
+static int soft_rt_prio = SOFT_RT_PRIO_DEFAULT;
+void vtx_soft_set_rt_prio(int prio) { soft_rt_prio = prio > 0 && prio < 100 ? prio : SOFT_RT_PRIO_DEFAULT; }
+
 #ifdef __linux__
 /* ================================================================ the GPIO line (Linux character device, v2) */
 #define SOFT_QUEUE 1024
-#define SOFT_RT_PRIO 40                 /* below the frame loop (50) and the audio thread (49), on another core */
 
 typedef struct {
   int gpio;                             /* BCM number, -1 for a "gpio:" spec */
   char chip[96];                        /* /dev/gpiochipN */
   unsigned offset;
   int chip_fd, line_fd;
+  volatile uint32_t *regs;              /* the GPIO block (/dev/gpiomem) on a BCM283x/2711; NULL = the ioctls */
+  int64_t tx_end_ns;                    /* events up to here are the sender's own edges */
+  bool irq_prio_set;                    /* the edge interrupt's thread runs above the sender */
   int baud, stop;
   vtx_proto_t proto;
   vtx_soft_rx_t rx;
   uint8_t q[SOFT_QUEUE];
   int qn;
   /* statistics */
-  uint32_t frames, resent, events, overflow;
+  uint32_t frames, resent, late_frames, events, overflow;   /* late_frames: still late after the retries */
+  uint32_t own_seen, own_expect;        /* the sender's own edges that came back as events, and all it drove */
   int64_t late_sum_ns, late_max_ns, late_last_max_ns;
-  uint32_t late_n;
+  uint32_t late_n, late_q, late_h;      /* edges late by more than a quarter bit / half a bit */
+  int64_t sw_out_max_ns, sw_in_max_ns;  /* the longest switch of the pin to output / back to input */
   bool rt_ok;
 } soft_t;
 
@@ -217,10 +227,77 @@ static void cfg_output(struct gpio_v2_line_config *c, int value) {
   c->attrs[0].mask = 1;
 }
 
+/* The BCM283x/2711 GPIO block (BCM2835 ARM Peripherals, section 6; the same on the 2711): GPFSELn at 0x00
+ * (3 bits per pin, 000 input, 001 output), GPSET0 at 0x1C, GPCLR0 at 0x28, GPLEV0 at 0x34 (one bit per
+ * pin, GPIO 0-31). Function select is a read-modify-write of the register that holds ten pins. */
+#define REG_FSEL(n) ((n) / 10)
+#define REG_SET0 (0x1C / 4)
+#define REG_CLR0 (0x28 / 4)
+#define REG_LEV0 (0x34 / 4)
+
+static void reg_fsel(soft_t *s, unsigned f) {
+  volatile uint32_t *r = s->regs + REG_FSEL(s->offset);
+  unsigned sh = (s->offset % 10) * 3;
+  *r = (*r & ~(7u << sh)) | ((f & 7u) << sh);
+}
+static inline void reg_drive(soft_t *s, int level) { s->regs[level ? REG_SET0 : REG_CLR0] = 1u << s->offset; }
+
 static int get_level(soft_t *s) {
+  if (s->regs) return (int)(s->regs[REG_LEV0] >> s->offset & 1);
   struct gpio_v2_line_values v = { 0, 1 };
   if (ioctl(s->line_fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) != 0) return s->proto == VTX_PROTO_TRAMP;
   return (int)(v.bits & 1);
+}
+
+/* /dev/gpiomem: the GPIO block of a BCM283x/2711 (the Pi 1-4; the Pi 5's RP1 has another layout and its
+ * own device). Only for a pin of GPIO 0-31 that the character device has just set up as an input. */
+static void map_regs(soft_t *s, const char *label) {
+  if (s->offset >= 32 || !(!strcmp(label, "pinctrl-bcm2711") || !strcmp(label, "pinctrl-bcm2835"))) return;
+  int fd = open("/dev/gpiomem", O_RDWR | O_SYNC | O_CLOEXEC);
+  if (fd < 0) return;
+  void *m = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+  if (m == MAP_FAILED) return;
+  volatile uint32_t *r = m;
+  if ((r[REG_FSEL(s->offset)] >> ((s->offset % 10) * 3) & 7u) != 0) {   /* not the input the kernel just made: not our block */
+    munmap(m, 4096);
+    return;
+  }
+  s->regs = r;
+}
+
+/* The kernel reads our line's edges in a thread ("irq/<n>-sticktime-vtx", SCHED_FIFO 50 like every
+ * interrupt thread) and keeps the interrupt masked until it has run: late, and an edge's timestamp is
+ * wrong or the edge is lost. Above the sender and the frame loop it runs at once. (The name may be cut
+ * to 15 characters.) */
+static void raise_irq_thread(soft_t *s) {
+  DIR *d = opendir("/proc");
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+    char p[64], comm[40] = "";
+    sfmt(p, sizeof p, "/proc/%s/comm", e->d_name);
+    FILE *f = fopen(p, "r");
+    if (!f) continue;
+    if (!fgets(comm, sizeof comm, f)) comm[0] = 0;
+    fclose(f);
+    if (strncmp(comm, "irq/", 4) || !strstr(comm, "-sticktim")) continue;
+    struct sched_param sp = { .sched_priority = soft_rt_prio + 1 < 99 ? soft_rt_prio + 1 : 99 };
+    /* the raw system call: musl's sched_setscheduler only fails */
+    if (syscall(SYS_sched_setscheduler, (pid_t)atoi(e->d_name), SCHED_FIFO, &sp) == 0) s->irq_prio_set = true;
+  }
+  closedir(d);
+}
+
+/* the decoder from the line's level now; its counters stay (it is reset after every frame) */
+static void rx_reset(soft_t *s, int level) {
+  uint32_t bytes = s->rx.bytes, framing = s->rx.framing, glitches = s->rx.glitches, breaks = s->rx.breaks;
+  vtx_soft_rx_init(&s->rx, s->baud, s->stop, level);
+  s->rx.bytes = bytes;
+  s->rx.framing = framing;
+  s->rx.glitches = glitches;
+  s->rx.breaks = breaks;
 }
 
 /* back to listening: input, both edges, the bias; the decoder from the line's level now */
@@ -231,7 +308,7 @@ static int to_input(soft_t *s) {
     cfg_input(s, &c, false);                       /* a chip without bias control */
     if (ioctl(s->line_fd, GPIO_V2_LINE_SET_CONFIG_IOCTL, &c) != 0) return -1;
   }
-  vtx_soft_rx_init(&s->rx, s->baud, s->stop, get_level(s));
+  rx_reset(s, get_level(s));
   return 0;
 }
 
@@ -322,13 +399,24 @@ static int soft_open(vtx_io_t *io, char *err, size_t errlen) {
   fcntl(s->line_fd, F_SETFL, fcntl(s->line_fd, F_GETFL) | O_NONBLOCK);
   if (s->gpio >= 0) sfmt(io->desc, sizeof io->desc, "GPIO%d, pin %d (single pin)", s->gpio, vtx_soft_header_pin(s->gpio));
   else sfmt(io->desc, sizeof io->desc, "%s line %u (single pin)", s->chip, s->offset);
-  vtx_soft_rx_init(&s->rx, s->baud, s->stop, get_level(s));
+  struct gpiochip_info ci;
+  memset(&ci, 0, sizeof ci);
+  if (ioctl(s->chip_fd, GPIO_GET_CHIPINFO_IOCTL, &ci) == 0) map_regs(s, ci.label);
+  s->irq_prio_set = false;
+  raise_irq_thread(s);
+  s->tx_end_ns = 0;
+  rx_reset(s, get_level(s));
   s->qn = 0;
   return 0;
 }
 
 static void soft_close(vtx_io_t *io) {
   soft_t *s = io->ud;
+  if (s->regs) {
+    reg_fsel(s, 0);                                /* an input, as the kernel believes */
+    munmap((void *)s->regs, 4096);
+    s->regs = NULL;
+  }
   if (s->line_fd >= 0) close(s->line_fd);
   if (s->chip_fd >= 0) close(s->chip_fd);
   s->line_fd = s->chip_fd = -1;
@@ -338,7 +426,7 @@ static int soft_set_line(vtx_io_t *io, int baud, int stop) {
   soft_t *s = io->ud;
   s->baud = baud;
   s->stop = stop;
-  vtx_soft_rx_init(&s->rx, baud, stop, s->line_fd >= 0 ? get_level(s) : s->rx.level);
+  rx_reset(s, s->line_fd >= 0 ? get_level(s) : s->rx.level);
   return 0;
 }
 
@@ -353,9 +441,10 @@ static void push(soft_t *s, const uint8_t *p, int n) {
   for (int i = 0; i < n && s->qn < SOFT_QUEUE; i++) s->q[s->qn++] = p[i];
 }
 
-/* the thread, for a frame: SCHED_FIFO (when allowed) */
+/* the thread, for a frame: SCHED_FIFO (when allowed) at soft_rt_prio, above whatever else of ours shares
+ * the core (the drawing threads) */
 static bool rt_on(void) {
-  struct sched_param sp = { .sched_priority = SOFT_RT_PRIO };
+  struct sched_param sp = { .sched_priority = soft_rt_prio };
   return pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
 }
 static void rt_off(void) {
@@ -371,33 +460,64 @@ static int soft_write(vtx_io_t *io, const uint8_t *p, size_t n) {
   int from = s->proto == VTX_PROTO_TRAMP ? 1 : 0;  /* the line's idle level: SmartAudio rests low, Tramp high */
   int ne = vtx_soft_schedule(p, n, s->baud, s->stop, from, ed, 2048, &end);
   int64_t bit = 1000000000LL / (s->baud > 0 ? s->baud : 4800);
-  for (int attempt = 0; attempt < 3; attempt++) {
+  bool on_time = false;
+  for (int attempt = 0; attempt < 3 && !on_time; attempt++) {
     s->rt_ok = rt_on();
-    struct gpio_v2_line_config c;
-    cfg_output(&c, from);
-    if (ioctl(s->line_fd, GPIO_V2_LINE_SET_CONFIG_IOCTL, &c) != 0) { rt_off(); return -1; }
+    int64_t sw0 = mono_ns();
+    if (s->regs) {                                 /* the level first, then the pin drives: no glitch */
+      reg_drive(s, from);
+      reg_fsel(s, 1);
+    } else {
+      struct gpio_v2_line_config c;
+      cfg_output(&c, from);
+      if (ioctl(s->line_fd, GPIO_V2_LINE_SET_CONFIG_IOCTL, &c) != 0) { rt_off(); return -1; }
+    }
+    int64_t sw = mono_ns() - sw0;
+    if (sw > s->sw_out_max_ns) s->sw_out_max_ns = sw;
     int64_t t0 = mono_ns() + 100000, late_max = 0;
     for (int i = 0; i < ne; i++) {
       int64_t t = t0 + ed[i].t_ns;
       wait_until(t);
-      struct gpio_v2_line_values v = { ed[i].level, 1 };
-      ioctl(s->line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &v);
+      if (s->regs) reg_drive(s, ed[i].level);
+      else {
+        struct gpio_v2_line_values v = { ed[i].level, 1 };
+        ioctl(s->line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &v);
+      }
       int64_t late = mono_ns() - t;
       if (late > late_max) late_max = late;
       s->late_sum_ns += late;
       s->late_n++;
+      if (late > bit / 4) s->late_q++;
+      if (late > bit / 2) s->late_h++;
     }
     wait_until(t0 + end);                          /* the last stop bit is out */
-    int ri = to_input(s);
+    sw0 = mono_ns();
+    int ri = 0;
+    if (s->regs) {                                 /* an input again; the edge detection never stopped */
+      reg_fsel(s, 0);
+      s->tx_end_ns = mono_ns();
+      rx_reset(s, get_level(s));
+    } else ri = to_input(s);
+    sw = mono_ns() - sw0;
+    if (sw > s->sw_in_max_ns) s->sw_in_max_ns = sw;
     rt_off();
     if (ri != 0) return -1;
     s->frames++;
+    s->own_expect += (uint32_t)ne;
     if (late_max > s->late_max_ns) s->late_max_ns = late_max;
     s->late_last_max_ns = late_max;
-    if (late_max <= bit / 4) break;
-    s->resent++;                                   /* an edge a quarter bit late: the frame again */
-    plat_sleep_us(3000);
+    /* A UART samples each bit in its middle: an edge late by less than half a bit still reads right (the
+     * VTX's own clock error eats part of that; so does the ioctl's time, which the figure includes).
+     * Only a frame that is surely garbled goes again: a frame that was probably fine would get its
+     * reply while the repeat is on the wire, and both would be lost (seen on a Pi 4 with a quarter-bit
+     * rule: half the frames repeated, a third answered). */
+    on_time = late_max <= bit / 2;
+    if (!on_time) {
+      s->resent++;
+      plat_sleep_us(3000);
+    }
   }
+  if (!on_time) s->late_frames++;                  /* three times late: it went out like that */
   s->qn = 0;
   push(s, p, (int)n);                              /* what went out, as the line's echo */
   return 0;
@@ -410,6 +530,7 @@ static void drain(soft_t *s, bool decode) {
     if (k <= 0) break;
     for (int i = 0; i < (int)(k / (ssize_t)sizeof ev[0]); i++) {
       s->events++;
+      if (s->regs && (int64_t)ev[i].timestamp_ns <= s->tx_end_ns + 20000) { s->own_seen++; continue; }   /* the sender's own */
       if (!decode) continue;
       uint8_t b[2];
       int got = vtx_soft_rx_edge(&s->rx, (int64_t)ev[i].timestamp_ns, ev[i].id == GPIO_V2_LINE_EVENT_RISING_EDGE, b, 2);
@@ -454,18 +575,24 @@ static void soft_flush(vtx_io_t *io) {
   if (s->line_fd < 0) return;
   drain(s, false);
   s->qn = 0;
-  vtx_soft_rx_init(&s->rx, s->baud, s->stop, get_level(s));
+  rx_reset(s, get_level(s));
 }
 
 static void soft_stats(vtx_io_t *io, char *out, size_t n) {
   soft_t *s = io->ud;
   if (!s->frames) { out[0] = 0; return; }
-  sfmt(out, n, "%lu frames sent; TX edges late by %lld us on average, %lld us at most (last frame %lld us)%s; %lu sent again; "
-       "RX %lu bytes, %lu framing errors, %lu glitches",
-       (unsigned long)s->frames, (long long)(s->late_n ? s->late_sum_ns / s->late_n / 1000 : 0), (long long)(s->late_max_ns / 1000),
-       (long long)(s->late_last_max_ns / 1000), s->rt_ok ? "" : " (not real-time: run as root)", (unsigned long)s->resent,
+  sfmt(out, n, "%lu frames sent%s; TX edges late by %lld us on average, %lld us at most (last frame %lld us)%s, %lu of %lu edges over "
+       "a quarter bit late, %lu over half a bit; %lu sent again, %lu went out late; the pin switched to output in up to %lld us, "
+       "back to input in up to %lld us; own edges seen back: %lu (%lu driven)%s; RX %lu bytes, %lu framing errors, %lu glitches",
+       (unsigned long)s->frames, s->regs ? "" : " (through the kernel's ioctls)", (long long)(s->late_n ? s->late_sum_ns / s->late_n / 1000 : 0),
+       (long long)(s->late_max_ns / 1000), (long long)(s->late_last_max_ns / 1000), s->rt_ok ? "" : " (not real-time: run as root)",
+       (unsigned long)s->late_q, (unsigned long)s->late_n, (unsigned long)s->late_h, (unsigned long)s->resent, (unsigned long)s->late_frames,
+       (long long)(s->sw_out_max_ns / 1000), (long long)(s->sw_in_max_ns / 1000), (unsigned long)s->own_seen, (unsigned long)s->own_expect,
+       s->irq_prio_set ? "" : " (the edge interrupt's thread could not be raised)",
        (unsigned long)s->rx.bytes, (unsigned long)s->rx.framing, (unsigned long)s->rx.glitches);
 }
+
+static uint32_t soft_late_frames(vtx_io_t *io) { return ((soft_t *)io->ud)->late_frames; }
 
 static int64_t soft_now(vtx_io_t *io) { return mono_ns() / 1000; }
 
@@ -497,7 +624,7 @@ vtx_io_t *vtx_soft_io_new(const char *spec, char *err, size_t errlen) {
   io->ud = s;
   io->open = soft_open; io->close = soft_close; io->set_line = soft_set_line; io->write = soft_write;
   io->read = soft_read; io->flush = soft_flush; io->set_proto = soft_set_proto; io->stats = soft_stats;
-  io->now_us = soft_now; io->destroy = soft_destroy;
+  io->late_frames = soft_late_frames; io->now_us = soft_now; io->destroy = soft_destroy;
   if (g >= 0) sfmt(io->desc, sizeof io->desc, "GPIO%d, pin %d (single pin)", g, vtx_soft_header_pin(g));
   else plat_strlcpy(io->desc, spec, sizeof io->desc);
   return io;

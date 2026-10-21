@@ -297,6 +297,11 @@ signal. Ground is already shared through the AV cable.
 - Pin 7 taken? Any of `gpio17` (pin 11), `gpio22` (pin 15), `gpio23` (pin 16), `gpio27` (pin 13) works the same way.
 - The Pi sends and receives the serial bits in software on that pin (the timing is shown on the web page, Video →
   VTX control → Line timing). No reboot is needed to start.
+- The catch of one pin: while the game draws at full tilt, the Pi's kernel stalls that software now and then for a
+  tenth of a millisecond, which is a whole bit at Tramp's 9600 baud. About half of the exchanges with a Tramp VTX
+  fail and are repeated (SmartAudio's 4800 baud has twice the margin). The VTX still gets set and stays set, and the
+  page shows the figures under Line timing. For a link that never misses, use the two-wire mode below: the second
+  wire is one more resistor at the Pi's header, the VTX still sees one wire.
 
 ### Wiring: two wires (the most reliable, if one pin gives errors)
 
@@ -400,7 +405,7 @@ more only overloads the goggles' receiver. Never run a VTX without its antenna.
 | VTX control: "UART not on yet" | Two-wire mode: reboot once after choosing a UART for `vtx_port`. |
 | VTX control: "Nothing comes back on RX" | Two-wire mode: the Pi doesn't even hear itself: check the RX wire (pin 29) and its 4.7 kΩ resistor, and that both resistors meet at the pad. Without an RX wire, use one pin (`vtx_port = gpio4`) or `vtx_send_only = on`. |
 | VTX control: "in use" for the pin | Another program or overlay has that GPIO: pick another pin for `vtx_port`. |
-| VTX control: Line timing shows frames "sent again", or answers come garbled | The one-pin mode's timing isn't good enough on this Pi right now: use the two-wire UART mode (above). |
+| VTX control: Line timing shows frames "sent again", or answers come garbled | On one pin the bit timing is at the mercy of the kernel while the game draws: some exchanges fail and are repeated (see the one-wire notes). If the VTX is reported lost often, use the two-wire UART mode (above). "The Pi couldn't keep the bit timing" means the Pi's own timing, not the wire. |
 | VTX control: "No answer from the VTX" | Check the wire to the right pad (SmartAudio / Tramp, not the video or audio pad), that the VTX has power, and the ground. Set the protocol by hand (`vtx = smartaudio` or `tramp`), try 2.2-4.7 kΩ in the TX wire, or send-only. Some VTXes only answer a few seconds after power-up. |
 | VTX control: "garbled" | Noise or a line driven by both sides: check the resistors and the ground; measure the pad (a 5 V pad needs a level shifter). |
 | VTX control: the VTX "didn't take" a setting | The VTX refuses that value (a locked VTX, a frequency or power it doesn't have): load your VTX's own table, or unlock it (Tramp race lock, see its manual). The Pi tries again when the setting or the VTX changes. |
