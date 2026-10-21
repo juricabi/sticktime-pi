@@ -4,16 +4,17 @@ Turn a Raspberry Pi into a "virtual quad". StickTime Pi runs the [StickTime](htt
 FPV simulator and sends the picture to your **analog FPV goggles** through a 5.8 GHz VTX wired to the
 Pi's AV jack, or over HDMI to goggles with an HDMI input or to any screen. You fly it with your own radio.
 
-![StickTime Pi in a real setup: a Raspberry Pi with a 5.8 GHz VTX, the picture on an analog FPV monitor, an EdgeTX radio](docs/images/real-setup.jpg)
+![StickTime Pi: the Raspberry Pi and the 5.8 GHz VTX in the printed case, the picture on an analog FPV monitor, an EdgeTX radio](docs/images/case-setup.jpg)
 
-*A real setup: the Raspberry Pi (left) sends the picture through a 5.8 GHz VTX to an analog FPV monitor, and an EdgeTX radio flies it.*
+*The whole thing: the Raspberry Pi 4 and a 5.8 GHz VTX in the [printed case](hardware/case/README.md) (left) send the
+picture to an analog FPV monitor or goggles, and an EdgeTX radio flies it over its ExpressLRS WiFi joystick. No PC, no cables to the radio.*
 
 > **Safety:** your radio keeps transmitting while you fly the sim. Take the props off the real quad or
 > unplug its battery.
 
 ![The web page: status with the live game screen, frame rate and stick latency](docs/images/web-status.png)
 
-<img src="docs/images/web-vtx.png" alt="VTX control on the web page: SmartAudio, band, channel and power" width="300" align="right">
+<img src="docs/images/web-vtx.png" alt="VTX control on the web page: the VTX found over Tramp, band, channel and power" width="300" align="right">
 
 ## Features
 
@@ -72,6 +73,11 @@ still and has composite only on solder pads and no audio jack; the Pi 5 has comp
 and no audio jack; the Pi 400 has no composite output (HDMI only). Reports from other models are welcome.
 
 ## Wiring the VTX
+
+
+![A bare Raspberry Pi wired to a VTX through the AV jack, the picture on an analog FPV monitor](docs/images/real-setup.jpg)
+
+*Before the case: the Pi's AV jack goes to the VTX's video pad, pin 7 through 1 kΩ to its control pad, and a shared ground.*
 
 The Pi's 3.5 mm jack is TRRS:
 
