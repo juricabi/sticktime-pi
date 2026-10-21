@@ -209,7 +209,7 @@ Open the address from the menu on a phone or PC on the same network:
 ### Latency and frame times
 
 **Latency** on the Status page is the time from reading your sticks to the picture being on the screen,
-counted to the **middle** of the picture. It adds up as the **Frame times** card shows: The figure ends where the picture leaves the Pi (the VTX or the HDMI port): analog goggles add next to nothing, a digital screen or HDMI goggles add their own 10-30 ms.
+counted to the **middle** of the picture. It adds up as the **Frame times** card shows: The figure ends where the picture leaves the Pi (the VTX or the HDMI port). Your goggles or screen add their own delay on top, and that differs by model: measure it rather than guess (a phone filming the stick and the screen at once, counted in frames, is enough).
 
 - **Game (Lua + drawing)**: the game's step and drawing its picture (on interlaced composite with
   Drawing on multi-core, also the copy out through the flicker filter).
