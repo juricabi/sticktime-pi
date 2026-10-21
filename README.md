@@ -75,9 +75,9 @@ and no audio jack; the Pi 400 has no composite output (HDMI only). Reports from 
 ## Wiring the VTX
 
 
-![A bare Raspberry Pi wired to a VTX through the AV jack, the picture on an analog FPV monitor](docs/images/real-setup.jpg)
+![The open case: the Raspberry Pi, the VTX and the 40 mm fan on the lid, the AV cable from the Pi's jack to the VTX](docs/images/case-open.jpg)
 
-*Before the case: the Pi's AV jack goes to the VTX's video pad, pin 7 through 1 kΩ to its control pad, and a shared ground.*
+*Inside the case: the AV cable (yellow) from the Pi's jack to the VTX's video pad, pin 7 through 1 kΩ to its control pad, a shared ground, and the fan on the lid.*
 
 The Pi's 3.5 mm jack is TRRS:
 
