@@ -908,6 +908,12 @@ def settings_post():
     ok("stick_channels = 3 1 2 4" in settings_text(), "nothing saved")
     eq(is_json(post("/api/settings", "stick_channels =\n"))["saved"], ["stick_channels"])
     eq(get("/api/settings").json()["values"]["stick_channels"], "")
+    # wifi_module_ip: a.b.c.d or empty; 0.0.0.0 names no module (the receiver would refuse it and keep
+    # discovering while the setting showed an address)
+    for bad in ("0.0.0.0", "10.0.0", "010.0.0.1"):
+        j = is_error(post("/api/settings", f"wifi_module_ip = {bad}\n"), 400, "BadRequest")
+        ok("must be an IPv4 address" in j["fields"]["wifi_module_ip"], j)
+    ok("wifi_module_ip = 0.0.0.0" not in settings_text(), "nothing saved")
     # unknown keys are saved and kept; an empty value clears to the default
     eq(is_json(post("/api/settings", "new_thing = 42\n"))["saved"], ["new_thing"])
     ok("new_thing = 42" in settings_text() and "my_custom_key = keep me" in settings_text())

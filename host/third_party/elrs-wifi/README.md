@@ -6,7 +6,7 @@
 | | |
 |---|---|
 | Source | [github.com/juricabi/elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux), directory `core/` (and its `LICENSE`) |
-| Commit | `6380bb85c46ee0fe07b4beb36d6328ea59390294` (also in `VENDOR`, with the SHA-256 of every file copied) |
+| Commit | `cbd03d46ea80daf3e14fc4239c7e749cd852664b` (also in `VENDOR`, with the SHA-256 of every file copied) |
 | License | MIT, (c) juricabi: `LICENSE` |
 
 The same author's Linux WiFi joystick app is built on this core, and both follow the Windows app

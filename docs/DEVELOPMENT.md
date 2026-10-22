@@ -69,6 +69,7 @@ python image/tests/test_update.py                  # the updater against a fake 
 python host/tests/check_settings_keys.py           # settings.py and settings_keys.h describe the same keys
 python host/tests/vtx_live_test.py                 # VTX control: the real program + the fake VTX (--pty on Linux: termios)
 python host/tests/wifi_live_test.py                # WiFi joystick: the receiver (test_wifi_live as a probe) + fake ELRS/Crossfire modules
+python host/tests/test_wifi_docs.py                # the WiFi joystick's numbers in the docs (restart tries, lock loss, 0.5 s pause) match the code
 ```
 (add `.exe` to the binaries on Windows.) Scenarios are Lua scripts in `host/tests/scenarios/`; the
 scenario API is documented at the top of `host/src/scenario.c`, screenshots go to

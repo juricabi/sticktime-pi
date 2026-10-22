@@ -72,6 +72,11 @@ throttling flags in hex, as `vcgencmd get_throttled` prints them (bit 0 under-vo
 2 throttled, 3 soft temperature limit; bits 16-19 the same since boot), read from the firmware's mailbox
 (`/dev/vcio`) where the kernel has no `get_throttled` file (6.12); `""` when unknown (not a Pi).
 
+`input.live` and a source's `live`: it was updated within 0.5 s, the WiFi joystick too (a pause in its stream
+longer than that leaves it not live, so with no other live source the game pauses in flight; its lock is
+released after 3 s, which removes the source); `input.sticks` without a live source: ail, ele and rud 0, thr
+-1024 (the game's no-input state).
+
 `GET /api/sticks` → `{"sources":[{"kind":"wifi","name":"...","live":true,"rate_hz":250,"nch":16,"ch":[16 ints]}],"active":0,"sticks":{...}}`
 (poll it about 20 times a second). `GET /api/sticks/stream` → `text/event-stream`, one `data: <same JSON>` event
 every 33 ms until the client goes away (counts as a client).
@@ -158,15 +163,42 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
 ## WiFi joystick
 
 - Settings keys (all live): `wifi_module_ip` (empty: found by its beacon), `wifi_interval_us` (1000-100000,
-  default 4000 = 250 Hz) and `wifi_channels` (4-16, default 16): what the activation POST asks the module for.
-  An ELRS module takes a new interval or channel count only when its stream starts, so saving a change while
-  one streams restarts it (`action=joystick_end`, then `joystick_begin`; the log says so): at once when it is
-  surely no Crossfire (its ELRS beacon was seen, or it sends other than 16 channels), else once the lock is
-  20 s old without a Crossfire beacon. Crossfire ignores both (16 channels, about 90 Hz) and is never sent
-  `joystick_end` once its beacon was seen; when its beacons can't reach the Pi (broadcasts blocked, so
-  `wifi_module_ip` is set), it counts as ELRS after those 20 s and is restarted too. A module still streaming
-  another request when it is locked to is restarted once only when its channel count differs from
-  `wifi_channels` and it is surely no Crossfire; a different interval alone is kept.
+  default 4000 = 250 Hz; the page offers 1000, 500, 333, 250, 200, 150, 100 and 50 Hz) and `wifi_channels`
+  (4-16, default 16): what the activation POST (`joystick_begin`) asks the module for, "the request". An ELRS
+  module takes a new request only when its stream starts, so it reaches a streaming module only by a restart
+  (`action=joystick_end`, then `joystick_begin`; the log says so). Crossfire ignores the request (16
+  channels, about 90 Hz) and is never sent `joystick_end` once its beacon was seen. The rules (the shared
+  core's R1-R13, [RESEARCH.md §2](RESEARCH.md#2-expresslrs-wifi-joystick-and-tbs-crossfire-velocidrone-mobile-link)):
+  - Saved while a module is locked: Crossfire by its beacon: logged once per session, nothing sent. Surely no
+    Crossfire (its ELRS beacon was seen, or it sends other than 16 channels): restarted at once. Unknown with
+    16 channels: held until the lock is 20 s old without a Crossfire beacon, then restarted (dropped on a
+    Crossfire beacon); a held restart survives a lock loss of that module and goes out when it is locked
+    again (after its 20 s), unless its ELRS beacon got it a `joystick_begin` with the request meanwhile or
+    another module took the lock. When its beacons can't reach the Pi (broadcasts blocked, so
+    `wifi_module_ip` is set), a Crossfire module counts as ELRS after those 20 s and is restarted too.
+  - Saved while none is locked: the next `joystick_begin` carries it. The Pi remembers what it last asked each
+    module (8 at most, while the program runs); one that locks after it was last asked for another request is
+    restarted as above (Crossfire: only logged).
+  - A restart counts only when both POSTs got a 2xx. A failed one is sent again every 5 s while that module
+    stays locked and is not known as Crossfire, 3 sends per change at most, then the log says it gave up. A
+    failed plain `joystick_begin` is never retried as a restart. A failed one whose module lost the lock
+    meanwhile (or was left for another module IP) can't be sent again: that module is restarted once more
+    when it locks again ("<ip> may still stream its old request (its restart failed) ...").
+  - `wifi_module_ip` set to the module locked now: the lock is kept, nothing sent (the log says it streams
+    already). Set to another: unlocked (the sticks center), `wifi_joystick.state` `activating <ip>` then
+    `connecting to <ip>`, `joystick_begin` at once; a restart pending or held for the module left is dropped.
+    Saved together with a new request: the new module's `joystick_begin` carries it, the module left gets
+    nothing.
+  - A module still streaming another request when it is locked to is restarted once (per module while the
+    program runs) when its channel count differs from `wifi_channels` and it is surely no Crossfire, or
+    when it sends 16 while fewer are asked and its 20 s passed without a Crossfire beacon; a different
+    interval alone is kept (the frames don't carry it).
+  - Plain activations: one POST per module per 5 s; restarts go out whatever that throttle and start it again.
+  - Gaps hold the last values while the WiFi source still counts as `live` (0.5 s, like every source); after
+    that, with no other live source, `input.sticks` are ail, ele and rud 0 and thr -1024, and the game pauses
+    in flight. Lock loss (3 s without data), the program's exit and a switch to another module IP release the
+    lock and remove the source (its channels 0, no longer listed). Channels a frame doesn't carry read 0
+    (center) in `/api/sticks`.
 - `GET /api/status` → `wifi_joystick` (above): the locked module, the state and the measured rate.
 
 ## VTX control

@@ -501,13 +501,28 @@ void wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now) {
   }
 }
 
-static int first_pending(const wifi_t *w, uint32_t *ip) {
+static int npending(const wifi_t *w) {
   plat_mutex *mu = (plat_mutex *)&w->mu;
   plat_mutex_lock(mu);
   int n = w->q.npending;
-  if (n && ip) *ip = w->q.pending[0];
   plat_mutex_unlock(mu);
   return n;
+}
+
+/* the module shown as "activating": with a module IP set, only its own POST (one still in flight to a
+ * module just left behind is not what the user waits for: the state is "connecting to <ip>"), else the
+ * first queued or in flight; 0 = none */
+static uint32_t activating_ip(const wifi_t *w) {
+  plat_mutex *mu = (plat_mutex *)&w->mu;
+  uint32_t ip = 0;
+  plat_mutex_lock(mu);
+  if (w->p.target) {
+    if (wifi_actq_is_pending(&w->q, w->p.target)) ip = w->p.target;
+  } else if (w->q.npending) {
+    ip = w->q.pending[0];
+  }
+  plat_mutex_unlock(mu);
+  return ip;
 }
 
 void wifi_fill_status(const wifi_t *w, app_status_t *st) {
@@ -522,7 +537,7 @@ void wifi_fill_status(const wifi_t *w, app_status_t *st) {
   }
   const wifi_proto_t *p = &w->p;
   char ip[16];
-  uint32_t pend = 0;
+  uint32_t pend;
   snprintf(st->wifi_module, sizeof st->wifi_module, "%s", p->bound ? w->name : "");
   st->wifi_rate_hz = p->bound ? (float)p->last_hz : 0.0f;
   st->wifi_dropped = p->dropped_filter;
@@ -536,7 +551,7 @@ void wifi_fill_status(const wifi_t *w, app_status_t *st) {
       if (!strncmp(p->detail, "module found", 12)) {
         wifi_ip_str(p->nostick_ip, ip);
         snprintf(st->wifi_state, sizeof st->wifi_state, "no stick data from %s", ip);
-      } else if (first_pending(w, &pend)) {
+      } else if ((pend = activating_ip(w)) != 0) {
         wifi_ip_str(pend, ip);
         snprintf(st->wifi_state, sizeof st->wifi_state, "activating %s", ip);
       } else if (!strncmp(p->detail, "activated", 9)) {
@@ -585,7 +600,7 @@ void wifi_get_info(const wifi_t *w, wifi_info_t *o) {
   o->posts = w->posts;
   o->posts_ok = w->posts_ok;
   o->posts_failed = w->posts_failed;
-  o->pending = first_pending(w, NULL);
+  o->pending = npending(w);
   o->interval_us = p->interval_us;
   o->channels = p->channels;
   o->restarts = p->restarts;

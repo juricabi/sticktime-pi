@@ -563,6 +563,14 @@ raw: hotspot_ssid = \sCaf\xC3\xA9\s
 
 # ---- effective values: validation, defaults, normalization
 
+# 0.0.0.0 names no module: the WiFi receiver would refuse it and run in discovery while the setting shows it
+case: module_ip_all_zero
+in: wifi_module_ip = 0.0.0.0\n
+warn: line 1: wifi_module_ip must be an IPv4 address (like 192.168.1.50) or empty (using the default)
+get: wifi_module_ip =
+raw: wifi_module_ip = 0.0.0.0
+invalid: wifi_module_ip = 0.0.0.0
+
 case: known_invalid
 in: video = vga\n
 in: tv = PAL\n
@@ -969,8 +977,10 @@ valid: wifi_password = a"b#c\\d e
 valid: wifi_module_ip =
 valid: wifi_module_ip = 10.0.0.1
 valid: wifi_module_ip = 192.168.1.50
-valid: wifi_module_ip = 0.0.0.0
 valid: wifi_module_ip = 255.255.255.255
+valid: wifi_module_ip = 0.0.0.1
+valid: wifi_module_ip = 10.0.0.0
+invalid: wifi_module_ip = 0.0.0.0
 invalid: wifi_module_ip = 256.0.0.1
 invalid: wifi_module_ip = 10.0.0
 invalid: wifi_module_ip = 10.0.0.1.5

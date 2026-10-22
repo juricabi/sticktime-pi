@@ -8,9 +8,11 @@
  * loop only drains the socket without blocking and swaps requests/results under a mutex.
  *
  * Sticks: each applied frame fills the source with ch[i] = wifi_raw_to_stick(raw[i]) for the
- * frame's channels and 0 beyond. Gaps hold the last values (the mixer stops treating the source as
- * live after INPUT_STALE_US); after 3 s without a valid frame the lock is released and the source
- * is no longer present. */
+ * frame's channels and 0 (center) beyond. Gaps hold the last values while the mixer still counts the
+ * source as live (INPUT_STALE_US, 0.5 s, like every source); after that, with no other live source, the
+ * game gets centered sticks with the throttle low (mix_sticks) and pauses in flight. After 3 s without a
+ * valid frame (the lock loss, WIFI_SOURCE_TIMEOUT_US), and on a stop, a close or a switch to another
+ * module IP, the lock is released and wifi_poll empties the source (channels 0, not present). */
 #ifndef INPUT_WIFI_H
 #define INPUT_WIFI_H
 
@@ -47,12 +49,16 @@ void    wifi_stop(wifi_t *w);                              /* close the socket, 
 /* Frame loop, once per frame (never blocks): bind retry, drain UDP (at most 256 datagrams), collect
  * POST results, tick, stats, update *src (the WiFi slot; may be NULL). */
 void    wifi_poll(wifi_t *w, int64_t now_us, insrc_t *src);
-/* Live: module_ip -> set target (invalid text: logged, discovery); port -> rebind; http_port -> the
- * next POST. interval and channels (the request) -> the next joystick_begin; the module locked to is
- * restarted so they apply (joystick_end, then joystick_begin: ELRS takes them only when its stream
- * starts): at once when it surely is no Crossfire (an ELRS beacon, or not 16 channels), else (16 channels,
- * no beacon from it yet) once the lock is WIFI_XF_BEACON_US old without a Crossfire beacon. Not when it is
- * Crossfire by its beacon (which ignores them) or the new module_ip names another module. */
+/* Live, by the core's request rules (R1-R13 in wifi_proto.h): module_ip -> set target (invalid text, which
+ * the settings refuse, 0.0.0.0 too: logged, discovery; the module locked now: the lock kept, nothing sent; another: unlocked, joystick_begin
+ * at once, a restart pending or held for the module left dropped); port -> rebind (a new session);
+ * http_port -> the next POST. interval and channels (the request) -> the next joystick_begin; the module
+ * locked to is restarted so they apply (joystick_end, then joystick_begin: ELRS takes them only when its
+ * stream starts): at once when it surely is no Crossfire (an ELRS beacon, or not 16 channels), else (16
+ * channels, no beacon from it yet) once the lock is WIFI_XF_BEACON_US old without a Crossfire beacon. Not
+ * when it is Crossfire by its beacon (which ignores them) or the new module_ip names another module (its
+ * joystick_begin carries them). A restart counts only when both POSTs got a 2xx; a failed one is sent again
+ * (the core). */
 void    wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now_us);
 /* wifi_module ("ELRS 10.0.0.1" while streaming, else ""), wifi_state ("off", "listening",
  * "activating 10.0.0.1", "connecting to 10.0.0.1", "no data from 10.0.0.1",

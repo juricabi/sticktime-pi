@@ -367,8 +367,10 @@ def _hostname_ok(v):
 
 
 def _ipv4_ok(v):
+    # a.b.c.d (wifi_module_ip), not 0.0.0.0: that names no module, and the WiFi receiver refuses it, so the
+    # saved setting and the running module IP would disagree (as settings.c)
     m = _IP_RE.fullmatch(v)
-    return bool(m) and all(int(p) <= 255 for p in m.groups())
+    return bool(m) and all(int(p) <= 255 for p in m.groups()) and any(int(p) for p in m.groups())
 
 
 def _hdmi_mode_ok(v):

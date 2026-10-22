@@ -724,9 +724,12 @@ static void Beacons_KindAndName(void) {
   str("ELR", "10.0.0.7");
   CHECK_INT(P.beacons, 5);
   CHECK_INT(P.malformed, 2);
-  /* reset forgets them */
+  /* reset keeps them: a module keeps its kind while it keeps its IP (and an ELRS module that streams on
+   * after a stop sends no beacon to tell it again) */
   wifi_proto_reset(&P);
-  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.1")), WIFI_KIND_UNKNOWN);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.1")), WIFI_KIND_ELRS);
+  CHECK_STR(wifi_proto_module_name(&P, IP("10.0.0.1")), "MyTX");
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.2")), WIFI_KIND_XF);
   /* more modules than the table: the oldest is forgotten, never an overflow */
   for (int i = 0; i < WIFI_TABLE + 3; i++) {
     char ip[32];
@@ -930,12 +933,41 @@ static void SetTarget_Invalid_KeepsTarget(void) {
   CHECK(strlen(logs[nlogs - 1]) < 80);
 }
 
-static void SetTarget_SameAsBound_Relocks(void) {
+/* The module streaming now, named as the target: the lock stays (unlocking would center the joystick for a
+ * frame, a held switch would be released and pressed again), nothing is sent. A stale lock is let go. */
+static void SetTarget_SameAsBound_KeepsTheLock(void) {
   H();
   SENDF("10.0.0.9", 1, 2, 3, 4);
+  int ns = nstates;
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.9", now_us), 0);
+  CHECK(P.bound && P.target == IP("10.0.0.9"));
+  CHECK_INT(nactivated, 0);
+  CHECK_INT(nstates, ns);                            /* still Streaming: no "connecting to" */
+  CHECK_INT(count_logs("Target module set to 10.0.0.9 - streaming from it already"), 1);
+  SENDF("10.0.0.9", 1, 2, 3, 4);
+  CHECK_INT(count_state(WIFI_ST_STREAMING), 1);      /* never relocked */
+  CHECK_INT(count_logs("Joystick source locked"), 1);
+  CHECK_INT(napplied, 2);
+  /* a held restart (may be Crossfire) stays held, and goes out after its 20 s */
+  H();
+  send_same("10.0.0.9", 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_wait);
+  adv(1.0);
+  send_same("10.0.0.9", 16, 16000);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.9", now_us), 0);
+  CHECK(P.bound && P.restart_wait);
+  for (int i = 0; i < 20; i++) { adv(1.0); send_same("10.0.0.9", 16, 16000); tick(); }
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP("10.0.0.9") && restarts[0].interval_us == 2000);
+  /* the lock is stale (no data for more than 3 s, not released yet): let go, POST at once */
+  H();
+  SENDF("10.0.0.9", 1, 2, 3, 4);
+  adv(3.1);
   CHECK_INT(wifi_proto_set_target(&P, "10.0.0.9", now_us), 0);
   CHECK(!P.bound);
   CHECK_INT(nactivated, 1);
+  CHECK_STR(last_detail(), "connecting to 10.0.0.9");
   SENDF("10.0.0.9", 1, 2, 3, 4);
   CHECK(source() == IP("10.0.0.9"));
   CHECK_INT(count_state(WIFI_ST_STREAMING), 2);
@@ -1045,12 +1077,16 @@ static void FirewallHint_NotShown_ForPlaceholderModule(void) {
   H();
   str("VELOCIDRONE", "192.168.2.138");
   for (int i = 0; i < 10; i++) send_placeholder("192.168.2.138");
-  adv(5);
-  tick();
+  for (int i = 0; i < 50; i++) { adv(0.1); send_placeholder("192.168.2.138"); tick(); }   /* 5 s of them */
   CHECK_INT(count_prefix("!! Activated OK"), 0);
   CHECK_STR(last_detail(), "module found, but it is sending no stick data");
   CHECK(P.nostick_ip == IP("192.168.2.138"));
-  CHECK_INT(P.dropped_filter, 10);
+  CHECK_INT(P.dropped_filter, 60);
+  /* they stop (the module went away): the state goes back to waiting; still no firewall hint */
+  adv(5);
+  tick();
+  CHECK_INT(count_prefix("!! Activated OK"), 0);
+  CHECK_STR(last_detail(), "waiting for module");
 }
 
 static void FirewallHint_AgainAfterNextLockLoss(void) {
@@ -1691,20 +1727,74 @@ static void Restart_ExplicitUnknown16_WaitsForTheKind(void) {
   CHECK_INT(nrestarts, 2);
 }
 
-static void Restart_Wait_DroppedWhenTheLockIsLost(void) {
+/* A held restart survives a lock loss of its module: a module that streams on through a WiFi pause keeps the
+ * old request until it is restarted (in discovery an ELRS module that streams sends no beacon, and a
+ * joystick_begin to it changes nothing). Another module, another target, or a reset drops it. */
+static void Restart_Wait_HeldThroughALockLoss(void) {
   H();
   send_same(DEF_IP, 16, 16000);
   wifi_proto_set_request(&P, 2000, 16, now_us);
   CHECK(P.restart_wait);
-  adv(3.1);
+  adv(3.5);
   tick();                                            /* lock released */
-  CHECK(!P.bound && !P.restart_wait);
+  CHECK(!P.bound && P.restart_wait);
   adv(30.0);
   tick();
+  CHECK_INT(nrestarts, 0);                           /* not while it is not locked */
+  /* the same module comes back: still 16 channels and no beacon: 20 s of lock, then the restart */
+  for (int i = 0; i < 19; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
   CHECK_INT(nrestarts, 0);
-  /* a new lock (another module) starts clean */
+  for (int i = 0; i < 2; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP) && restarts[0].interval_us == 2000);
+  CHECK(!P.restart_wait);
+  for (int i = 0; i < 60; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  /* a new lock (another module) drops it */
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  tick();
   send_same("192.168.1.51", 16, 100);
   CHECK(!P.restart_wait);
+  for (int i = 0; i < 30; i++) { adv(1.0); send_same("192.168.1.51", 16, 100); tick(); }
+  CHECK_INT(nrestarts, 0);
+  /* another target drops it; reset drops it */
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  wifi_proto_set_target(&P, "10.0.0.7", now_us);
+  CHECK(!P.restart_wait);
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  wifi_proto_reset(&P);
+  CHECK(!P.restart_wait);
+  /* its beacon says Crossfire during the pause: noted, never restarted */
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  tick();
+  str("VELOCIDRONE", DEF_IP);
+  tick();
+  CHECK(!P.restart_wait);
+  CHECK_INT(count_logs("Crossfire module 192.168.1.50 ignores the rate and channel count"), 1);
+  for (int i = 0; i < 30; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+  /* its ELRS beacon during the pause: it is not streaming, so the activation carries the request - nothing
+   * is held any more (a restart at the next lock would only pause its stream) */
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  tick();
+  str("ELRS", DEF_IP);
+  CHECK(last_act.ip == IP(DEF_IP) && !last_act.restart && last_act.interval_us == 2000);
+  CHECK(!P.restart_wait);
+  for (int i = 0; i < 30; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
 }
 
 static void Request_Store_NoRestart(void) {
@@ -1739,14 +1829,45 @@ static void Restart_Explicit(void) {
   CHECK(!wifi_proto_restart(&P, now_us));            /* nothing to restart */
   CHECK_INT(count_logs("No module to restart"), 1);
   CHECK_INT(nrestarts, 0);
-  /* the target, while nothing streams */
+  /* the target, while nothing streams, no beacon from it: it may be Crossfire, which is never sent
+   * joystick_end: only a joystick_begin, past the throttle (a module that does not stream takes it) */
   CHECK_INT(wifi_proto_set_target(&P, "10.0.0.1", now_us), 0);
   CHECK_INT(nactivated, 1);
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, 2);
+  CHECK(last_act.ip == IP("10.0.0.1") && !last_act.restart && last_act.interval_us == 2000 && last_act.channels == 8);
+  CHECK_INT(count_logs("10.0.0.1 has sent no beacon yet (it may be Crossfire, which is never sent joystick_end): "
+                       "activating it with 500 Hz, 8 channels"), 1);
+  CHECK_INT(P.restarts, 0);
+  /* its beacon then says Crossfire (R4): still only a joystick_begin past the throttle, never joystick_end */
+  str("VELOCIDRONE", "10.0.0.1");
+  int acts = nactivated;
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, acts + 1);
+  CHECK(last_act.ip == IP("10.0.0.1") && !last_act.restart);
+  CHECK_INT(count_logs("Crossfire module 10.0.0.1 is not streaming to us: activating it (it always sends 16 channels "
+                       "at about 90 Hz)"), 1);
+  /* locked to it: nothing is sent (logged each time it is asked) */
+  send_same("10.0.0.1", 16, 100);
+  acts = nactivated;
+  CHECK(!wifi_proto_restart(&P, now_us));
+  CHECK(!wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, acts);
+  CHECK_INT(count_logs("Crossfire module 10.0.0.1 always sends 16 channels at its own rate (about 90 Hz) - nothing to "
+                       "restart"), 2);
+  CHECK_INT(P.restarts, 0);
+  /* the target identified as ELRS by its beacon: a real restart (joystick_end first) */
+  H();
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.1", now_us), 0);
+  str("ELRS", "10.0.0.1");
   CHECK(wifi_proto_restart(&P, now_us));
   CHECK_INT(nrestarts, 1);
   CHECK(restarts[0].ip == IP("10.0.0.1"));
   /* the locked module wins over the target (ELRS by its beacon: no wait for the kind) */
-  str("ELRS", "10.0.0.1");
   send_same("10.0.0.1", 16, 100);
   CHECK(wifi_proto_restart(&P, now_us));
   CHECK_INT(count_restarts(IP("10.0.0.1")), 2);
@@ -1810,6 +1931,341 @@ static void Restart_OkWhileNotStreaming_ArmsTheNoDataHint(void) {
   adv(4.1);
   tick();
   CHECK_INT(count_logs("NO data arriving"), 1);
+}
+
+/* R6: a restart that failed (its joystick_end or its joystick_begin got no 2xx: the host says not ok) left the
+ * streaming module with its old request: it is sent again WIFI_THROTTLE_US after the last send while that
+ * module streams to us. A failed plain joystick_begin is never retried as a restart. */
+static void Restart_Failed_SentAgainWhileItStreams(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  CHECK(wifi_proto_set_request(&P, 2000, 8, now_us));
+  CHECK_INT(nrestarts, 1);
+  adv(1.0);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);     /* its result, 1 s later: failed */
+  CHECK_INT(count_logs("The restart of 192.168.1.50 failed - sending it again in 4 s"), 1);
+  for (int i = 0; i < 39; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);                           /* not before the throttle; old frames restart nothing */
+  adv(0.1);
+  send_same(DEF_IP, 16, 100);
+  tick();                                            /* 5 s after the first send */
+  CHECK_INT(nrestarts, 2);
+  CHECK(restarts[1].ip == IP(DEF_IP) && restarts[1].restart);
+  CHECK_INT(restarts[1].interval_us, 2000);
+  CHECK_INT(restarts[1].channels, 8);
+  CHECK_INT(P.restarts, 2);
+  wifi_proto_activation_done(&P, IP(DEF_IP), true, now_us);        /* this one took */
+  for (int i = 0; i < 20; i++) { adv(1.0); send_same(DEF_IP, 8, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs("failed"), 1);
+  CHECK(P.bound);
+  CHECK_INT(nactivated, 1);                          /* no plain joystick_begin to the streaming module */
+  /* its result comes when the throttle passed already: sent again at the next tick */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  for (int i = 0; i < 6; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK_INT(count_logs("The restart of 192.168.1.50 failed - sending it again now"), 1);
+  tick();
+  CHECK_INT(nrestarts, 2);
+  /* a plain joystick_begin that fails is no restart: nothing is sent again for it */
+  H();
+  act_result = WIFI_ACT_QUEUED;
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  for (int i = 0; i < 10; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("The restart of"), 0);
+}
+
+/* R6: WIFI_RESTART_TRIES sends per restart, then it gives up (logged); a new request is a new restart */
+static void Restart_Failed_GivesUpAfterTries_ANewRestartStartsOver(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;                  /* failing at once (a host that can't send) counts too */
+  int64_t t0 = now_us;
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(count_logs("The restart of 192.168.1.50 failed - sending it again in 5 s"), 1);
+  int64_t sent[8];
+  int ns = 0, n0 = nrestarts;
+  for (int i = 0; i < 400; i++) {
+    adv(0.1);
+    send_same(DEF_IP, 16, 100);
+    tick();
+    if (nrestarts != n0 && ns < 8) { sent[ns++] = now_us; n0 = nrestarts; }
+  }
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES);
+  CHECK_INT(ns, WIFI_RESTART_TRIES - 1);
+  CHECK_INT(sent[0] - t0, WIFI_THROTTLE_US);         /* every 5 s */
+  CHECK_INT(sent[1] - t0, 2 * WIFI_THROTTLE_US);
+  for (int i = 0; i < nrestarts; i++) CHECK(restarts[i].restart && restarts[i].interval_us == 2000);
+  CHECK_INT(count_logs("sending it again in 5 s"), WIFI_RESTART_TRIES - 1);
+  CHECK_INT(count_logs("The restart of 192.168.1.50 failed 3 times - giving up: it may still stream its old rate "
+                       "and channel count"), 1);
+  CHECK(P.restart_ip == 0);
+  CHECK(P.bound);
+  /* a new request is a new restart, with its own tries */
+  restart_result = WIFI_ACT_OK;
+  CHECK(wifi_proto_set_request(&P, 3000, 16, now_us));
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES + 1);
+  CHECK_INT(restarts[WIFI_RESTART_TRIES].interval_us, 3000);
+  /* so is an explicit one */
+  restart_result = WIFI_ACT_FAILED;
+  CHECK(wifi_proto_restart(&P, now_us));
+  for (int i = 0; i < 40; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 2 * WIFI_RESTART_TRIES + 1);
+  CHECK_INT(count_logs("giving up"), 2);
+  CHECK_INT(nactivated, 1);
+}
+
+/* R6: sent again only while its module stays locked and is not known as Crossfire; a reset, a lock loss,
+ * another module IP drop it (one that stopped streaming takes the request from its next joystick_begin).
+ * A restart that did not take leaves its module asked "unknown" (R3): one that streams on through the lock
+ * loss, still with its old request, is restarted once when it locks again. */
+static void Restart_Failed_OnlyWhileItsModuleStaysLocked(void) {
+  const char *again = "192.168.1.50 may still stream its old request (its restart failed) - restarting its stream "
+                      "with 500 Hz, 16 channels";
+  /* the result comes after the lock was lost (the joystick_end took, the joystick_begin did not): nothing is
+   * sent again; back with its old request, it is restarted once */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.1);
+  tick();
+  CHECK(!P.bound);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK_INT(count_logs("The restart of"), 0);
+  for (int i = 0; i < 20; i++) { adv(1.0); tick(); }
+  CHECK_INT(nrestarts, 1);
+  for (int i = 0; i < 10; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }    /* back */
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs(again), 1);
+  CHECK_INT(restarts[1].interval_us, 2000);
+  /* failed while it streams, then the lock is lost before the second send: dropped; restarted once when back */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP) && P.restart_retry);
+  adv(3.1);
+  tick();
+  CHECK(!P.bound);
+  CHECK(P.restart_ip == 0);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 20; i++) { send_same(DEF_IP, 16, 100); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs(again), 1);
+  /* the second send found the host busy, then the lock was lost: dropped too, the same when back */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  restart_result = WIFI_ACT_BUSY;
+  for (int i = 0; i < 6; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(P.restarts, 1);
+  CHECK(nrestarts > 1);
+  CHECK(P.restart_ip == IP(DEF_IP) && P.restart_retry);
+  adv(3.1);
+  tick();
+  CHECK(P.restart_ip == 0);
+  int n = nrestarts;
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 10; i++) { send_same(DEF_IP, 16, 100); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, n + 1);
+  CHECK_INT(P.restarts, 2);
+  CHECK_INT(count_logs(again), 1);
+  /* taken for ELRS (16 channels, 20 s of lock without a beacon), its restart failed, then a Crossfire beacon
+   * came from it after all: never a second joystick_end */
+  H();
+  restart_result = WIFI_ACT_QUEUED;
+  for (int i = 0; i < 21; i++) { send_same(DEF_IP, 16, 100); adv(1.0); tick(); }
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 1);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP));
+  str("VELOCIDRONE", DEF_IP);
+  for (int i = 0; i < 10; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  CHECK(P.restart_ip == 0);
+  /* ... and when the beacon comes before the result: not even planned */
+  H();
+  restart_result = WIFI_ACT_QUEUED;
+  for (int i = 0; i < 21; i++) { send_same(DEF_IP, 16, 100); adv(1.0); tick(); }
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  str("VELOCIDRONE", DEF_IP);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK(P.restart_ip == 0);
+  CHECK_INT(count_logs("The restart of"), 0);
+  /* reset (stop and start, a port change) drops it; a late result of the old session does nothing */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP));
+  wifi_proto_reset(&P);
+  CHECK(P.restart_ip == 0 && !P.restart_retry);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 3000, 16, now_us);      /* (not locked: stored) */
+  send_same(DEF_IP, 16, 100);                        /* it streams on: last asked 2000 us, restarted (R3) */
+  CHECK_INT(nrestarts, 2);
+  wifi_proto_reset(&P);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK(P.restart_ip == 0);
+  CHECK_INT(count_logs("sending it again"), 1);
+  /* the module IP set to it (it streams to us already): the lock and the retry stay */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.2", now_us), 0);
+  CHECK(P.bound && P.restart_ip == IP("10.0.0.2") && P.restart_retry);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 6; i++) { adv(1.0); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(count_restarts(IP("10.0.0.2")), 2);
+  CHECK(P.restart_ip == 0);
+  /* another module IP (R7): the retry for the module being left is dropped */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);
+  CHECK(P.restart_ip == 0 && !P.restart_retry);
+  CHECK(last_act.ip == IP("10.0.0.3") && !last_act.restart);
+  for (int i = 0; i < 20; i++) { adv(1.0); tick(); }
+  CHECK_INT(count_restarts(IP("10.0.0.2")), 1);
+  CHECK_INT(nrestarts, 1);
+}
+
+/* R6: a newer restart while a failed one waits to be sent again goes out at once (its own tries); a
+ * result that comes while a newer restart of the same module waits for the host plans nothing */
+static void Restart_Failed_ANewerRestartGoesFirst(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_retry);
+  adv(1.0);
+  restart_result = WIFI_ACT_OK;
+  CHECK(wifi_proto_set_request(&P, 3000, 16, now_us));
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(restarts[1].interval_us, 3000);
+  CHECK(P.restart_ip == 0 && !P.restart_retry);
+  for (int i = 0; i < 20; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+  /* the first restart in flight, a newer one finds the host busy (waits), then the first one's result fails */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 3000, 16, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP) && !P.restart_retry);
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK(!P.restart_retry);
+  CHECK_INT(count_logs("The restart of"), 0);
+  restart_result = WIFI_ACT_OK;
+  tick();                                            /* the newer one goes out on the next tick */
+  CHECK_INT(P.restarts, 2);
+  CHECK_INT(restarts[nrestarts - 1].interval_us, 3000);
+}
+
+/* R5: an unknown module streaming 16 channels while fewer are asked (relaunched with 8 while it still streams
+ * the 16 of the last run, so it sent no beacon) may be Crossfire: restarted once 20 s of lock passed without
+ * a Crossfire beacon; never after one */
+static void Mismatch_Unknown16_RestartedOnceAfterTheWindow(void) {
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 0);
+  CHECK(P.restart_wait);
+  CHECK_INT(count_logs("192.168.1.50 may be Crossfire (no beacon from it yet), which is never sent joystick_end: "
+                       "restarting its stream within 20 s unless its beacon says Crossfire"), 1);
+  for (int i = 0; i < 19; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 0);
+  adv(1.0);
+  send_same(DEF_IP, 16, 100);
+  tick();                                            /* 20 s of lock without a Crossfire beacon */
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP) && restarts[0].channels == 8 && restarts[0].interval_us == 4000);
+  for (int i = 0; i < 30; i++) { adv(1.0); send_same(DEF_IP, 16, 100); tick(); }   /* still 16 */
+  CHECK_INT(nrestarts, 1);                           /* once per module and session */
+  CHECK_INT(count_logs("may be Crossfire"), 1);
+  CHECK_INT(nactivated, 0);
+  /* a new session: once again (after its window) */
+  wifi_proto_reset(&P);
+  for (int i = 0; i < 20; i++) { send_same(DEF_IP, 16, 100); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  send_same(DEF_IP, 16, 100);
+  tick();
+  CHECK_INT(nrestarts, 2);
+  /* a Crossfire beacon within the window: dropped, noted, never restarted */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  send_same("192.168.2.138", 16, 100);
+  adv(2.0);
+  send_same("192.168.2.138", 16, 100);
+  str("VELOCIDRONE", "192.168.2.138");
+  for (int i = 0; i < 60; i++) { adv(1.0); send_same("192.168.2.138", 16, 100); tick(); }
+  CHECK_INT(nrestarts, 0);
+  CHECK(!P.restart_wait);
+  CHECK_INT(count_logs("Crossfire module 192.168.2.138 ignores the rate and channel count"), 1);
+  /* its ELRS beacon (it stopped streaming, it is activated with the request): nothing held any more */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  send_same(DEF_IP, 16, 100);
+  CHECK(P.restart_wait);
+  adv(3.5);
+  tick();
+  str("ELRS", DEF_IP);
+  CHECK(!P.restart_wait);
+  CHECK(last_act.ip == IP(DEF_IP) && !last_act.restart && last_act.channels == 8);
+  for (int i = 0; i < 30; i++) { send_same(DEF_IP, 8, 100); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+}
+
+/* R3 under R2's kind rules: a Crossfire module that locks with an older asked request is noted (once per
+ * session), never sent anything */
+static void Asked_CrossfireLocksWithAnOlderRequest_NotedOnly(void) {
+  H();
+  str("VELOCIDRONE", "192.168.2.138");              /* activated with 250 Hz, 16 channels */
+  send_same("192.168.2.138", 16, 100);
+  adv(3.5);
+  tick();                                            /* a WiFi pause */
+  CHECK(!P.bound);
+  CHECK(wifi_proto_set_request(&P, 2000, 8, now_us));
+  CHECK_INT(count_logs("ignores the rate"), 0);      /* not locked: nothing to say yet */
+  int acts = nactivated;
+  for (int i = 0; i < 30; i++) { send_same("192.168.2.138", 16, 100); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, acts);
+  CHECK_INT(count_logs("Crossfire module 192.168.2.138 ignores the rate and channel count: it always sends 16 "
+                       "channels at about 90 Hz"), 1);
+  /* a new session: said once more */
+  wifi_proto_reset(&P);
+  for (int i = 0; i < 5; i++) { send_same("192.168.2.138", 16, 100); tick(); adv(1.0); }
+  CHECK_INT(count_logs("ignores the rate and channel count"), 2);
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, acts);
 }
 
 static void Mismatch_ElrsByBeacon_RestartsOnce(void) {
@@ -1895,6 +2351,337 @@ static void Mismatch_BusyHost_RetriedOnTick_NotPerFrame(void) {
   CHECK_INT(nrestarts, 3);
 }
 
+/* A restart the host was too busy for is retried only for the module it was meant for: not for one being
+ * left for another target, never once a beacon says Crossfire; through a lock loss it waits for the lock. */
+static void Restart_Pending_OnlyForItsModule(void) {
+  H();
+  str("ELRS", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_ip == IP("10.0.0.1"));
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 1);      /* the try that found the host busy */
+  /* the host switches to another module together with a new request (the engine's apply_config) */
+  restart_result = WIFI_ACT_OK;
+  wifi_proto_store_request(&P, 3000, 8);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.2", now_us), 0);
+  CHECK(P.restart_ip == 0);
+  tick();
+  tick();
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 1);      /* the module being left is not restarted */
+  CHECK(last_act.ip == IP("10.0.0.2") && !last_act.restart && last_act.interval_us == 3000 && last_act.channels == 8);
+  /* pending through a lock loss (discovery): not sent while unlocked, sent when it locks again */
+  H();
+  str("ELRS", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  restart_result = WIFI_ACT_OK;
+  tick();                                            /* lock released */
+  CHECK(!P.bound);
+  adv(10.0);
+  tick();
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 1);
+  send_same("10.0.0.1", 16, 100);
+  tick();
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 2);
+  CHECK(P.restart_ip == 0 && restarts[1].interval_us == 2000);
+  /* its ELRS beacon meanwhile: not streaming, it gets the request with the activation - nothing pending */
+  H();
+  str("ELRS", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(5.5);                                          /* the lock released, the activation throttle passed */
+  restart_result = WIFI_ACT_OK;
+  tick();
+  str("ELRS", "10.0.0.1");
+  CHECK(last_act.ip == IP("10.0.0.1") && !last_act.restart && last_act.interval_us == 2000);
+  CHECK(P.restart_ip == 0);
+  send_same("10.0.0.1", 16, 100);
+  tick();
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 1);
+  /* another module locks meanwhile: dropped */
+  H();
+  str("ELRS", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  tick();
+  send_same("10.0.0.3", 16, 100);
+  CHECK(P.restart_ip == 0);
+  restart_result = WIFI_ACT_OK;
+  tick();
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 1);
+  /* known as ELRS... until a Crossfire beacon from that address: the retry is dropped */
+  H();
+  for (int i = 0; i < 21; i++) { send_same("10.0.0.4", 16, 100); adv(1.0); tick(); }   /* 20 s: not Crossfire */
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_ip == IP("10.0.0.4"));
+  str("VELOCIDRONE", "10.0.0.4");
+  restart_result = WIFI_ACT_OK;
+  tick();
+  CHECK(P.restart_ip == 0);
+  CHECK_INT(count_restarts(IP("10.0.0.4")), 1);
+}
+
+/* Beacons within the throttle (a flood, a broadcast loop) neither POST nor log; the line comes with the POST */
+static void Beacon_Flood_LogsOnlyWhatIsSent(void) {
+  H();
+  for (int i = 0; i < 2000; i++) { str("ELRS", "10.0.0.1"); adv(0.0001); }
+  CHECK_INT(nactivated, 1);
+  CHECK_INT(count_logs("Discovery beacon from ELRS module 10.0.0.1 - activating"), 1);
+  CHECK_INT(nlogs, 1);
+  adv(5.0);
+  str("ELRS", "10.0.0.1");                           /* after the throttle: again, with its line */
+  CHECK_INT(nactivated, 2);
+  CHECK_INT(count_logs("Discovery beacon from ELRS module 10.0.0.1 - activating"), 2);
+  /* the host busy (a POST to it in flight): nothing went out, nothing said */
+  H();
+  act_result = WIFI_ACT_BUSY;
+  for (int i = 0; i < 100; i++) str("VELOCIDRONE", "10.0.0.2");
+  CHECK_INT(nactivated, 100);                        /* asked each time (not throttled while busy) */
+  CHECK_INT(count_logs("Discovery beacon"), 0);
+  act_result = WIFI_ACT_OK;
+  str("VELOCIDRONE", "10.0.0.2");
+  CHECK_INT(count_logs("Discovery beacon from Crossfire module 10.0.0.2 - activating"), 1);
+}
+
+/* Many modules beaconing must not make the locked Crossfire module (or the target) unknown: its kind keeps
+ * joystick_end away from it */
+static void SeenTable_NeverEvictsTheLockedModule(void) {
+  H();
+  str("VELOCIDRONE", "10.0.0.9");
+  for (int i = 0; i < 21; i++) { send_same("10.0.0.9", 16, 100); adv(1.0); tick(); }   /* past the 20 s */
+  CHECK(P.bound);
+  char ip[32];
+  for (int i = 0; i < 3 * WIFI_TABLE; i++) {
+    snprintf(ip, sizeof ip, "10.0.1.%d", i + 1);
+    str("ELRS", ip);
+    adv(0.01);
+  }
+  send_same("10.0.0.9", 16, 100);
+  CHECK_INT(P.nseen, WIFI_TABLE);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.9")), WIFI_KIND_XF);
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK(!wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 0);
+  /* (with a module IP set only its beacons are heard: the others can't evict it either) */
+}
+
+/* A stop and start forgets nothing about modules: an ELRS module identified by its beacon and still
+ * streaming (it sends no beacon while it streams) is restarted at once, not after the Crossfire wait */
+static void Reset_KeepsTheKind_RestartAtOnce(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_reset(&P);
+  send_same(DEF_IP, 16, 100);
+  CHECK(P.bound);
+  CHECK_INT(wifi_proto_kind(&P, IP(DEF_IP)), WIFI_KIND_ELRS);
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 1);
+  CHECK(!P.restart_wait);
+  CHECK_INT(count_logs("may be Crossfire"), 0);
+}
+
+/* The request changed while the first activation was in flight (or the lock was lost, or the program
+ * stopped): the module started streaming the old one, which it keeps until restarted. Restarted when it
+ * locks, once per change. */
+static void Asked_ChangedBeforeTheLock_RestartsAtTheLock(void) {
+  H();
+  act_result = WIFI_ACT_QUEUED;
+  str("ELRS", DEF_IP);                               /* joystick_begin 4000 us, 16 ch on its way */
+  CHECK_INT(last_act.interval_us, 4000);
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 0);                           /* not locked: nothing to restart yet */
+  send_same(DEF_IP, 16, 100);                        /* its stream, started with 4000 us */
+  CHECK(P.bound);
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP) && restarts[0].interval_us == 2000 && restarts[0].channels == 16);
+  CHECK_INT(count_logs("192.168.1.50 still streams 250 Hz, 16 channels from before the change - restarting its "
+                       "stream with 500 Hz, 16 channels"), 1);
+  for (int i = 0; i < 20; i++) send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 1);
+  /* a change during a WiFi pause: restarted when it is back */
+  adv(3.5);
+  tick();
+  CHECK(!P.bound);
+  wifi_proto_set_request(&P, 5000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(restarts[1].interval_us, 5000);
+  /* the same after a stop and start (reset) */
+  wifi_proto_reset(&P);
+  wifi_proto_set_request(&P, 10000, 16, now_us);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 3);
+  CHECK_INT(restarts[2].interval_us, 10000);
+  /* nothing changed since: no restart at the next lock */
+  adv(3.5);
+  tick();
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 3);
+  /* a module found streaming that we never asked (no beacon): what it streams is not known, left alone */
+  H();
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  for (int i = 0; i < 5; i++) send_same("10.0.0.5", 16, 100);
+  CHECK_INT(nrestarts, 0);
+  /* Crossfire ignores the request: never asked, never restarted */
+  H();
+  str("VELOCIDRONE", "10.0.0.6");
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  for (int i = 0; i < 5; i++) send_same("10.0.0.6", 16, 100);
+  CHECK_INT(nrestarts, 0);
+}
+
+/* The engine switches the module IP and the request in one go (store_request + set_target): the module
+ * being left gets nothing; the new one gets the new request: a joystick_begin, and, when it turns out to
+ * stream already what an earlier activation asked for, a restart at its lock */
+static void Asked_SwitchToAModuleStreamingAnOldRequest(void) {
+  H();
+  str("ELRS", "10.0.0.1");
+  str("ELRS", "10.0.0.2");                           /* both activated with 4000 us, 16 ch */
+  CHECK_INT(nactivated, 2);
+  send_same("10.0.0.1", 16, 100);
+  send_same("10.0.0.2", 16, 100);                    /* the second one streams too: ignored */
+  CHECK(source() == IP("10.0.0.1"));
+  wifi_proto_store_request(&P, 2000, 16);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.2", now_us), 0);
+  CHECK(last_act.ip == IP("10.0.0.2") && !last_act.restart && last_act.interval_us == 2000);
+  send_same("10.0.0.2", 16, 100);                    /* it streams the old 4000 us: restarted */
+  CHECK(source() == IP("10.0.0.2"));
+  CHECK_INT(count_restarts(IP("10.0.0.2")), 1);
+  CHECK_INT(restarts[0].interval_us, 2000);
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 0);
+  for (int i = 0; i < 10; i++) send_same("10.0.0.1", 16, 100);
+  CHECK_INT(nrestarts, 1);
+}
+
+/* A module never asked by a restart or an ELRS-beacon activation (found streaming, or set by its IP with no
+ * beacon yet): a change of the request made while it is not locked reaches it when it locks again - it
+ * streams on through a WiFi pause or a stop and keeps the old request otherwise */
+static void Asked_ChangeWhileNotLocked_ReachesAModuleFoundStreaming(void) {
+  /* found streaming 8 channels (surely not Crossfire); the rate changes during a WiFi pause */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  for (int i = 0; i < 5; i++) { send_same(DEF_IP, 8, 16000); tick(); adv(0.1); }
+  adv(3.5);
+  tick();
+  CHECK(!P.bound);
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  CHECK_INT(nrestarts, 0);
+  send_same(DEF_IP, 8, 16000);
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP) && restarts[0].interval_us == 2000 && restarts[0].channels == 8);
+  CHECK_INT(count_logs("192.168.1.50 still streams 250 Hz, 8 channels from before the change - restarting its stream "
+                       "with 500 Hz, 8 channels"), 1);
+  for (int i = 0; i < 10; i++) { send_same(DEF_IP, 8, 16000); tick(); adv(0.1); }
+  CHECK_INT(nrestarts, 1);                           /* once per change */
+  /* 16 channels, no beacon (maybe Crossfire): the restart waits its 20 s of lock, then goes out */
+  H();
+  for (int i = 0; i < 5; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(0.1); }
+  adv(3.5);
+  tick();
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  for (int i = 0; i < 19; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("may be Crossfire"), 1);
+  for (int i = 0; i < 3; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(restarts[0].interval_us, 2000);
+  /* ... and its beacon says Crossfire meanwhile: never restarted */
+  H();
+  for (int i = 0; i < 5; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(0.1); }
+  adv(3.5);
+  tick();
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  send_same(DEF_IP, 16, 16000);
+  str("VELOCIDRONE", DEF_IP);
+  for (int i = 0; i < 30; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+  /* a restart held for the Crossfire check, then a stop and start (or a port change) before its 20 s: it still
+   * goes out once the module, streaming on, has been locked 20 s again */
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_wait);
+  adv(1.0);
+  wifi_proto_reset(&P);
+  CHECK(!P.restart_wait);
+  for (int i = 0; i < 19; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+  for (int i = 0; i < 3; i++) { send_same(DEF_IP, 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(restarts[0].interval_us, 2000);
+  /* nothing changed while it was not locked: a pause or a stop restarts nothing */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  for (int i = 0; i < 5; i++) { send_same(DEF_IP, 8, 16000); tick(); adv(0.1); }
+  adv(3.5);
+  tick();
+  send_same(DEF_IP, 8, 16000);
+  wifi_proto_reset(&P);
+  send_same(DEF_IP, 8, 16000);
+  CHECK_INT(nrestarts, 0);
+}
+
+/* The module IP set (no beacon from it): the request changes while its activation is in flight. The module
+ * starts streaming what that activation asked for: restarted at its lock (after the Crossfire check) */
+static void Asked_TargetActivationInFlight_ChangeReachesIt(void) {
+  H();
+  act_result = WIFI_ACT_QUEUED;
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.1", now_us), 0);
+  CHECK(last_act.ip == IP("10.0.0.1") && last_act.interval_us == 4000);
+  wifi_proto_set_request(&P, 2000, 8, now_us);       /* not locked: stored */
+  CHECK_INT(nrestarts, 0);
+  for (int i = 0; i < 3; i++) { send_same("10.0.0.1", 16, 16000); tick(); adv(0.1); }
+  CHECK_INT(nrestarts, 0);                           /* 16 channels, no beacon: maybe Crossfire */
+  for (int i = 0; i < 21; i++) { send_same("10.0.0.1", 16, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP("10.0.0.1") && restarts[0].interval_us == 2000 && restarts[0].channels == 8);
+  /* the module was off: the activations failed, the request changed, then a later one (with the new request)
+   * started it: it streams that one - nothing to restart */
+  H();
+  act_result = WIFI_ACT_FAILED;
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.1", now_us), 0);
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  adv(5.1);
+  act_result = WIFI_ACT_QUEUED;
+  tick();                                            /* the retry, with 2000 us, 8 channels */
+  CHECK(last_act.ip == IP("10.0.0.1") && last_act.interval_us == 2000 && last_act.channels == 8);
+  for (int i = 0; i < 30; i++) { send_same("10.0.0.1", 8, 16000); tick(); adv(1.0); }
+  CHECK_INT(nrestarts, 0);
+}
+
+/* placeholder frames say "sending no stick data"; when they stop (the module powered off) that goes, and
+ * comes back with them */
+static void NoStickData_StateEnds_WhenThePlaceholdersStop(void) {
+  H();
+  P.state = WIFI_ST_SEARCHING;
+  for (int i = 0; i < 10; i++) { send_placeholder("192.168.2.138"); adv(0.011); tick(); }
+  CHECK_STR(P.detail, "module found, but it is sending no stick data");
+  CHECK_INT(count_logs("is streaming placeholder frames"), 1);
+  adv(2.9);
+  tick();
+  CHECK_STR(P.detail, "module found, but it is sending no stick data");
+  adv(0.2);
+  tick();                                            /* 3 s without one */
+  CHECK_INT(last_state(), WIFI_ST_SEARCHING);
+  CHECK_STR(P.detail, "waiting for module");
+  send_placeholder("192.168.2.138");                 /* back: said again (state only, not the log line) */
+  CHECK_STR(P.detail, "module found, but it is sending no stick data");
+  CHECK_INT(count_logs("is streaming placeholder frames"), 1);
+  /* real data locks as before */
+  SENDF("192.168.2.138", 1, 2, 3, 4);
+  CHECK(P.bound);
+  CHECK_INT(P.state, WIFI_ST_STREAMING);
+}
+
 static void ActQueue_Restart(void) {
   wifi_actq_t q;
   wifi_actq_init(&q);
@@ -1931,6 +2718,407 @@ static void ActQueue_Restart(void) {
   CHECK_INT(wifi_actq_push(&q, IP("10.0.0.8"), 80, "r", true), WIFI_ACT_QUEUED);
   wifi_actq_new_session(&q);
   CHECK(!wifi_actq_take(&q, &rq));
+}
+
+/* ---------------------------------------------------------------- parity fixes (R2-R10 against JoystickEngine.cs) */
+static int asked_iv(const char *ip) {               /* what P remembers asking ip for: interval, -1 none */
+  for (int i = 0; i < P.nasked; i++) if (P.asked[i].ip == IP(ip)) return P.asked[i].interval_us;
+  return -1;
+}
+
+/* R6 + R3: a restart that did not take - given up while the module streams on, or still to be sent again when
+ * the lock goes or the program stops - counts as not delivered once it can no longer be sent: the module,
+ * back with its old request, is restarted once (under R2's kind rules), never per frame while it stays locked */
+static void Restart_NotTaken_RestartedAtTheNextLock(void) {
+  const char *again = "192.168.1.50 may still stream its old request (its restart failed) - restarting its stream "
+                      "with 500 Hz, 16 channels";
+  /* given up while it streams on: nothing more while it stays locked */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  for (int i = 0; i < 200; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES);
+  CHECK_INT(count_logs("giving up"), 1);
+  CHECK_INT(asked_iv(DEF_IP), 2000);                 /* while it stays locked: no restart per frame */
+  for (int i = 0; i < 100; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES);
+  /* a WiFi pause: what it streams is not known now; back, it is restarted once */
+  adv(3.5);
+  tick();
+  CHECK(!P.bound);
+  CHECK_INT(asked_iv(DEF_IP), 0);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES + 1);
+  CHECK_INT(count_logs(again), 1);
+  CHECK_INT(restarts[nrestarts - 1].interval_us, 2000);
+  /* that one took: the next pause restarts nothing */
+  adv(3.5);
+  tick();
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, WIFI_RESTART_TRIES + 1);
+
+  /* stop and start while it is to be sent again (r9_reset_clears_retry): restarted at the next lock */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_retry);
+  adv(1.0);
+  wifi_proto_reset(&P);
+  CHECK_INT(asked_iv(DEF_IP), 0);
+  restart_result = WIFI_ACT_OK;
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs(again), 1);
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+
+  /* R5 again too: asked 8 channels, the restart's joystick_end refused, a pause, back with 16 channels
+   * (r3_r6_failed_restart_then_pause_relock): the mismatch restarts it once more */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  CHECK_INT(nrestarts, 1);
+  adv(3.5);
+  tick();
+  restart_result = WIFI_ACT_OK;
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs("192.168.1.50 streams 16 channels, 8 asked for (another app's request?) - restarting its stream"), 1);
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 8, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+
+  /* unknown kind, 16 channels: back after the pause it may be Crossfire again - held for 20 s of the new lock */
+  H();
+  for (int i = 0; i < 21; i++) { send_same(DEF_IP, 16, 100); adv(1.0); tick(); }
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  adv(3.5);
+  tick();
+  restart_result = WIFI_ACT_OK;
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 1);
+  CHECK(P.restart_wait);
+  CHECK_INT(count_logs("192.168.1.50 may be Crossfire (no beacon from it yet)"), 1);
+  for (int i = 0; i < 205; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+  /* ... and its Crossfire beacon meanwhile: only noted */
+  H();
+  for (int i = 0; i < 21; i++) { send_same(DEF_IP, 16, 100); adv(1.0); tick(); }
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(3.5);
+  tick();
+  str("VELOCIDRONE", DEF_IP);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 250; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(count_logs("Crossfire module 192.168.1.50 ignores the rate and channel count"), 1);
+
+  /* its ELRS beacon after the pause (it is not streaming): the joystick_begin carries the request, nothing more */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(5.5);
+  tick();
+  str("ELRS", DEF_IP);
+  CHECK(last_act.ip == IP(DEF_IP) && !last_act.restart && last_act.interval_us == 2000);
+  CHECK_INT(asked_iv(DEF_IP), 2000);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  /* ... the same when the beacon comes while the lock is stale but not released yet */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  adv(5.5);
+  str("ELRS", DEF_IP);
+  tick();
+  CHECK(!P.bound);
+  CHECK_INT(asked_iv(DEF_IP), 2000);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+
+  /* another module IP while it is to be sent again (R7: the module being left gets nothing now); back to it
+   * later, it is restarted */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 20; i++) { adv(1.0); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(count_restarts(IP("10.0.0.2")), 1);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.2", now_us), 0);
+  send_same("10.0.0.2", 16, 100);
+  CHECK_INT(count_restarts(IP("10.0.0.2")), 2);
+  CHECK_INT(count_logs("10.0.0.2 may still stream its old request (its restart failed)"), 1);
+}
+
+/* R9 + R3: a restart whose result is still awaited when the program stops (the host drops or aborts it) may
+ * not have reached the module: the next lock restarts it, logged as JoystickEngine.cs does
+ * (r6_async_stop_cuts_restart) */
+static void Restart_CutShortByAReset_RestartedAtTheNextLock(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_res_ip == IP(DEF_IP));
+  CHECK_INT(asked_iv(DEF_IP), 2000);
+  wifi_proto_reset(&P);                              /* stop */
+  wifi_proto_reset(&P);                              /* start */
+  CHECK_INT(asked_iv(DEF_IP), 0);
+  CHECK(P.restart_res_ip == 0);
+  restart_result = WIFI_ACT_OK;
+  send_same(DEF_IP, 16, 100);                        /* it still streams 250 Hz */
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(restarts[1].interval_us, 2000);
+  CHECK_INT(count_logs("192.168.1.50 may still stream its old request (Stop cut its restart short) - restarting its "
+                       "stream with 500 Hz, 16 channels"), 1);
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 2);
+  /* its result came before the stop: nothing at the next lock */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  wifi_proto_activation_done(&P, IP(DEF_IP), true, now_us);
+  wifi_proto_reset(&P);
+  CHECK_INT(asked_iv(DEF_IP), 2000);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  /* a plain joystick_begin awaited at the stop is no restart: nothing at the next lock */
+  H();
+  act_result = WIFI_ACT_QUEUED;
+  str("ELRS", DEF_IP);
+  wifi_proto_reset(&P);
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 0);
+  /* Crossfire whose restart was cut short (taken for ELRS after 20 s, then its beacon): only noted */
+  H();
+  for (int i = 0; i < 21; i++) { send_same(DEF_IP, 16, 100); adv(1.0); tick(); }
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  wifi_proto_reset(&P);
+  str("VELOCIDRONE", DEF_IP);
+  restart_result = WIFI_ACT_OK;
+  for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(count_logs("Crossfire module 192.168.1.50 ignores the rate and channel count"), 1);
+}
+
+/* R10: a full table drops the entry written longest ago, also when many datagrams of one drain share one time
+ * (r10_discovery_flood_9, r10_xf_flood_while_locked: as JoystickEngine.cs's IpTable) */
+static void Tables_DropTheOldestEntry_AlsoAtOneTime(void) {
+  H();
+  char ip[32];
+  for (int i = 1; i <= WIFI_TABLE + 1; i++) { snprintf(ip, sizeof ip, "10.0.0.%d", i); str("ELRS", ip); }
+  CHECK_INT(nactivated, WIFI_TABLE + 1);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.1")), WIFI_KIND_UNKNOWN);    /* the oldest went, not the newest */
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.9")), WIFI_KIND_ELRS);
+  CHECK_INT(asked_iv("10.0.0.1"), -1);
+  CHECK_INT(asked_iv("10.0.0.9"), 4000);
+  adv(1.0);
+  /* within the throttle: each one finds its entry dropped by the one before (true LRU), as the C# app does */
+  for (int i = 1; i <= WIFI_TABLE + 1; i++) { snprintf(ip, sizeof ip, "10.0.0.%d", i); str("ELRS", ip); }
+  CHECK_INT(nactivated, 2 * (WIFI_TABLE + 1));
+  /* 8 modules fit: the throttle holds */
+  H();
+  for (int i = 1; i <= WIFI_TABLE; i++) { snprintf(ip, sizeof ip, "10.0.0.%d", i); str("ELRS", ip); }
+  adv(1.0);
+  for (int i = 1; i <= WIFI_TABLE; i++) { snprintf(ip, sizeof ip, "10.0.0.%d", i); str("ELRS", ip); }
+  CHECK_INT(nactivated, WIFI_TABLE);
+  /* the locked Crossfire's kind stays; of the others the beacons heard last */
+  H();
+  str("VELOCIDRONE", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  CHECK(P.bound);
+  for (int i = 2; i <= WIFI_TABLE + 2; i++) { snprintf(ip, sizeof ip, "10.0.0.%d", i); str("ELRS", ip); }
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.1")), WIFI_KIND_XF);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.2")), WIFI_KIND_UNKNOWN);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.3")), WIFI_KIND_UNKNOWN);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.4")), WIFI_KIND_ELRS);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.10")), WIFI_KIND_ELRS);
+  CHECK_INT(P.nseen, WIFI_TABLE);
+}
+
+/* A restart that found the host busy because a POST to its module was in flight goes out with that POST's
+ * result, not a tick later (r6_async_change_while_begin_inflight: as JoystickEngine.cs queues it behind) */
+static void Restart_WaitingForItsModulesPost_GoesOutWithItsResult(void) {
+  H();
+  act_result = WIFI_ACT_QUEUED;
+  str("ELRS", DEF_IP);                               /* its joystick_begin in flight */
+  send_same(DEF_IP, 16, 100);                        /* streaming before it answered */
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP) && !P.restart_retry);
+  CHECK_INT(P.restarts, 0);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_activation_done(&P, IP("10.9.9.9"), true, now_us);   /* another module's result: nothing */
+  CHECK_INT(P.restarts, 0);
+  wifi_proto_activation_done(&P, IP(DEF_IP), true, now_us);      /* its own: the restart goes out now */
+  CHECK_INT(P.restarts, 1);
+  CHECK(P.restart_ip == 0);
+  CHECK(last_act.restart && last_act.interval_us == 2000);
+  CHECK(P.restart_res_ip == IP(DEF_IP));
+  /* a failed restart waiting to be sent again is not sent early by a result */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_FAILED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_retry);
+  wifi_proto_activation_done(&P, IP(DEF_IP), true, now_us);
+  CHECK_INT(nrestarts, 1);
+}
+
+/* R8 / wifi_proto_store_request: meant for a switch to another module; the locked module that stays is restarted
+ * by its next frame (R3, every frame) - set_request restarts it at once */
+static void Request_StoreOnTheLockedModule_RestartsAtItsNextFrame(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_store_request(&P, 2000, 16);
+  CHECK_INT(nrestarts, 0);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(count_logs("192.168.1.50 still streams 250 Hz, 16 channels from before the change - restarting its "
+                       "stream with 500 Hz, 16 channels"), 1);
+  CHECK(wifi_proto_set_request(&P, 3000, 16, now_us));
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(count_logs("Restarting the stream of 192.168.1.50: 333 Hz, 16 channels"), 1);
+}
+
+/* R2/R4: a restart held for the kind whose 20 s passed a moment ago, then an explicit restart or another change
+ * before the tick resolves the hold: one restart, not two */
+static void Restart_HeldWindowJustPassed_OneRestart(void) {
+  for (int k = 0; k < 2; k++) {
+    H();
+    send_same(DEF_IP, 16, 100);
+    wifi_proto_set_request(&P, 2000, 16, now_us);    /* held: may be Crossfire */
+    CHECK(P.restart_wait);
+    for (int i = 0; i < 199; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+    CHECK_INT(nrestarts, 0);
+    adv(0.1);                                        /* the 20 s pass between two ticks */
+    send_same(DEF_IP, 16, 100);
+    if (k == 0) CHECK(wifi_proto_restart(&P, now_us));
+    else CHECK(wifi_proto_set_request(&P, 3000, 16, now_us));
+    tick();                                          /* the same pass's tick */
+    CHECK_INT(nrestarts, 1);
+    CHECK(!P.restart_wait);
+    CHECK_INT(count_prefix("Restarting the stream of 192.168.1.50"), 1);
+    for (int i = 0; i < 50; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+    CHECK_INT(nrestarts, 1);
+  }
+}
+
+/* R4: a restart the host was too busy for never becomes a joystick_end to a module that is not locked and not
+ * known as ELRS (it may be Crossfire); it waits for that module's next lock, held first if it may be Crossfire */
+static void Restart_Pending_NoEndToAnUnlockedModuleNotKnownAsElrs(void) {
+  /* the module IP, unknown kind, 8 channels: the lock goes before the host takes the restart */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  wifi_proto_set_target(&P, DEF_IP, now_us);
+  send_same(DEF_IP, 8, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  CHECK(P.restart_ip == IP(DEF_IP));
+  int n = nrestarts;
+  restart_result = WIFI_ACT_OK;
+  adv(3.1);
+  tick();
+  CHECK(!P.bound);
+  for (int i = 0; i < 100; i++) { adv(0.1); tick(); }
+  CHECK_INT(nrestarts, n);                           /* no joystick_end while it is not locked */
+  CHECK(P.restart_ip == IP(DEF_IP));
+  CHECK(nactivated >= 2);                            /* the module IP's plain re-POST (with the request) goes on */
+  send_same(DEF_IP, 8, 100);                         /* back with 8 channels: surely no Crossfire */
+  tick();
+  CHECK_INT(nrestarts, n + 1);
+  CHECK(last_act.restart && last_act.interval_us == 2000);
+  CHECK(P.restart_ip == 0);
+  /* back with 16 channels: it may be Crossfire now - held for 20 s of the new lock */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  wifi_proto_set_target(&P, DEF_IP, now_us);
+  send_same(DEF_IP, 8, 100);
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  n = nrestarts;
+  restart_result = WIFI_ACT_OK;
+  adv(3.1);
+  tick();
+  send_same(DEF_IP, 16, 100);
+  tick();
+  CHECK_INT(nrestarts, n);
+  CHECK(P.restart_wait && P.restart_ip == 0);
+  CHECK_INT(count_logs("192.168.1.50 may be Crossfire (no beacon from it yet)"), 1);
+  for (int i = 0; i < 205; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, n + 1);
+  /* the module IP known as ELRS, not locked: it goes out (R4) */
+  H();
+  wifi_proto_set_target(&P, DEF_IP, now_us);
+  str("ELRS", DEF_IP);
+  restart_result = WIFI_ACT_BUSY;
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK(P.restart_ip == IP(DEF_IP));
+  n = nrestarts;
+  restart_result = WIFI_ACT_OK;
+  tick();
+  CHECK_INT(nrestarts, n + 1);
+  CHECK(P.restart_ip == 0 && P.restarts == 1);
+}
+
+/* Log lines show a non-preset interval with its microseconds, as JoystickEngine.cs's StreamRequest.Describe */
+static void Describe_NonPresetIntervalsInTheLog(void) {
+  char b[32];
+  CHECK_STR(wifi_describe_interval(4000, b, sizeof b), "250 Hz");
+  CHECK_STR(wifi_describe_interval(6667, b, sizeof b), "150 Hz");
+  CHECK_STR(wifi_describe_interval(1000, b, sizeof b), "1000 Hz");
+  CHECK_STR(wifi_describe_interval(20000, b, sizeof b), "50 Hz");
+  CHECK_STR(wifi_describe_interval(3500, b, sizeof b), "286 Hz (3500 us)");
+  CHECK_STR(wifi_describe_interval(3001, b, sizeof b), "333 Hz (3001 us)");
+  CHECK_STR(wifi_describe_interval(100000, b, sizeof b), "10 Hz (100000 us)");
+  static const int presets[] = WIFI_INTERVAL_PRESETS;
+  for (int i = 0; i < WIFI_N_INTERVAL_PRESETS; i++) CHECK(!strchr(wifi_describe_interval(presets[i], b, sizeof b), '('));
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_set_request(&P, 3500, 16, now_us);
+  CHECK_INT(count_logs("Restarting the stream of 192.168.1.50: 286 Hz (3500 us), 16 channels"), 1);
+  wifi_proto_set_request(&P, 3001, 16, now_us);
+  CHECK_INT(count_logs("Restarting the stream of 192.168.1.50: 333 Hz (3001 us), 16 channels"), 1);
+  /* R3's line: a change while it is not locked */
+  adv(3.5);
+  tick();
+  wifi_proto_set_request(&P, 3000, 16, now_us);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(count_logs("192.168.1.50 still streams 333 Hz (3001 us), 16 channels from before the change - "
+                       "restarting its stream with 333 Hz, 16 channels"), 1);
+  /* R4's plain activation of an unknown module IP */
+  H();
+  wifi_proto_set_request(&P, 3500, 8, now_us);
+  wifi_proto_set_target(&P, "10.0.0.5", now_us);
+  wifi_proto_restart(&P, now_us);
+  CHECK_INT(count_logs("10.0.0.5 has sent no beacon yet (it may be Crossfire, which is never sent joystick_end): "
+                       "activating it with 286 Hz (3500 us), 8 channels"), 1);
 }
 
 int main(void) {
@@ -1998,7 +3186,7 @@ int main(void) {
   TickStarvation_IgnoredTrafficCannotBlockTheTick();
   SetTarget_PostsAtOnce_AndReportsState();
   SetTarget_Invalid_KeepsTarget();
-  SetTarget_SameAsBound_Relocks();
+  SetTarget_SameAsBound_KeepsTheLock();
   ActivationAsync_HintTimerStartsAtDone();
   ActivationAsync_FailedDone_NoHint();
   ActivationDone_WhileStreamingFromIt_DoesNotArmHint();
@@ -2031,12 +3219,18 @@ int main(void) {
   Request_ChangeWhileStreamingUnknown_CrossfireBeacon_NoRestart();
   Request_ChangeWhileStreamingUnknown_Not16_RestartsAtOnce();
   Restart_ExplicitUnknown16_WaitsForTheKind();
-  Restart_Wait_DroppedWhenTheLockIsLost();
+  Restart_Wait_HeldThroughALockLoss();
   Request_Store_NoRestart();
   Restart_Explicit();
   Restart_BypassesAndRestartsTheThrottle();
   Restart_Busy_RetriedOnTick();
   Restart_OkWhileNotStreaming_ArmsTheNoDataHint();
+  Restart_Failed_SentAgainWhileItStreams();
+  Restart_Failed_GivesUpAfterTries_ANewRestartStartsOver();
+  Restart_Failed_OnlyWhileItsModuleStaysLocked();
+  Restart_Failed_ANewerRestartGoesFirst();
+  Mismatch_Unknown16_RestartedOnceAfterTheWindow();
+  Asked_CrossfireLocksWithAnOlderRequest_NotedOnly();
   Mismatch_ElrsByBeacon_RestartsOnce();
   Mismatch_UnknownModule();
   Mismatch_Crossfire_Never();
@@ -2044,5 +3238,22 @@ int main(void) {
   Mismatch_FullTable_NoRestartStorm();
   Mismatch_BusyHost_RetriedOnTick_NotPerFrame();
   ActQueue_Restart();
+  Restart_Pending_OnlyForItsModule();
+  Beacon_Flood_LogsOnlyWhatIsSent();
+  SeenTable_NeverEvictsTheLockedModule();
+  Reset_KeepsTheKind_RestartAtOnce();
+  Asked_ChangedBeforeTheLock_RestartsAtTheLock();
+  Asked_SwitchToAModuleStreamingAnOldRequest();
+  NoStickData_StateEnds_WhenThePlaceholdersStop();
+  Asked_ChangeWhileNotLocked_ReachesAModuleFoundStreaming();
+  Asked_TargetActivationInFlight_ChangeReachesIt();
+  Restart_NotTaken_RestartedAtTheNextLock();
+  Restart_CutShortByAReset_RestartedAtTheNextLock();
+  Tables_DropTheOldestEntry_AlsoAtOneTime();
+  Restart_WaitingForItsModulesPost_GoesOutWithItsResult();
+  Request_StoreOnTheLockedModule_RestartsAtItsNextFrame();
+  Restart_HeldWindowJustPassed_OneRestart();
+  Restart_Pending_NoEndToAnUnlockedModuleNotKnownAsElrs();
+  Describe_NonPresetIntervalsInTheLog();
   T_DONE();
 }

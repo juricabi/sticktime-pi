@@ -42,7 +42,7 @@ One static C program, `sticktime-pi`. Modules:
 | `video_drm.c` | KMS: pick the connector (Composite / HDMI-A, **accept "unknown" status**), mode, two dumb buffers, page flip + event |
 | `video_png.c` | headless: write frames as PNG (tests, screenshots) |
 | `input_evdev.c` | joysticks, gamepads and keyboards from `/dev/input/event*` (hotplug via inotify) |
-| `input_wifi.c` | ELRS/Crossfire WiFi joystick: the UDP socket, the `/udpcontrol` POST thread and the glue around the protocol core shared with the owner's Linux app (`third_party/elrs-wifi`: a C port of `JoystickEngine.cs`: beacons, frames, placeholder filter, source lock, the request `wifi_interval_us` / `wifi_channels`, restarting a streaming ELRS module so a new request applies) |
+| `input_wifi.c` | ELRS/Crossfire WiFi joystick: the UDP socket, the `/udpcontrol` POST thread and the glue around the protocol core shared with the owner's Linux app (`third_party/elrs-wifi`: a C port of `JoystickEngine.cs`: beacons, frames, placeholder filter, source lock, the request `wifi_interval_us` / `wifi_channels`, restarting a streaming module that is surely no Crossfire so a new request applies, by the request rules R1-R13 in RESEARCH.md §2) |
 | `nav.c` | the sticks drive the menus when not flying; a switch channel pauses |
 | `web.c` | small HTTP/1.1 server: static files + JSON API |
 | `settings.c` | read/write `sticktime.txt` |
@@ -152,7 +152,7 @@ input = auto            # auto | wifi | usb | bluetooth | keyboard
 channel_order = AETR
 stick_channels =        # e.g. 1 2 3 4: the channel of ail, ele, thr, rud (empty: channel_order)
 wifi_module_ip =        # empty: find it by its beacon
-wifi_interval_us = 4000 # 1000-100000 (250 Hz); ELRS only: saved on the web page, restarts its stream (joystick_end + joystick_begin)
+wifi_interval_us = 4000 # 1000-100000 (250 Hz); a change restarts a streaming ELRS module (joystick_end + joystick_begin; RESEARCH.md §2)
 wifi_channels = 16      # 4-16 asked for; Crossfire ignores both (16 channels, ~90 Hz)
 pause_channel = 5
 invert =                # e.g. ail,thr

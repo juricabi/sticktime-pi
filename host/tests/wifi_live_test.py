@@ -282,7 +282,8 @@ def explicit_ip(c):
 
 @scenario
 def post_failure_retry(c):
-    """POSTs answered 500 twice: logged, no hint, retried only every 5 s; the third succeeds -> streaming"""
+    """POSTs answered 500 twice: logged, no hint, retried only every 5 s (beacons within the throttle are
+    counted, not logged); the third succeeds -> streaming"""
     p = c.probe()
     m = c.fake("127.0.0.2", beacon_interval=1.0, http_fail_first=2)
     check(p.wait_log("Activation POST -> 127.0.0.2: 500", 3), "no 500 log")
@@ -292,7 +293,10 @@ def post_failure_retry(c):
     gaps = [b - a for a, b in zip(t, t[1:])]
     check(all(4.8 <= g <= 6.5 for g in gaps), f"POST gaps {gaps} (throttle 5 s, beacons every 1 s)")
     check(len(p.logs("Activation POST -> 127.0.0.2: 500")) == 2, "two 500 results")
-    check(len(p.logs("Discovery beacon from ELRS")) >= 8, "beacons in between are logged (throttled)")
+    # the beacons in between are counted, but only one that sends a POST is logged (no flood in the log)
+    check(max(e["beacons"] for e in p.events("stats")) >= 8, "beacons in between are counted")
+    check(len(p.logs("Discovery beacon from ELRS")) == 3, f"{len(p.logs('Discovery beacon from ELRS'))} beacon "
+          "log lines (expected one per POST)")
     check(not p.logs("!! Activated OK"), "a failed POST must not start the 'no data' hint")
     return "gaps " + ", ".join(f"{g:.2f}" for g in gaps) + " s"
 

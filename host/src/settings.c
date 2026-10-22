@@ -226,8 +226,11 @@ static bool hostname_ok(const char *v) {      /* RFC 1123 label */
   return true;
 }
 
+/* a.b.c.d (wifi_module_ip), not 0.0.0.0: that names no module, and the WiFi receiver (wifi_parse_ip with
+ * wifi_proto_set_target) refuses it, so the saved setting and the running module IP would disagree */
 static bool ipv4_ok(const char *v) {
   const char *p = v;
+  bool nonzero = false;
   for (int part = 0; part < 4; part++) {
     if (part && *p++ != '.') return false;
     if (!is_digit(*p)) return false;
@@ -238,8 +241,9 @@ static bool ipv4_ok(const char *v) {
       if (++nd > 3) return false;
     }
     if (x > 255) return false;
+    if (x) nonzero = true;
   }
-  return *p == 0;
+  return *p == 0 && nonzero;
 }
 
 static bool mode_dim(const char **pp) {      /* 1..9999, no leading zero */
