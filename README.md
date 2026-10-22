@@ -145,8 +145,11 @@ StickTime Pi is free and made in my spare time. If you like it, you can buy me a
 StickTime Pi is free software under the [GNU General Public License v2.0](LICENSE), like StickTime.
 
 Bundled third-party code keeps its own license: Lua 5.3.6 (MIT); stb_truetype, stb_image_write and
-stb_vorbis (MIT or public domain); minimp3 (CC0); dr_wav and dr_flac (Unlicense or MIT-0); the Roboto
-fonts (SIL Open Font License, `host/fonts/OFL.txt`). Versions and sources: `host/third_party/README.md`.
-The SD image also contains Raspberry Pi OS and its packages, under their own licenses.
+stb_vorbis (MIT or public domain); minimp3 (CC0); dr_wav and dr_flac (Unlicense or MIT-0); the ELRS /
+Crossfire WiFi joystick protocol core from the author's Linux app,
+[elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux)
+(MIT, `host/third_party/elrs-wifi/LICENSE`); the Roboto fonts (SIL Open Font License, `host/fonts/OFL.txt`).
+Versions and sources: `host/third_party/README.md`. The SD image also contains Raspberry Pi OS and its
+packages, under their own licenses.
 
 StickTime and the WiFi joystick protocol code it is ported from are by the same author.

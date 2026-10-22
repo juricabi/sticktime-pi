@@ -51,8 +51,8 @@ protocol through the core it shares with the owner's Linux app
   `action=joystick_begin&interval=<µs>&channels=<n>`. The module answers `ok` and starts streaming
   to the IP that sent the POST. The Windows app sent `interval=10000&channels=8` before the request became
   a setting; the owner's apps and StickTime Pi now send the configured one (default
-  `interval=4000&channels=16`), throttle POSTs to one every 5 s per module, and run them off the receive
-  thread.
+  `interval=4000&channels=16`), throttle POSTs to one every 5 s per module (a restart, below, goes out
+  whatever the throttle, and starts it again), and run them off the receive thread.
 - **ELRS accepts `interval` ≥ 1000 µs** (below that, or 0, it falls back to 10000). So **lower
   latency is available: e.g. 4000 µs (250 Hz) or 2000 µs (500 Hz)**. Channels: 1–16 (0 → 8, more → 16).
   StickTime Pi offers 1000–100000 µs (`wifi_interval_us`; the page suggests 1000, 500, 333, 250, 200,
@@ -64,9 +64,16 @@ protocol through the core it shares with the owner's Linux app
   joystick appeared in 3.4.0) followed by `joystick_begin`: a "restart". StickTime Pi restarts the locked
   module when `wifi_interval_us` or `wifi_channels` changes, and once per module and session when a
   module that surely isn't Crossfire (an ELRS beacon was seen, or the count isn't 16) streams a channel
-  count other than the request (another app's leftover request).
+  count other than the request (another app's leftover request; a leftover interval can't be seen in the
+  frames and is kept).
 - **Crossfire** starts on the same `joystick_begin` but **ignores `interval` and `channels`** (always 16
-  channels at about 90 Hz). Whether it honours `joystick_end` is unknown, so it is **never sent one**.
+  channels at about 90 Hz). Whether it honours `joystick_end` is unknown, so a module known as Crossfire
+  (its beacon was seen) is **never sent one**. Telling the two apart needs a beacon: Crossfire beacons
+  about every 8 s also while streaming, ELRS never while streaming. So a locked 16-channel module with no
+  beacon yet (an ELRS module that kept streaming while the receiver restarted, or Crossfire) gets a
+  request restart only once the lock is 20 s old without a Crossfire beacon; after that it counts as ELRS.
+  Where Crossfire's beacons never reach the receiver (broadcasts blocked, the module set by IP), a
+  Crossfire module does get `joystick_end` then.
 - **Channel frame**: `uint8 type` (=1), `uint8 count` (4–16; Crossfire always sends 16), then
   `count × uint16 LE`. ELRS maps CRSF 1000–2000 µs (`CRSF_CHANNEL_VALUE_STD_MIN..MAX`) to **0–32767**
   (constrained, so full stick = endpoint).

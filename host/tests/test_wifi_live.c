@@ -103,6 +103,7 @@ typedef struct {
   plat_mutex mu;
   bool quit;
   int status, delay_ms;
+  int next_status, next_n;      /* the next next_n requests get next_status instead of status */
   int requests;
   char last[1024];
   char body[MH_BODIES][96];     /* the bodies of the first MH_BODIES requests, in order */
@@ -148,6 +149,7 @@ static void *mh_thread(void *arg) {
     h->requests++;
     snprintf(h->last, sizeof h->last, "%s", req);
     int status = h->status, delay = h->delay_ms;
+    if (h->next_n > 0) { status = h->next_status; h->next_n--; }
     plat_mutex_unlock(&h->mu);
     for (int t = 0; t < delay && !mh_quit(h); t += 10) plat_sleep_us(10000);
     char resp[256];
@@ -172,6 +174,12 @@ static void mh_set(minihttp_t *h, int status, int delay_ms) {
   plat_mutex_lock(&h->mu);
   h->status = status;
   h->delay_ms = delay_ms;
+  plat_mutex_unlock(&h->mu);
+}
+static void mh_set_next(minihttp_t *h, int status, int n) {
+  plat_mutex_lock(&h->mu);
+  h->next_status = status;
+  h->next_n = n;
   plat_mutex_unlock(&h->mu);
 }
 static int mh_requests(minihttp_t *h) {
@@ -1065,6 +1073,47 @@ static void test_request_restart(void) {
   mh_stop(&mh);
 }
 
+/* A restart whose joystick_end is refused but whose joystick_begin is taken did not apply the request (a
+ * streaming module only moved its stream): it is a failed activation, logged as one. */
+static void test_request_restart_end_refused(void) {
+  const uint16_t U = P_BASE + 12, HP = P_BASE + 29;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  mh_set_next(&mh, 503, 1);                        /* the joystick_end */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 2);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=16");
+  CHECK_INT(count_in_log("Stream end POST failed for 127.0.0.1: HTTP 503"), 1);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.posts, 2);
+  CHECK_INT(in.posts_ok, 1);
+  CHECK_INT(in.posts_failed, 1);
+  CHECK_INT(in.restarts, 1);
+  CHECK(in.bound && src.present);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
 static void test_request_crossfire(void) {
   const uint16_t U = P_BASE + 10, HP = P_BASE + 27;
   minihttp_t mh;
@@ -1202,6 +1251,7 @@ static int self_test(void) {
   test_configure();
   test_bad_port_and_nulls();
   test_request_restart();
+  test_request_restart_end_refused();
   test_request_crossfire();
   test_request_with_target();
   fprintf(stderr, "  self-test took %.1f s\n", (double)(plat_now_us() - t0) / 1e6);

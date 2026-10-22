@@ -119,6 +119,7 @@ tools/vendor_elrs_wifi.sh            # 2. copy it here (or: tools/vendor_elrs_wi
 host/build.sh native test            # 3. its tests and ours
 python host/tests/wifi_live_test.py
 tools/vendor_elrs_wifi.sh --check    # what CI runs: the files match VENDOR (commit + SHA-256 each)
+python host/tests/test_vendor_elrs_wifi.py   # the script itself, on made-up repositories (CI too)
 ```
 `host/build.sh` compiles it with `-DWIFI_USER_AGENT="sticktime-pi"` (the activation POST's User-Agent).
 
@@ -159,8 +160,9 @@ test those on a Pi 4.
 ## CI
 
 - `.github/workflows/build.yml` (push, pull request): the vendored WiFi joystick core's check
-  (`tools/vendor_elrs_wifi.sh --check`), the host on x86_64 with unit tests and scenarios,
-  the static aarch64 program, the Python tests on 3.11 and 3.13, the web UI in headless Chromium.
+  (`tools/vendor_elrs_wifi.sh --check`), the host on x86_64 with unit tests, the WiFi joystick receiver
+  against fake modules (`wifi_live_test.py`) and scenarios, the static aarch64 program, the Python tests on
+  3.11 and 3.13, the web UI in headless Chromium.
 - `.github/workflows/image.yml` (tags `v*`, manual): the app package for the updater, the SD image and its
   QEMU boot test, and on tags a GitHub release with all of it. The release notes: `docs/releases/<tag>.md`
   (what's new, how to update) when the tagged commit has it, then the install text and the image's info.

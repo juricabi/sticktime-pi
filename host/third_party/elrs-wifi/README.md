@@ -17,7 +17,7 @@ The same author's Linux WiFi joystick app is built on this core, and both follow
 |---|---|
 | `wifi_proto.c/.h` | the protocol engine: pure logic (beacons, activation, source lock, Crossfire placeholders, stats, the request with its restarts, the activation queue) |
 | `wifi_net.c/.h` | the activation POST (`joystick_end` + `joystick_begin`), blocking, for the worker thread; socket helpers |
-| `tests/` | its unit tests and their `t.h`; `host/build.sh test` builds and runs `tests/test_*.c` with the host's |
+| `tests/` | its unit tests and their `t.h`; `host/build.sh native test` builds and runs `tests/test_*.c` with the host's |
 | `VENDOR` | written by the script: where the files came from and their SHA-256 (paths from the repo root) |
 
 The script also copies the fake module the tests use, upstream `tests/fake_elrs.py`, to `host/tests/fake_elrs.py`
@@ -39,5 +39,9 @@ same User-Agent as before the core moved.
 3. Commit `host/third_party/elrs-wifi/` (the script rewrote `VENDOR` and the Commit row above),
    `host/tests/fake_elrs.py` if it changed, and any change `input_wifi.c` needed.
 
-The script warns and writes `commit <sha>-dirty` when the source has uncommitted changes in the files it
-copies: vendor again from a commit before committing here.
+The script copies the files as committed upstream (whatever the line ends of that checkout), from a git
+checkout of its own only. It refuses a file committed with CRLF line ends: this repository stores LF, so no
+other checkout would match `VENDOR` (commit it with LF upstream). When the source has uncommitted changes in
+the files it copies, it copies those, warns and writes `commit <sha>-dirty`, which `--check` (and so CI)
+refuses: commit them upstream and vendor again before committing here. `host/tests/test_vendor_elrs_wifi.py`
+tests the script.

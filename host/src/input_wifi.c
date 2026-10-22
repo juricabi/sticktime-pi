@@ -353,18 +353,24 @@ static void collect_results(wifi_t *w, int64_t now) {
     const wifi_actres_t *r = &res[i];
     char ip[16];
     wifi_ip_str(r->ip, ip);
-    /* a restart: its joystick_end first (a failure there still lets the joystick_begin go out) */
+    /* a restart: its joystick_end first (a failure there still lets the joystick_begin go out). It only
+     * took when both got a 2xx: a streaming module that missed the joystick_end just moved its stream and
+     * kept its old request (r->ok is the joystick_begin's alone) */
+    bool ok = r->ok;
     if (r->restart) {
-      if (r->end_status > 0) wlog(w, "Stream end POST -> %s: %d", ip, r->end_status);
+      bool end_ok = r->end_status >= 200 && r->end_status <= 299;
+      if (end_ok) wlog(w, "Stream end POST -> %s: %d", ip, r->end_status);
+      else if (r->end_status > 0) wlog(w, "Stream end POST failed for %s: HTTP %d", ip, r->end_status);
       else wlog(w, "Stream end POST failed for %s: %s", ip, r->end_err[0] ? r->end_err : "failed");
+      ok = ok && end_ok;
     }
     if (r->status > 0)
       wlog(w, "Activation POST -> %s: %d%s%s", ip, r->status, r->reason[0] ? " " : "", r->reason);
     else
       wlog(w, "Activation failed for %s: %s", ip, r->err[0] ? r->err : "failed");
-    if (r->ok) w->posts_ok++;
+    if (ok) w->posts_ok++;
     else w->posts_failed++;
-    wifi_proto_activation_done(&w->p, r->ip, r->ok, now);
+    wifi_proto_activation_done(&w->p, r->ip, ok, now);
   }
 }
 

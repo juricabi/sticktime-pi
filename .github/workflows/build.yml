@@ -1,7 +1,8 @@
 # Every push and pull request: the host for x86_64 (the vendored WiFi joystick core's check, unit
-# tests + headless game scenarios), the static aarch64 binary for the Pi (zig cc, musl; its unit
-# tests under qemu-user), the Python tests (image helpers, updater, settings twin, editor patcher)
-# on the oldest and newest Python the Pi images use, and the web UI in headless Chromium.
+# tests, the WiFi joystick receiver against fake modules, headless game scenarios), the static aarch64
+# binary for the Pi (zig cc, musl; its unit tests under qemu-user), the Python tests (image helpers,
+# updater, settings twin, editor patcher, the core's vendoring script) on the oldest and newest Python
+# the Pi images use, and the web UI in headless Chromium.
 # Artifacts: the aarch64 binary.
 name: build
 
@@ -38,6 +39,9 @@ jobs:
       - name: Build and run the unit tests (gcc)
         working-directory: sticktime-pi
         run: CC=cc host/build.sh native test
+      - name: "WiFi joystick end to end (the receiver against fake ELRS and Crossfire modules on loopback)"
+        working-directory: sticktime-pi
+        run: python3 host/tests/wifi_live_test.py
       - name: Headless game scenarios
         working-directory: sticktime-pi
         run: python3 host/tests/run_scenarios.py --quick --out build/scenario-shots
@@ -113,7 +117,7 @@ jobs:
         run: |
           fail=0
           for t in image/test/test_setup.py image/tests/test_settings_py.py image/tests/test_update.py \
-                   web/tests/test_patch_editor.py; do
+                   web/tests/test_patch_editor.py host/tests/test_vendor_elrs_wifi.py; do
             [ -f "$t" ] || { echo "SKIP $t (not there)"; continue; }
             echo "::group::$t"
             if python "$t"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi

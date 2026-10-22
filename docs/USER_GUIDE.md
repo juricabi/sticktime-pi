@@ -148,17 +148,25 @@ game files of all three and never touch those, your tracks or your ghosts.
 1. Put the Pi and the TX module on the same **2.4 GHz** network (the module's "Home WiFi"), or join the
    module's own network from the web page (Sticks → "Join module WiFi").
 2. On the radio: ExpressLRS Lua → WiFi Connectivity → Enable WiFi (TX). The Pi finds the module by its
-   broadcast within 5 s and asks it to stream 250 times a second. Set `wifi_module_ip` if your router blocks
-   broadcasts.
+   broadcast within 5 s and asks it to stream at the packet interval below (250 times a second by default).
+   Set `wifi_module_ip` if your router blocks broadcasts.
    - How often and how many channels: web page → Sticks → **Packet interval** (`wifi_interval_us`, in
      microseconds: 4000 = 250 Hz, the default; the box suggests 1000 Hz down to 50 Hz) and **Channel count**
-     (`wifi_channels`, 4-16, default 16). They apply at once: an ELRS module that is streaming only takes a
-     new rate or count when its stream starts again, so the Pi stops it and starts it again (the sticks pause
-     for a moment). Fewer channels leave the higher ones empty: keep the pause switch and the stick mapping
-     within them. A faster rate gives fresher sticks (a sample is at most 4 ms old at 250 Hz, 1 ms at
+     (`wifi_channels`, 4-16, default 16). An ELRS module only takes a new rate or count when its stream
+     starts, so when you save a change while it streams, the Pi stops its stream and starts it again (the
+     sticks pause for a moment). That happens at once, except for a module that sends 16 channels and whose
+     broadcast the Pi hasn't seen since the program started (it may be Crossfire, see below; an ELRS module
+     sends no broadcast while it streams, so this is the case when it kept streaming through an update or a
+     restart of the game): then the Pi first waits for a Crossfire broadcast, up to 20 s after the stream
+     started coming in. Fewer channels leave the higher ones empty: keep the pause switch and the stick
+     mapping within them. A faster rate gives fresher sticks (a sample is at most 4 ms old at 250 Hz, 1 ms at
      1000 Hz) and takes more of the WiFi.
-   - If another app (the PC app, another Pi) asked the module for a different channel count, the Pi
-     restarts its stream once with its own request.
+   - A module may still be streaming what something else asked for: another app (the PC app, another Pi),
+     or the Pi itself before an update or an edit of `sticktime.txt`. The Pi restarts such a stream once with
+     its own request only when its channel count differs from **Channel count** and the module surely is
+     ELRS (its broadcast was seen, or it sends other than 16 channels). Otherwise it keeps that rate and
+     count (Status shows the rate it measures): switch the module's WiFi off and on (ExpressLRS Lua → WiFi
+     Connectivity), or save a new value on the web page, to get yours.
 3. **For smooth sticks the WiFi link must be steady:**
    - The most reliable setup is the Pi's own hotspot with the module joined to it: `hotspot = on`, and make
      `StickTime` (with your `hotspot_password`) the module's home network (on the module's WiFi page or in the
@@ -172,7 +180,11 @@ game files of all three and never touch those, your tracks or your ghosts.
 ### TBS Crossfire
 Enable the module's WiFi and the "VelociDrone Mobile" link; same network as the Pi. Broken TBS firmware:
 XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work. Crossfire always sends 16
-channels about 90 times a second: the packet interval and channel count settings don't change it.
+channels about 90 times a second: the packet interval and channel count settings don't change it, and the
+Pi doesn't stop and restart its stream for them once it has seen the module's broadcast (about every 8 s).
+If broadcasts can't reach the Pi (`wifi_module_ip` set because the router blocks them), it can't tell
+Crossfire from ELRS: after 20 s it treats the module as ELRS, so a change of those settings then sends the
+Crossfire module the stop (`joystick_end`) and the start again.
 
 ### USB
 Plug the radio into a USB port, choose **USB Joystick (HID)**. Use a model with 100% weights, no expo

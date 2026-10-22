@@ -49,8 +49,10 @@ void    wifi_stop(wifi_t *w);                              /* close the socket, 
 void    wifi_poll(wifi_t *w, int64_t now_us, insrc_t *src);
 /* Live: module_ip -> set target (invalid text: logged, discovery); port -> rebind; http_port -> the
  * next POST. interval and channels (the request) -> the next joystick_begin; the module locked to is
- * restarted at once so they apply (joystick_end, then joystick_begin: ELRS takes them only when its
- * stream starts), unless it is Crossfire (which ignores them) or the new module_ip names another module. */
+ * restarted so they apply (joystick_end, then joystick_begin: ELRS takes them only when its stream
+ * starts): at once when it surely is no Crossfire (an ELRS beacon, or not 16 channels), else (16 channels,
+ * no beacon from it yet) once the lock is WIFI_XF_BEACON_US old without a Crossfire beacon. Not when it is
+ * Crossfire by its beacon (which ignores them) or the new module_ip names another module. */
 void    wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now_us);
 /* wifi_module ("ELRS 10.0.0.1" while streaming, else ""), wifi_state ("off", "listening",
  * "activating 10.0.0.1", "connecting to 10.0.0.1", "no data from 10.0.0.1",
@@ -74,7 +76,8 @@ typedef struct {
   double rate_hz, jitter_ms;    /* last stats window (1 s) */
   int frames_last_s;
   uint32_t rx, beacons, malformed, dropped_filter, dropped_other, applied;
-  uint32_t posts, posts_ok, posts_failed;   /* activations (a restart is one: joystick_end + joystick_begin) */
+  uint32_t posts, posts_ok, posts_failed;   /* activations (a restart is one: joystick_end + joystick_begin, ok
+                                               only when both got a 2xx) */
   int pending;                  /* activation requests queued or in flight */
   int interval_us, channels;    /* the request: what joystick_begin asks for */
   uint32_t restarts;            /* restarts sent (a request change, or a module streaming another channel count) */

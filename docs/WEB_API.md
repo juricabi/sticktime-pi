@@ -160,8 +160,13 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
 - Settings keys (all live): `wifi_module_ip` (empty: found by its beacon), `wifi_interval_us` (1000-100000,
   default 4000 = 250 Hz) and `wifi_channels` (4-16, default 16): what the activation POST asks the module for.
   An ELRS module takes a new interval or channel count only when its stream starts, so saving a change while
-  one streams restarts it (`action=joystick_end`, then `joystick_begin`; the log says so). Crossfire ignores
-  both (16 channels, about 90 Hz) and is never sent `joystick_end`.
+  one streams restarts it (`action=joystick_end`, then `joystick_begin`; the log says so): at once when it is
+  surely no Crossfire (its ELRS beacon was seen, or it sends other than 16 channels), else once the lock is
+  20 s old without a Crossfire beacon. Crossfire ignores both (16 channels, about 90 Hz) and is never sent
+  `joystick_end` once its beacon was seen; when its beacons can't reach the Pi (broadcasts blocked, so
+  `wifi_module_ip` is set), it counts as ELRS after those 20 s and is restarted too. A module still streaming
+  another request when it is locked to is restarted once only when its channel count differs from
+  `wifi_channels` and it is surely no Crossfire; a different interval alone is kept.
 - `GET /api/status` → `wifi_joystick` (above): the locked module, the state and the measured rate.
 
 ## VTX control
