@@ -46,17 +46,30 @@ static void on_frame(void *ud, uint32_t src, const uint16_t *raw, int n) {
 static void on_stats(void *ud, double hz, double jit, int frames) {
   st.hz = hz; st.jit = jit; st.frames = frames; st.count++;
 }
-static int on_activate(void *ud, uint32_t ip) {
-  if (nactivated < MAXREC) { activated[nactivated] = ip; act_at[nactivated] = now_us; }
+/* plain activations (joystick_begin) are what the ported C# tests count; restarts go to their own list */
+static wifi_act_t restarts[MAXREC];
+static int nrestarts;
+static wifi_act_t last_act;
+static int restart_result;
+static int on_activate(void *ud, const wifi_act_t *a) {
+  last_act = *a;
+  if (a->restart) {
+    if (nrestarts < MAXREC) restarts[nrestarts] = *a;
+    nrestarts++;
+    return restart_result;
+  }
+  if (nactivated < MAXREC) { activated[nactivated] = a->ip; act_at[nactivated] = now_us; }
   nactivated++;
   return act_result;
 }
 static const wifi_hooks_t HOOKS = { NULL, on_log, on_state, on_frame, on_stats, on_activate };
 
 static void H(void) {
-  napplied = nlogs = nstates = nactivated = 0;
+  napplied = nlogs = nstates = nactivated = nrestarts = 0;
   memset(&st, 0, sizeof st);
+  memset(&last_act, 0, sizeof last_act);
   act_result = WIFI_ACT_OK;
+  restart_result = WIFI_ACT_OK;
   now_us = 1000000000;            /* nonzero, like the C# clock */
   wifi_proto_init(&P, &HOOKS);
 }
@@ -737,7 +750,7 @@ static void Post_Bytes(void) {
   const char *want =
     "POST /udpcontrol HTTP/1.1\r\n"
     "Host: 192.168.1.10\r\n"
-    "User-Agent: sticktime-pi\r\n"
+    "User-Agent: " WIFI_USER_AGENT "\r\n"
     "Content-Type: application/x-www-form-urlencoded\r\n"
     "Content-Length: 47\r\n"
     "Connection: close\r\n"
@@ -837,6 +850,7 @@ static void ParseIp_Cases(void) {
 /* ---------------------------------------------------------------- N6 tick starvation (deviation 1) */
 static void TickStarvation_IgnoredTrafficCannotBlockTheTick(void) {
   H();
+  wifi_proto_set_request(&P, 4000, 4, now_us);   /* = the frames: no mismatch restart in this test */
   P.target = IP("10.0.0.9");
   SENDF("10.0.0.9", 1, 2, 3, 4);
   int64_t t0 = now_us, released = 0;
@@ -1103,6 +1117,7 @@ static void CountChange_FrameHookGetsNewCount(void) {
 /* ---------------------------------------------------------------- N11 exact boundaries */
 static void Boundaries_AreStrict(void) {
   H();
+  wifi_proto_set_request(&P, 4000, 4, now_us);   /* = the frames: no mismatch restart in this test */
   SENDF("192.168.1.10", 1, 2, 3, 4);
   adv(3.0);
   tick();
@@ -1394,14 +1409,14 @@ static void ActQueue_PushTakePutGet(void) {
   wifi_actres_t rs, out;
   CHECK(!wifi_actq_take(&q, &rq));
   CHECK(!wifi_actq_get(&q, &out));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "action=joystick_begin&interval=4000&channels=16"), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "action=joystick_begin&interval=4000&channels=16", false), WIFI_ACT_QUEUED);
   CHECK(wifi_actq_is_pending(&q, IP("10.0.0.1")));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x"), WIFI_ACT_BUSY);      /* dedupe while queued */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x", false), WIFI_ACT_BUSY);      /* dedupe while queued */
   CHECK(wifi_actq_take(&q, &rq));
   CHECK(rq.ip == IP("10.0.0.1") && rq.http_port == 80);
   CHECK_STR(rq.body, "action=joystick_begin&interval=4000&channels=16");
   CHECK(!wifi_actq_stale(&q, rq.session));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x"), WIFI_ACT_BUSY);      /* dedupe while in flight */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x", false), WIFI_ACT_BUSY);      /* dedupe while in flight */
   memset(&rs, 0, sizeof rs);
   rs.ip = rq.ip; rs.session = rq.session; rs.ok = true; rs.status = 200;
   snprintf(rs.reason, sizeof rs.reason, "OK");
@@ -1411,12 +1426,12 @@ static void ActQueue_PushTakePutGet(void) {
   CHECK(out.ok && out.status == 200 && out.ip == IP("10.0.0.1"));
   CHECK_STR(out.reason, "OK");
   CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.1")));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x"), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x", false), WIFI_ACT_QUEUED);
   /* body too long for a request slot */
   char longb[100];
   memset(longb, 'b', sizeof longb - 1);
   longb[sizeof longb - 1] = 0;
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, longb), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, longb, false), WIFI_ACT_BUSY);
   CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.2")));
 }
 
@@ -1426,9 +1441,9 @@ static void ActQueue_FullAndOrder(void) {
   char ip[32];
   for (int i = 1; i <= WIFI_ACTQ; i++) {
     snprintf(ip, sizeof ip, "10.0.0.%d", i);
-    CHECK_INT(wifi_actq_push(&q, IP(ip), 80, "b"), WIFI_ACT_QUEUED);
+    CHECK_INT(wifi_actq_push(&q, IP(ip), 80, "b", false), WIFI_ACT_QUEUED);
   }
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b"), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_BUSY);
   wifi_actreq_t rq;
   for (int i = 1; i <= WIFI_ACTQ; i++) {         /* FIFO */
     snprintf(ip, sizeof ip, "10.0.0.%d", i);
@@ -1437,19 +1452,19 @@ static void ActQueue_FullAndOrder(void) {
   }
   CHECK(!wifi_actq_take(&q, &rq));
   /* all taken but none answered: still pending, so still full */
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b"), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_BUSY);
   wifi_actres_t rs, out;
   memset(&rs, 0, sizeof rs);
   rs.session = q.session;
   rs.ip = IP("10.0.0.3");
   wifi_actq_put(&q, &rs);
   CHECK(wifi_actq_get(&q, &out));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b"), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_QUEUED);
   /* the impossible overflow of the result ring unpends what it drops */
   wifi_actq_init(&q);
   for (int i = 1; i <= WIFI_ACTQ; i++) {
     snprintf(ip, sizeof ip, "10.0.1.%d", i);
-    wifi_actq_push(&q, IP(ip), 80, "b");
+    wifi_actq_push(&q, IP(ip), 80, "b", false);
     wifi_actq_take(&q, &rq);
     rs.ip = rq.ip;
     rs.session = rq.session;
@@ -1468,15 +1483,15 @@ static void ActQueue_SessionDiscardsStaleResults(void) {
   wifi_actq_init(&q);
   wifi_actreq_t rq;
   wifi_actres_t rs, out;
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b"), WIFI_ACT_QUEUED);
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "b"), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "b", false), WIFI_ACT_QUEUED);
   CHECK(wifi_actq_take(&q, &rq));                       /* .1 in flight on the worker */
   uint32_t old = rq.session;
   wifi_actq_new_session(&q);                            /* stop/start */
   CHECK(wifi_actq_stale(&q, old));                      /* the worker aborts it */
   CHECK(!wifi_actq_take(&q, &rq));                      /* .2 was dropped from the queue */
   CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.1")));
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b"), WIFI_ACT_QUEUED);   /* new session may ask again */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);   /* new session may ask again */
   memset(&rs, 0, sizeof rs);
   rs.ip = IP("10.0.0.1"); rs.session = old; rs.ok = true; rs.status = 200;
   wifi_actq_put(&q, &rs);                               /* the old answer arrives late */
@@ -1491,7 +1506,7 @@ static void ActQueue_SessionDiscardsStaleResults(void) {
   wifi_actq_new_session(&q);
   CHECK(!wifi_actq_get(&q, &out));
   /* a result that slipped into the ring with an old session is skipped by get */
-  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.3"), 80, "b"), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.3"), 80, "b", false), WIFI_ACT_QUEUED);
   wifi_actq_take(&q, &rq);
   q.res[0] = rs;                                        /* old session, forced in */
   q.res[0].session = old;
@@ -1501,6 +1516,421 @@ static void ActQueue_SessionDiscardsStaleResults(void) {
   CHECK(wifi_actq_get(&q, &out));
   CHECK(out.ip == IP("10.0.0.3") && out.ok);
   CHECK(!wifi_actq_get(&q, &out));
+}
+
+/* ---------------------------------------------------------------- the request (interval, channels) */
+static int count_restarts(uint32_t ip) {
+  int c = 0;
+  for (int i = 0; i < nrestarts && i < MAXREC; i++) if (restarts[i].ip == ip) c++;
+  return c;
+}
+
+static void Request_SupportedValues(void) {
+  CHECK_INT(wifi_clamp_interval(0), WIFI_INTERVAL_MIN);
+  CHECK_INT(wifi_clamp_interval(-5), 1000);
+  CHECK_INT(wifi_clamp_interval(999), 1000);
+  CHECK_INT(wifi_clamp_interval(1000), 1000);
+  CHECK_INT(wifi_clamp_interval(4000), 4000);
+  CHECK_INT(wifi_clamp_interval(100000), 100000);
+  CHECK_INT(wifi_clamp_interval(100001), WIFI_INTERVAL_MAX);
+  CHECK_INT(wifi_clamp_channels(-1), 4);
+  CHECK_INT(wifi_clamp_channels(3), WIFI_MIN_CH);
+  CHECK_INT(wifi_clamp_channels(4), 4);
+  CHECK_INT(wifi_clamp_channels(16), 16);
+  CHECK_INT(wifi_clamp_channels(17), WIFI_MAX_CH);
+  CHECK_INT(wifi_interval_hz(4000), 250);
+  CHECK_INT(wifi_interval_hz(3000), 333);
+  CHECK_INT(wifi_interval_hz(6667), 150);
+  CHECK_INT(wifi_interval_hz(1000), 1000);
+  CHECK_INT(wifi_interval_hz(20000), 50);
+  CHECK_INT(wifi_interval_hz(100000), 10);
+  CHECK_INT(wifi_interval_hz(0), 0);
+  CHECK_INT(wifi_interval_hz(-1), 0);
+  static const int presets[] = WIFI_INTERVAL_PRESETS;
+  static const int hz[] = { 1000, 500, 333, 250, 200, 150, 100, 50 };
+  CHECK_INT((int)(sizeof presets / sizeof presets[0]), WIFI_N_INTERVAL_PRESETS);
+  for (int i = 0; i < WIFI_N_INTERVAL_PRESETS; i++) {
+    CHECK_INT(wifi_clamp_interval(presets[i]), presets[i]);
+    CHECK_INT(wifi_interval_hz(presets[i]), hz[i]);
+    if (i) CHECK(presets[i] > presets[i - 1]);
+  }
+  CHECK(wifi_clamp_interval(WIFI_INTERVAL_DEFAULT) == WIFI_INTERVAL_DEFAULT);
+  CHECK_INT(wifi_interval_hz(WIFI_INTERVAL_DEFAULT), 250);
+  CHECK_INT(WIFI_CHANNELS_DEFAULT, 16);
+}
+
+static void Request_DefaultsGoIntoActivation(void) {
+  H();
+  CHECK_INT(P.interval_us, 4000);
+  CHECK_INT(P.channels, 16);
+  str("ELRS", "192.168.1.10");
+  CHECK_INT(nactivated, 1);
+  CHECK(last_act.ip == IP("192.168.1.10") && !last_act.restart);
+  CHECK_INT(last_act.interval_us, 4000);
+  CHECK_INT(last_act.channels, 16);
+  /* reset keeps the request */
+  wifi_proto_set_request(&P, 2000, 8, now_us);
+  wifi_proto_reset(&P);
+  CHECK_INT(P.interval_us, 2000);
+  CHECK_INT(P.channels, 8);
+}
+
+static void Request_SetWhileIdle_NextActivationCarriesIt(void) {
+  H();
+  CHECK(wifi_proto_set_request(&P, 5000, 8, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(nactivated, 0);
+  CHECK(!wifi_proto_set_request(&P, 5000, 8, now_us));       /* unchanged */
+  CHECK(!wifi_proto_set_request(&P, 5000, 8, now_us));
+  CHECK(wifi_proto_set_request(&P, 0, 99, now_us));           /* clamped */
+  CHECK_INT(P.interval_us, 1000);
+  CHECK_INT(P.channels, 16);
+  CHECK(!wifi_proto_set_request(&P, 999, 17, now_us));        /* clamps to the same */
+  wifi_proto_set_request(&P, 5000, 8, now_us);
+  str("VELOCIDRONE", "192.168.2.138");
+  CHECK_INT(nactivated, 1);
+  CHECK_INT(last_act.interval_us, 5000);
+  CHECK_INT(last_act.channels, 8);
+  CHECK_INT(nrestarts, 0);
+}
+
+static void Request_ChangeWhileStreamingElrs_RestartsIt(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 16000);
+  CHECK(P.bound);
+  int logs0 = nlogs;
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP) && restarts[0].restart);
+  CHECK_INT(restarts[0].interval_us, 2000);
+  CHECK_INT(restarts[0].channels, 16);
+  CHECK_INT(P.restarts, 1);
+  CHECK(nlogs > logs0);
+  CHECK_INT(count_logs("Restarting the stream of 192.168.1.50: 500 Hz, 16 channels"), 1);
+  CHECK(P.bound);                                    /* the lock holds through the restart */
+  /* and the channels too */
+  CHECK(wifi_proto_set_request(&P, 2000, 8, now_us));
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(restarts[1].channels, 8);
+  /* frames of the old request (16) until the module has it: no extra restart */
+  for (int i = 0; i < 10; i++) send_same(DEF_IP, 16, 16000);
+  CHECK_INT(nrestarts, 2);
+  for (int i = 0; i < 10; i++) send_same(DEF_IP, 8, 16000);
+  CHECK_INT(nrestarts, 2);
+  CHECK_INT(nactivated, 1);                          /* only the first joystick_begin was plain */
+}
+
+static void Request_ChangeWhileStreamingCrossfire_NoRestart_LoggedOnce(void) {
+  H();
+  str("VELOCIDRONE", "192.168.2.138");
+  send_same("192.168.2.138", 16, 16000);
+  CHECK(P.bound);
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("ignores the rate and channel count"), 1);
+  CHECK(wifi_proto_set_request(&P, 3000, 8, now_us));
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("ignores the rate and channel count"), 1);
+  CHECK(!wifi_proto_restart(&P, now_us));            /* explicit restart: refused, logged */
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("nothing to restart"), 1);
+  wifi_proto_reset(&P);                              /* next session: noted again */
+  CHECK(!P.xf_noted);
+}
+
+static void Request_ChangeWhileStreamingUnknown_Restarts(void) {
+  H();
+  send_same(DEF_IP, 16, 16000);                      /* no beacon: ELRS already streaming, or Crossfire */
+  CHECK(P.bound);
+  CHECK_INT(nrestarts, 0);
+  wifi_proto_set_request(&P, 10000, 16, now_us);
+  CHECK_INT(nrestarts, 0);                           /* may be Crossfire: wait for its beacon */
+  CHECK_INT(count_logs("may be Crossfire (no beacon from it yet)"), 1);
+  CHECK_INT(count_logs("within 20 s"), 1);
+  for (int i = 0; i < 19; i++) { now_us += 1000000; send_same(DEF_IP, 16, 16000); wifi_proto_tick(&P, now_us); }
+  CHECK_INT(nrestarts, 0);
+  now_us += 1000000;
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_tick(&P, now_us);                       /* 20 s of lock without a Crossfire beacon: ELRS */
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(restarts[0].interval_us, 10000);
+  wifi_proto_tick(&P, now_us + 1000);
+  CHECK_INT(nrestarts, 1);
+}
+
+static void Request_ChangeWhileStreamingUnknown_CrossfireBeacon_NoRestart(void) {
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 10000, 16, now_us);
+  now_us += 3000000;
+  send_same(DEF_IP, 16, 16000);
+  str("VELOCIDRONE", DEF_IP);
+  wifi_proto_tick(&P, now_us);
+  for (int i = 0; i < 12; i++) { now_us += 1000000; send_same(DEF_IP, 16, 16000); wifi_proto_tick(&P, now_us); }
+  CHECK_INT(nrestarts, 0);                           /* never a joystick_end to Crossfire */
+  CHECK(P.bound);
+}
+
+static void Restart_ExplicitUnknown16_WaitsForTheKind(void) {
+  H();
+  send_same(DEF_IP, 16, 16000);
+  adv(5.0);
+  send_same(DEF_IP, 16, 16000);
+  CHECK(wifi_proto_restart(&P, now_us));             /* accepted, but held */
+  CHECK_INT(nrestarts, 0);
+  CHECK_INT(count_logs("within 15 s"), 1);
+  wifi_proto_restart(&P, now_us);                    /* asked again: logged once */
+  CHECK_INT(count_logs("may be Crossfire"), 1);
+  adv(15.0);
+  send_same(DEF_IP, 16, 16000);
+  tick();
+  CHECK_INT(nrestarts, 1);
+  /* after the window, an explicit restart goes out at once */
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 2);
+}
+
+static void Restart_Wait_DroppedWhenTheLockIsLost(void) {
+  H();
+  send_same(DEF_IP, 16, 16000);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_wait);
+  adv(3.1);
+  tick();                                            /* lock released */
+  CHECK(!P.bound && !P.restart_wait);
+  adv(30.0);
+  tick();
+  CHECK_INT(nrestarts, 0);
+  /* a new lock (another module) starts clean */
+  send_same("192.168.1.51", 16, 100);
+  CHECK(!P.restart_wait);
+}
+
+static void Request_Store_NoRestart(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 16000);
+  CHECK(P.bound);
+  wifi_proto_store_request(&P, 0, 99);               /* clamped, nothing sent */
+  CHECK_INT(P.interval_us, 1000);
+  CHECK_INT(P.channels, 16);
+  CHECK_INT(nrestarts, 0);
+  wifi_proto_store_request(&P, 2000, 8);
+  CHECK_INT(nrestarts, 0);
+  /* the host changes the target next: the new module's joystick_begin asks for the stored request */
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.7", now_us), 0);
+  CHECK(last_act.ip == IP("10.0.0.7") && !last_act.restart);
+  CHECK_INT(last_act.interval_us, 2000);
+  CHECK_INT(last_act.channels, 8);
+  CHECK_INT(nrestarts, 0);
+}
+
+static void Request_ChangeWhileStreamingUnknown_Not16_RestartsAtOnce(void) {
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  send_same(DEF_IP, 8, 16000);                       /* 8 channels: surely no Crossfire */
+  wifi_proto_set_request(&P, 10000, 8, now_us);
+  CHECK_INT(nrestarts, 1);
+}
+
+static void Restart_Explicit(void) {
+  H();
+  CHECK(!wifi_proto_restart(&P, now_us));            /* nothing to restart */
+  CHECK_INT(count_logs("No module to restart"), 1);
+  CHECK_INT(nrestarts, 0);
+  /* the target, while nothing streams */
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.1", now_us), 0);
+  CHECK_INT(nactivated, 1);
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP("10.0.0.1"));
+  /* the locked module wins over the target (ELRS by its beacon: no wait for the kind) */
+  str("ELRS", "10.0.0.1");
+  send_same("10.0.0.1", 16, 100);
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(count_restarts(IP("10.0.0.1")), 2);
+}
+
+static void Restart_BypassesAndRestartsTheThrottle(void) {
+  H();
+  str("ELRS", DEF_IP);                               /* POST at t0 */
+  CHECK_INT(nactivated, 1);
+  adv(1.0);
+  CHECK_INT(wifi_proto_set_target(&P, DEF_IP, now_us), 0);   /* target: throttle entry removed, POST */
+  CHECK_INT(nactivated, 2);
+  adv(1.0);
+  CHECK(wifi_proto_restart(&P, now_us));             /* within the throttle: goes out anyway */
+  CHECK_INT(nrestarts, 1);
+  adv(4.5);
+  tick();                                            /* 4.5 s after the restart: still throttled */
+  CHECK_INT(nactivated, 2);
+  adv(0.6);
+  tick();                                            /* 5.1 s: the target is POSTed again */
+  CHECK_INT(nactivated, 3);
+}
+
+static void Restart_Busy_RetriedOnTick(void) {
+  H();
+  str("ELRS", DEF_IP);                               /* ELRS: no wait for the kind */
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_BUSY;
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nrestarts, 1);
+  CHECK(P.restart_ip == IP(DEF_IP));
+  CHECK_INT(P.restarts, 0);                          /* nothing went out */
+  tick();
+  CHECK_INT(nrestarts, 2);
+  restart_result = WIFI_ACT_QUEUED;
+  tick();
+  CHECK_INT(nrestarts, 3);
+  CHECK(P.restart_ip == 0);
+  CHECK_INT(P.restarts, 1);
+  tick();
+  tick();
+  CHECK_INT(nrestarts, 3);
+  /* the answer arrives later: it arms nothing while that module streams */
+  wifi_proto_activation_done(&P, IP(DEF_IP), true, now_us);
+  CHECK(!P.first_act_set);
+  /* reset drops a pending retry */
+  restart_result = WIFI_ACT_BUSY;
+  wifi_proto_restart(&P, now_us);
+  CHECK(P.restart_ip != 0);
+  wifi_proto_reset(&P);
+  CHECK(P.restart_ip == 0);
+}
+
+static void Restart_OkWhileNotStreaming_ArmsTheNoDataHint(void) {
+  H();
+  wifi_proto_set_target(&P, "10.0.0.5", now_us);
+  act_result = WIFI_ACT_FAILED;
+  restart_result = WIFI_ACT_OK;
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK(P.first_act_set);
+  adv(4.1);
+  tick();
+  CHECK_INT(count_logs("NO data arriving"), 1);
+}
+
+static void Mismatch_ElrsByBeacon_RestartsOnce(void) {
+  H();
+  str("ELRS", DEF_IP);
+  for (int i = 0; i < 20; i++) send_same(DEF_IP, 8, 100 + i);
+  CHECK_INT(napplied, 20);                           /* applied all the same */
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].ip == IP(DEF_IP));
+  CHECK_INT(restarts[0].channels, 16);
+  CHECK_INT(count_logs("192.168.1.50 streams 8 channels, 16 asked for"), 1);
+  /* ELRS by beacon sending 16 while 8 are asked: restarted too */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(nrestarts, 1);
+}
+
+static void Mismatch_UnknownModule(void) {
+  H();
+  for (int i = 0; i < 5; i++) send_same(DEF_IP, 8, 100);     /* not 16: not Crossfire */
+  CHECK_INT(nrestarts, 1);
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  for (int i = 0; i < 5; i++) send_same(DEF_IP, 16, 100);    /* 16: could be Crossfire */
+  CHECK_INT(nrestarts, 0);
+  H();
+  for (int i = 0; i < 5; i++) send_same(DEF_IP, 16, 100);    /* = the request */
+  CHECK_INT(nrestarts, 0);
+}
+
+static void Mismatch_Crossfire_Never(void) {
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  str("VELOCIDRONE", "192.168.2.138");
+  for (int i = 0; i < 5; i++) send_same("192.168.2.138", 16, 100);
+  CHECK_INT(nrestarts, 0);
+  /* even a corrupt-looking count from a known Crossfire is left alone */
+  send_same("192.168.2.138", 8, 100);
+  CHECK_INT(nrestarts, 0);
+}
+
+static void Mismatch_OncePerSession_ThenAgainAfterReset(void) {
+  H();
+  send_same(DEF_IP, 8, 100);
+  CHECK_INT(nrestarts, 1);
+  adv(3.1);
+  tick();                                            /* lock released */
+  send_same(DEF_IP, 8, 100);                         /* locked again, still 8 */
+  CHECK_INT(nrestarts, 1);
+  wifi_proto_reset(&P);
+  send_same(DEF_IP, 8, 100);
+  CHECK_INT(nrestarts, 2);
+}
+
+static void Mismatch_FullTable_NoRestartStorm(void) {
+  H();
+  char ip[32];
+  for (int i = 0; i < WIFI_TABLE; i++) {
+    snprintf(ip, sizeof ip, "10.0.1.%d", i + 1);
+    send_same(ip, 8, 100);
+    adv(3.1);
+    tick();
+  }
+  CHECK_INT(nrestarts, WIFI_TABLE);
+  for (int i = 0; i < 50; i++) send_same("10.0.1.99", 8, 100);
+  CHECK_INT(nrestarts, WIFI_TABLE);                  /* table full: never one per frame */
+  CHECK_INT(napplied, WIFI_TABLE + 50);
+}
+
+static void Mismatch_BusyHost_RetriedOnTick_NotPerFrame(void) {
+  H();
+  restart_result = WIFI_ACT_BUSY;
+  for (int i = 0; i < 10; i++) send_same(DEF_IP, 8, 100);
+  CHECK_INT(nrestarts, 1);                           /* frames don't retry: the tick does */
+  tick();
+  CHECK_INT(nrestarts, 2);
+  restart_result = WIFI_ACT_OK;
+  tick();
+  CHECK_INT(nrestarts, 3);
+  tick();
+  CHECK_INT(nrestarts, 3);
+}
+
+static void ActQueue_Restart(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  /* a restart supersedes a queued plain request for the same IP */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "action=joystick_begin&interval=4000&channels=16", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "b2", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 8080, "action=joystick_begin&interval=2000&channels=8", true), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "x", false), WIFI_ACT_BUSY);     /* plain: still deduped */
+  CHECK_INT(q.rq_n, 2);
+  CHECK_INT(q.npending, 2);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.1") && rq.end_first && rq.http_port == 8080);
+  CHECK_STR(rq.body, "action=joystick_begin&interval=2000&channels=8");
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "y", true), WIFI_ACT_BUSY);      /* in flight */
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.2") && !rq.end_first);
+  /* a restart for an IP that is not pending is queued as such */
+  memset(&rs, 0, sizeof rs);
+  rs.ip = IP("10.0.0.1"); rs.session = q.session; rs.ok = true; rs.restart = true;
+  wifi_actq_put(&q, &rs);
+  CHECK(wifi_actq_get(&q, &out));
+  CHECK(out.restart && out.ok);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "z", true), WIFI_ACT_QUEUED);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.end_first);
+  /* too long a body is refused either way */
+  char longb[80];
+  memset(longb, 'a', sizeof longb - 1);
+  longb[sizeof longb - 1] = 0;
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.7"), 80, longb, true), WIFI_ACT_BUSY);
+  /* a new session drops a queued restart */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.8"), 80, "r", true), WIFI_ACT_QUEUED);
+  wifi_actq_new_session(&q);
+  CHECK(!wifi_actq_take(&q, &rq));
 }
 
 int main(void) {
@@ -1592,5 +2022,27 @@ int main(void) {
   ActQueue_PushTakePutGet();
   ActQueue_FullAndOrder();
   ActQueue_SessionDiscardsStaleResults();
+  Request_SupportedValues();
+  Request_DefaultsGoIntoActivation();
+  Request_SetWhileIdle_NextActivationCarriesIt();
+  Request_ChangeWhileStreamingElrs_RestartsIt();
+  Request_ChangeWhileStreamingCrossfire_NoRestart_LoggedOnce();
+  Request_ChangeWhileStreamingUnknown_Restarts();
+  Request_ChangeWhileStreamingUnknown_CrossfireBeacon_NoRestart();
+  Request_ChangeWhileStreamingUnknown_Not16_RestartsAtOnce();
+  Restart_ExplicitUnknown16_WaitsForTheKind();
+  Restart_Wait_DroppedWhenTheLockIsLost();
+  Request_Store_NoRestart();
+  Restart_Explicit();
+  Restart_BypassesAndRestartsTheThrottle();
+  Restart_Busy_RetriedOnTick();
+  Restart_OkWhileNotStreaming_ArmsTheNoDataHint();
+  Mismatch_ElrsByBeacon_RestartsOnce();
+  Mismatch_UnknownModule();
+  Mismatch_Crossfire_Never();
+  Mismatch_OncePerSession_ThenAgainAfterReset();
+  Mismatch_FullTable_NoRestartStorm();
+  Mismatch_BusyHost_RetriedOnTick_NotPerFrame();
+  ActQueue_Restart();
   T_DONE();
 }

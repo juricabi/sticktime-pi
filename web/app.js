@@ -265,7 +265,7 @@
     video: 'Output', tv: 'TV standard', aspect: 'Picture shape', av_mode: 'Composite lines', av_detail: 'Picture detail', av_flicker: 'Flicker filter', hdmi_mode: 'HDMI mode', margin: 'Border',
     fonts: 'Text size', show_ip: 'Show the web address', drawing: 'Drawing', wifi_country: 'Country', hotspot: 'Hotspot', hotspot_ssid: 'Hotspot name',
     hotspot_password: 'Hotspot password', input: 'Stick source', channel_order: 'Channel order', stick_channels: 'Stick mapping', invert: 'Reverse', pause_channel: 'Pause switch',
-    stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', bluetooth: 'Bluetooth',
+    stick_menus: 'Menus by sticks', wifi_module_ip: 'Module address', wifi_interval_us: 'Packet interval', wifi_channels: 'Channel count', bluetooth: 'Bluetooth',
     latency: 'Camera prediction', stick_mode: 'Stick mode', script: 'Script', stats: 'Timing stats', sd_write: 'The web page may change',
     sound: 'Sound', volume: 'Volume', music: 'Music', music_volume: 'Music volume', music_source: 'Music from', audio_out: 'Output', audio_mono: 'Mono',
     hostname: 'Name', ssh: 'SSH', password: 'Password of user pi', keep_logs: 'Keep logs', auto_update: 'Automatic updates',
@@ -520,9 +520,11 @@
         h('div', { class: 'btn-row tight' }, h('button', { class: 'btn sm', type: 'button', text: 'Detect', on: { click: () => detect.start(form) } }), clearBtn),
         note, help, err);
       after();
-    } else if (key === 'pause_channel' && range2) {
+    } else if ((key === 'pause_channel' || key === 'wifi_channels') && range2) {
+      // a channel (pause switch), or how many the WiFi module sends: CH1 up to that one
+      const name = (c) => (key === 'wifi_channels' ? c + ' (CH1-CH' + c + ')' : c === 0 ? 'Off' : 'CH' + c);
       const opts = [];
-      for (let c = range2[0]; c <= range2[1]; c++) opts.push(h('option', { value: String(c), text: c === 0 ? 'Off' : 'CH' + c, selected: String(c) === val }));
+      for (let c = range2[0]; c <= range2[1]; c++) opts.push(h('option', { value: String(c), text: name(c), selected: String(c) === val }));
       const sel = h('select', { id, 'aria-describedby': desc, on: { change: changedNow } }, opts);
       f.get = () => sel.value;
       f.set = (v) => { sel.value = v; };
@@ -549,7 +551,9 @@
       f.root = h('div', { class: 'field' }, top(null), h('div', { class: 'range' }, r, out), help, err);
     } else {
       // text and numbers (a datalist where common values exist)
-      const lists = { channel_order: ['AETR', 'TAER', 'ETAR', 'RETA', 'AERT'], hdmi_mode: ['auto', '1280x720', '1280x720@60', '1920x1080', '1920x1080@60', '720x480', '720x576'] };
+      // [value, label] where a label helps: the WiFi module's rates (ELRS takes any interval from 1000 us)
+      const lists = { channel_order: ['AETR', 'TAER', 'ETAR', 'RETA', 'AERT'], hdmi_mode: ['auto', '1280x720', '1280x720@60', '1920x1080', '1920x1080@60', '720x480', '720x576'],
+        wifi_interval_us: [['1000', '1000 Hz'], ['2000', '500 Hz'], ['3000', '333 Hz'], ['4000', '250 Hz (default)'], ['5000', '200 Hz'], ['6667', '150 Hz'], ['10000', '100 Hz'], ['20000', '50 Hz']] };
       const attrs = { id, 'aria-describedby': desc, spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', value: val, on: { input: changedNow } };
       let hint = null;
       if (k.kind === 'int' || k.kind === 'num') {
@@ -561,7 +565,10 @@
       if (key === 'wifi_country') { attrs.list = 'countries'; attrs.maxlength = '2'; attrs.autocapitalize = 'characters'; }
       if (key === 'hostname') attrs.maxlength = '63';
       let dl = null;
-      if (lists[key]) { dl = h('datalist', { id: id + '-list' }, lists[key].map((v) => h('option', { value: v }))); attrs.list = id + '-list'; }
+      if (lists[key]) {
+        dl = h('datalist', { id: id + '-list' }, lists[key].map((v) => (Array.isArray(v) ? h('option', { value: v[0], label: v[1] }) : h('option', { value: v }))));
+        attrs.list = id + '-list';
+      }
       const inp = h('input', attrs);
       if (key === 'wifi_interval_us') {
         hint = h('span', { class: 'note' });

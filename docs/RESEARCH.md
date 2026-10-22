@@ -37,8 +37,11 @@ Everything here was checked against source code or documentation while StickTime
 
 ## 2. ExpressLRS WiFi joystick (and TBS Crossfire "VelociDrone Mobile" link)
 
-From the ExpressLRS source (`src/lib/WIFI/wifiJoystick.cpp`, `devWIFI.cpp`, `wifiJoystick.h`) and the
-owner's Windows app (`github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows`, `JoystickEngine.cs`):
+From the ExpressLRS source (`src/lib/WIFI/wifiJoystick.cpp`, `devWIFI.cpp`, `wifiJoystick.h`; the
+WiFi joystick first appears in 3.4.0: 3.3.0 has no `/udpcontrol` route and no `wifiJoystick.cpp`) and the owner's Windows app
+(`github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows`, `JoystickEngine.cs`). StickTime Pi runs the
+protocol through the core it shares with the owner's Linux app
+(`github.com/juricabi/elrs-crossfire-wifi-joystick-linux`, `core/`, vendored in `host/third_party/elrs-wifi/`):
 
 - Port **UDP 11000** for both the beacon and the stream.
 - **ELRS beacon**: every 5 s, broadcast to 255.255.255.255:11000. Payload:
@@ -46,10 +49,24 @@ owner's Windows app (`github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows`,
   **Crossfire beacon**: starts with ASCII `VELOCIDRONE` (~every 8 s).
 - **Activation**: HTTP `POST http://<module-ip>/udpcontrol`, form body
   `action=joystick_begin&interval=<µs>&channels=<n>`. The module answers `ok` and starts streaming
-  to the IP that sent the POST. The owner's app sends `interval=10000&channels=8`, throttles POSTs to
-  one every 5 s per module, and runs them off the receive thread.
+  to the IP that sent the POST. The Windows app sent `interval=10000&channels=8` before the request became
+  a setting; the owner's apps and StickTime Pi now send the configured one (default
+  `interval=4000&channels=16`), throttle POSTs to one every 5 s per module, and run them off the receive
+  thread.
 - **ELRS accepts `interval` ≥ 1000 µs** (below that, or 0, it falls back to 10000). So **lower
-  latency is available: e.g. 4000 µs (250 Hz) or 2000 µs (500 Hz)**. Channels: 1–16 (0 → 8).
+  latency is available: e.g. 4000 µs (250 Hz) or 2000 µs (500 Hz)**. Channels: 1–16 (0 → 8, more → 16).
+  StickTime Pi offers 1000–100000 µs (`wifi_interval_us`; the page suggests 1000, 500, 333, 250, 200,
+  150, 100 and 50 Hz) and 4–16 channels (`wifi_channels`).
+- **ELRS takes `interval` and `channels` only while it is not streaming** (3.4.0 `StartSending`:
+  `remoteIP = ip; if (!udp || active) return;` before the interval and count are set): a
+  `joystick_begin` to a streaming module only moves the stream to the poster. A new request reaches a
+  streaming module only as **`action=joystick_end`** (`StopSending`, answered `ok`; there since the WiFi
+  joystick appeared in 3.4.0) followed by `joystick_begin`: a "restart". StickTime Pi restarts the locked
+  module when `wifi_interval_us` or `wifi_channels` changes, and once per module and session when a
+  module that surely isn't Crossfire (an ELRS beacon was seen, or the count isn't 16) streams a channel
+  count other than the request (another app's leftover request).
+- **Crossfire** starts on the same `joystick_begin` but **ignores `interval` and `channels`** (always 16
+  channels at about 90 Hz). Whether it honours `joystick_end` is unknown, so it is **never sent one**.
 - **Channel frame**: `uint8 type` (=1), `uint8 count` (4–16; Crossfire always sends 16), then
   `count × uint16 LE`. ELRS maps CRSF 1000–2000 µs (`CRSF_CHANNEL_VALUE_STD_MIN..MAX`) to **0–32767**
   (constrained, so full stick = endpoint).
@@ -60,7 +77,9 @@ owner's Windows app (`github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows`,
   Broken TBS firmware: XF 6.42/6.48, WiFi module 3.20 (only placeholders). Works: XF 6.31/6.36, WiFi 2.17–3.10.
 - **Source lock**: bind to the first module that sends real channel data; ignore other sources until
   the bound one has been silent for 3 s. With an explicit module IP, accept only that IP.
-- There's **no stop command**: the module streams until it's powered off or its WiFi drops.
+- Nothing stops the stream by itself: an ELRS module streams until `joystick_end`, a power-off or a WiFi
+  drop, and it sends no beacons meanwhile. StickTime Pi sends `joystick_end` only right before its own
+  `joystick_begin` (a restart), never when it stops listening.
 - Module WiFi is **2.4 GHz only**. Keep the Pi on 2.4 GHz too: 5 GHz WiFi channels sit next to the
   5.8 GHz video band.
 - In AP mode the ELRS TX module is at `10.0.0.1` (SSID `ExpressLRS TX`, password `expresslrs`), and a

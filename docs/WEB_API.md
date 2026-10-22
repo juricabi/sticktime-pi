@@ -155,6 +155,15 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
 - `POST /api/wifi/module-ap` body `elrs|tbs` → joins the ELRS (`ExpressLRS TX` / `expresslrs`, module 10.0.0.1)
   or TBS module's own access point (sets `wifi_module_ip`).
 
+## WiFi joystick
+
+- Settings keys (all live): `wifi_module_ip` (empty: found by its beacon), `wifi_interval_us` (1000-100000,
+  default 4000 = 250 Hz) and `wifi_channels` (4-16, default 16): what the activation POST asks the module for.
+  An ELRS module takes a new interval or channel count only when its stream starts, so saving a change while
+  one streams restarts it (`action=joystick_end`, then `joystick_begin`; the log says so). Crossfire ignores
+  both (16 channels, about 90 Hz) and is never sent `joystick_end`.
+- `GET /api/status` → `wifi_joystick` (above): the locked module, the state and the measured rate.
+
 ## VTX control
 
 The VTX thread (`host/src/vtx.c`) sets the analog VTX over SmartAudio or Tramp from the settings `vtx`,

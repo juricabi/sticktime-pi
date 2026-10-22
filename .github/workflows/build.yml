@@ -1,7 +1,8 @@
-# Every push and pull request: the host for x86_64 (unit tests + headless game scenarios), the
-# static aarch64 binary for the Pi (zig cc, musl; its unit tests under qemu-user), the Python
-# tests (image helpers, updater, settings twin, editor patcher) on the oldest and newest Python
-# the Pi images use, and the web UI in headless Chromium. Artifacts: the aarch64 binary.
+# Every push and pull request: the host for x86_64 (the vendored WiFi joystick core's check, unit
+# tests + headless game scenarios), the static aarch64 binary for the Pi (zig cc, musl; its unit
+# tests under qemu-user), the Python tests (image helpers, updater, settings twin, editor patcher)
+# on the oldest and newest Python the Pi images use, and the web UI in headless Chromium.
+# Artifacts: the aarch64 binary.
 name: build
 
 on:
@@ -31,6 +32,9 @@ jobs:
       # the game the scenarios run (public); the host tests and run_scenarios.py look for ../sticktime
       - uses: actions/checkout@v4
         with: { repository: juricabi/sticktime, path: sticktime }
+      - name: "The vendored WiFi joystick core is unmodified (host/third_party/elrs-wifi/VENDOR)"
+        working-directory: sticktime-pi
+        run: sh tools/vendor_elrs_wifi.sh --check
       - name: Build and run the unit tests (gcc)
         working-directory: sticktime-pi
         run: CC=cc host/build.sh native test

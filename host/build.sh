@@ -54,23 +54,27 @@ esac
 case "$TARGET" in native) [ -n "$EXE" ] || LUAFLAGS="$LUAFLAGS -DLUA_USE_POSIX" ;; *) LUAFLAGS="$LUAFLAGS -DLUA_USE_POSIX" ;; esac
 
 OUT="../build/$TARGET-$NUMS"
-mkdir -p "$OUT/obj/lua" "$OUT/obj/src" "$OUT/obj/tests"
+mkdir -p "$OUT/obj/lua" "$OUT/obj/src" "$OUT/obj/elrs-wifi" "$OUT/obj/tests"
 
 if [ "$WHAT" = clean ]; then rm -rf "$OUT"; echo "removed $OUT"; exit 0; fi
 
-CFLAGS="$TFLAGS $OPT -g -std=gnu99 $LUAFLAGS -Ithird_party/lua -Ithird_party -Isrc -DSTP_VERSION=\"$VERSION\""
+# the WiFi joystick core (third_party/elrs-wifi, vendored): the module sees StickTime Pi's own User-Agent
+CFLAGS="$TFLAGS $OPT -g -std=gnu99 $LUAFLAGS -Ithird_party/lua -Ithird_party -Isrc -Ithird_party/elrs-wifi -DSTP_VERSION=\"$VERSION\" -DWIFI_USER_AGENT=\"sticktime-pi\""
 WARN="-Wall -Wextra -Wno-unused-parameter"
 
 LUA_SRC="lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm
   lundump lvm lzio lauxlib lbaselib lbitlib lcorolib ldblib liolib lmathlib loslib lstrlib ltablib lutf8lib loadlib linit"
 # every module builds on every target; Linux-only ones compile to stubs elsewhere
-SRC="plat par gpu gpu_geom app lcd font etx settings input nav video video_png video_drm video_fb input_evdev wifi_proto input_wifi
+SRC="plat par gpu gpu_geom app lcd font etx settings input nav video video_png video_drm video_fb input_evdev input_wifi
   web web_api web_vtx scenario sys host audio dsp sfx sfx_dsp music music_voices music_fx songs vtx_proto vtx_table vtx vtx_soft"
+# the WiFi joystick protocol core, vendored unmodified (tools/vendor_elrs_wifi.sh); its unit tests
+# (third_party/elrs-wifi/tests/test_*.c) build and run with ours
+CORE_SRC="wifi_proto wifi_net"
 
 # compile "src.c obj.o flags" lines in parallel, only when the source (or a header) is newer
 JOBLIST="$OUT/jobs.txt"
 : > "$JOBLIST"
-NEWEST_H=$(ls -t "$HERE"/src/*.h 2>/dev/null | head -1)
+NEWEST_H=$(ls -t "$HERE"/src/*.h "$HERE"/third_party/elrs-wifi/*.h 2>/dev/null | head -1)
 add() {  # add src obj flags
   if [ ! -f "$2" ] || [ "$1" -nt "$2" ] || { [ -n "$4" ] && [ -n "$NEWEST_H" ] && [ "$NEWEST_H" -nt "$2" ]; }; then
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$JOBLIST"
@@ -80,8 +84,9 @@ for f in $LUA_SRC; do add "$HERE/third_party/lua/$f.c" "$OUT/obj/lua/$f.o" "-w";
 for f in $SRC; do
   [ -f "$HERE/src/$f.c" ] && add "$HERE/src/$f.c" "$OUT/obj/src/$f.o" "$WARN" h
 done
+for f in $CORE_SRC; do add "$HERE/third_party/elrs-wifi/$f.c" "$OUT/obj/elrs-wifi/$f.o" "$WARN" h; done
 if [ "$WHAT" != prog ]; then
-  for t in "$HERE"/tests/*.c; do
+  for t in "$HERE"/tests/*.c "$HERE"/third_party/elrs-wifi/tests/test_*.c; do
     [ -f "$t" ] || continue
     n=$(basename "$t" .c)
     add "$t" "$OUT/obj/tests/$n.o" "$WARN" h
@@ -100,6 +105,7 @@ LUA_OBJ=""
 for f in $LUA_SRC; do LUA_OBJ="$LUA_OBJ $OUT/obj/lua/$f.o"; done
 SRC_OBJ=""
 for f in $SRC; do [ -f "$OUT/obj/src/$f.o" ] && [ "$f" != main ] && SRC_OBJ="$SRC_OBJ $OUT/obj/src/$f.o"; done
+for f in $CORE_SRC; do SRC_OBJ="$SRC_OBJ $OUT/obj/elrs-wifi/$f.o"; done
 
 if [ "$WHAT" != tests ] && [ -f "$HERE/src/main.c" ]; then
   add "$HERE/src/main.c" "$OUT/obj/src/main.o" "$WARN" h
@@ -128,7 +134,7 @@ if [ "$WHAT" != tests ] && [ -f "$HERE/src/main.c" ]; then
 fi
 
 if [ "$WHAT" != prog ]; then
-  for t in "$HERE"/tests/*.c; do
+  for t in "$HERE"/tests/*.c "$HERE"/third_party/elrs-wifi/tests/test_*.c; do
     [ -f "$t" ] || continue
     n=$(basename "$t" .c)
     echo "  LD $n$EXE"
@@ -140,7 +146,7 @@ fi
 if [ "$WHAT" = test ]; then
   fail=0
   # only test_*.c are unit tests; other programs in tests/ are tools (servers, renderers)
-  for t in "$HERE"/tests/test_*.c; do
+  for t in "$HERE"/tests/test_*.c "$HERE"/third_party/elrs-wifi/tests/test_*.c; do
     [ -f "$t" ] || continue
     n=$(basename "$t" .c)
     if (cd "$ROOT" && "$HERE/$OUT/$n$EXE"); then echo "PASS $n"; else echo "FAIL $n"; fail=1; fi

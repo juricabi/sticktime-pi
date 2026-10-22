@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Fake ELRS / TBS Crossfire WiFi joystick TX module, for testing input_wifi.c without hardware.
+"""Fake ELRS / TBS Crossfire WiFi joystick TX module, for testing without hardware.
+
+Shared with sticktime-pi (host/tests/fake_elrs.py): keep the two copies the same.
 
 Standard library only (Python 3.11+). Follows ExpressLRS src/lib/WIFI/wifiJoystick.cpp and
 devWIFI.cpp (WebUdpControl), and what the owner's Windows app (JoystickEngine.cs) saw from TBS

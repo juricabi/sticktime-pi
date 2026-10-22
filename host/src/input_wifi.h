@@ -1,6 +1,7 @@
 /* ELRS / Crossfire WiFi joystick receiver: the UDP socket, the activation worker thread, and the
- * glue to the input sources (insrc_t) and the status page (app_status_t). The protocol itself is
- * wifi_proto.c (a port of JoystickEngine.cs from the owner's ELRS-Crossfire-WiFi-Joystick-Windows).
+ * glue to the input sources (insrc_t) and the status page (app_status_t). The protocol itself is the
+ * core shared with the owner's Linux app, vendored in third_party/elrs-wifi: wifi_proto.c (a port of
+ * JoystickEngine.cs from ELRS-Crossfire-WiFi-Joystick-Windows) and wifi_net.c (the activation POST).
  *
  * Threads: everything here runs on the frame loop except the HTTP POST /udpcontrol, which one
  * persistent worker thread (started by wifi_open, below the frame loop's priority) sends. The frame
@@ -19,10 +20,7 @@
 #include "input.h"
 #include "wifi_proto.h"
 
-#define WIFI_INTERVAL_MIN      1000      /* ELRS turns anything below 1000 us into 10000 */
-#define WIFI_INTERVAL_MAX      100000    /* the settings' range for wifi_interval_us */
-#define WIFI_INTERVAL_DEFAULT  4000      /* 250 Hz */
-#define WIFI_POST_TIMEOUT_MS   5000      /* connect + request + response head */
+/* WIFI_INTERVAL_MIN/MAX/DEFAULT, WIFI_CHANNELS_DEFAULT (the request) come from wifi_proto.h */
 #define WIFI_GAP_US            250000    /* a pause in the stick data this long is counted and logged */
 
 typedef struct {
@@ -30,10 +28,10 @@ typedef struct {
   uint16_t http_port;     /* the module's web server, 80 (0 = 80) */
   char module_ip[64];     /* settings wifi_module_ip: dotted IPv4, "" = discover by beacon */
   int interval_us;        /* settings wifi_interval_us, clamped to WIFI_INTERVAL_MIN..MAX */
-  int channels;           /* channels to ask for, clamped to 4..16 (16: the pause switch can be up to CH16) */
+  int channels;           /* settings wifi_channels, clamped to WIFI_MIN_CH..WIFI_MAX_CH (Crossfire sends 16) */
 } wifi_config_t;
 
-void wifi_config_default(wifi_config_t *c);     /* 11000, 80, "", 4000, 16 */
+void wifi_config_default(wifi_config_t *c);     /* 11000, 80, "", 4000 (250 Hz), 16 */
 
 typedef struct wifi wifi_t;
 
@@ -49,8 +47,10 @@ void    wifi_stop(wifi_t *w);                              /* close the socket, 
 /* Frame loop, once per frame (never blocks): bind retry, drain UDP (at most 256 datagrams), collect
  * POST results, tick, stats, update *src (the WiFi slot; may be NULL). */
 void    wifi_poll(wifi_t *w, int64_t now_us, insrc_t *src);
-/* Live: module_ip -> set target (invalid text: logged, discovery); port -> rebind;
- * http_port, interval and channels -> the next POST. */
+/* Live: module_ip -> set target (invalid text: logged, discovery); port -> rebind; http_port -> the
+ * next POST. interval and channels (the request) -> the next joystick_begin; the module locked to is
+ * restarted at once so they apply (joystick_end, then joystick_begin: ELRS takes them only when its
+ * stream starts), unless it is Crossfire (which ignores them) or the new module_ip names another module. */
 void    wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now_us);
 /* wifi_module ("ELRS 10.0.0.1" while streaming, else ""), wifi_state ("off", "listening",
  * "activating 10.0.0.1", "connecting to 10.0.0.1", "no data from 10.0.0.1",
@@ -74,8 +74,10 @@ typedef struct {
   double rate_hz, jitter_ms;    /* last stats window (1 s) */
   int frames_last_s;
   uint32_t rx, beacons, malformed, dropped_filter, dropped_other, applied;
-  uint32_t posts, posts_ok, posts_failed;
+  uint32_t posts, posts_ok, posts_failed;   /* activations (a restart is one: joystick_end + joystick_begin) */
   int pending;                  /* activation requests queued or in flight */
+  int interval_us, channels;    /* the request: what joystick_begin asks for */
+  uint32_t restarts;            /* restarts sent (a request change, or a module streaming another channel count) */
   uint8_t nch;
   uint16_t raw[WIFI_MAX_CH];    /* last applied frame, raw 0..32767 */
   int64_t last_arrival_us;

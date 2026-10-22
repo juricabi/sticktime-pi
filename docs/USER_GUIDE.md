@@ -150,6 +150,15 @@ game files of all three and never touch those, your tracks or your ghosts.
 2. On the radio: ExpressLRS Lua → WiFi Connectivity → Enable WiFi (TX). The Pi finds the module by its
    broadcast within 5 s and asks it to stream 250 times a second. Set `wifi_module_ip` if your router blocks
    broadcasts.
+   - How often and how many channels: web page → Sticks → **Packet interval** (`wifi_interval_us`, in
+     microseconds: 4000 = 250 Hz, the default; the box suggests 1000 Hz down to 50 Hz) and **Channel count**
+     (`wifi_channels`, 4-16, default 16). They apply at once: an ELRS module that is streaming only takes a
+     new rate or count when its stream starts again, so the Pi stops it and starts it again (the sticks pause
+     for a moment). Fewer channels leave the higher ones empty: keep the pause switch and the stick mapping
+     within them. A faster rate gives fresher sticks (a sample is at most 4 ms old at 250 Hz, 1 ms at
+     1000 Hz) and takes more of the WiFi.
+   - If another app (the PC app, another Pi) asked the module for a different channel count, the Pi
+     restarts its stream once with its own request.
 3. **For smooth sticks the WiFi link must be steady:**
    - The most reliable setup is the Pi's own hotspot with the module joined to it: `hotspot = on`, and make
      `StickTime` (with your `hotspot_password`) the module's home network (on the module's WiFi page or in the
@@ -162,7 +171,8 @@ game files of all three and never touch those, your tracks or your ghosts.
 
 ### TBS Crossfire
 Enable the module's WiFi and the "VelociDrone Mobile" link; same network as the Pi. Broken TBS firmware:
-XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work.
+XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work. Crossfire always sends 16
+channels about 90 times a second: the packet interval and channel count settings don't change it.
 
 ### USB
 Plug the radio into a USB port, choose **USB Joystick (HID)**. Use a model with 100% weights, no expo
@@ -198,7 +208,7 @@ Open the address from the menu on a phone or PC on the same network:
 
 - **Status**: frame rate, frame and stick latency numbers, input source and packet rate, versions.
 - **Sticks**: live bars of every channel, input source, channel order, stick mapping (with Detect), invert,
-  pause switch, WiFi module.
+  pause switch, WiFi module (address, packet interval, channel count).
 - **Video** (and VTX control), **WiFi** (scan and join, hotspot), **Sound** (volume, music, your songs: upload MP3/OGG/WAV/FLAC),
 - **Tracks**: the StickTime track editor, your tracks c1-c8 on the Pi, the track gallery, and the emulator's
   **Install** to install or update the game on the Pi,

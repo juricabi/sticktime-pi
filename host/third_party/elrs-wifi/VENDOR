@@ -1,0 +1,12 @@
+# host/third_party/elrs-wifi: written by tools/vendor_elrs_wifi.sh, do not edit (see README.md). Paths from the repo root.
+source github.com/juricabi/elrs-crossfire-wifi-joystick-linux
+commit 6380bb85c46ee0fe07b4beb36d6328ea59390294
+94629765d64d7b2936bd2df8a9c65d425bd05e4715c475e8a8572b2eafeb73b4  host/third_party/elrs-wifi/wifi_proto.h
+8bfd96229cd0fe9d9376fc0f0b2b9d84a0bbeaa72ac62ab26925c7b382c506c7  host/third_party/elrs-wifi/wifi_proto.c
+3e001b09f267d736432ffe60ef565ab401affb8357de4d9d4df87418188d3869  host/third_party/elrs-wifi/wifi_net.h
+a1814e2e9cdbc1c76896b7feeeebc1fbac13703379b076fd7ad891f254ade38d  host/third_party/elrs-wifi/wifi_net.c
+cf48994d2735d6ee371186f9eeff6d28bad1e15ad8f1b8c1c7066c224d567877  host/third_party/elrs-wifi/tests/t.h
+ee86f40b8a20a4c632a89137ba176481d1504e21a13037d534278b0e7679867e  host/third_party/elrs-wifi/tests/test_wifi_proto.c
+a479ad4522229bde99f1762b6ce1807dce9bd09a045f2792f9d56a7a5d35591b  host/third_party/elrs-wifi/tests/test_wifi_net.c
+72d17acee3a27338f0e72a962d9a4d177a8ec6e35523c9ba904d03a9fe245a24  host/third_party/elrs-wifi/LICENSE
+5d6201ff0e475bebb0990413be92a1df0667db69730adc9f033077e6eedc0016  host/tests/fake_elrs.py
