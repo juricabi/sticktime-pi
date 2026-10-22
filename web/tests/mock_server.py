@@ -147,7 +147,8 @@ def validate(k, v):
         return "a list of ail, ele, thr, rud"
     if key == "wifi_module_ip" and v:
         try:
-            ipaddress.IPv4Address(v)
+            if ipaddress.IPv4Address(v) == ipaddress.IPv4Address(0):    # names no module (as settings.c)
+                raise ValueError(v)
         except ValueError:
             return "an IP address like 10.0.0.1, or empty"
     if key == "hdmi_mode" and not re.fullmatch(r"auto|\d{3,4}x\d{3,4}(@\d{2,3})?", v):

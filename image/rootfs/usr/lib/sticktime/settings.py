@@ -70,7 +70,8 @@ KEYS = (
     Key("pause_channel", INT, "5", "0|16", True, False, "Switch channel that pauses the game in flight (0 = off)"),
     Key("stick_menus", BOOL, "on", "", True, False, "Fly the menus with the sticks"),
     Key("wifi_module_ip", STRING, "", "", True, False, "ELRS/Crossfire WiFi module IP (empty: find it by its broadcast)"),
-    Key("wifi_interval_us", INT, "4000", "1000|100000", True, False, "WiFi joystick packet interval in microseconds (4000 = 250 Hz)"),
+    Key("wifi_interval_us", INT, "4000", "1000|100000", True, False, "WiFi joystick packet interval in microseconds, 1000-100000 (4000 = 250 Hz); a change restarts a streaming ELRS module (Crossfire sends about 90 Hz whatever is set)"),
+    Key("wifi_channels", INT, "16", "4|16", True, False, "Channels to ask the ELRS module for (4-16; Crossfire always sends 16)"),
     Key("bluetooth", BOOL, "on", "", False, False, "ELRS BLE joysticks and gamepads pair automatically (off: no Bluetooth device can connect: the ELRS BLE joystick, gamepads, keyboards)"),
     Key("latency", STRING, "0", "", True, False, "Camera prediction in seconds (STICKTIME_LAT): 0 = off"),
     Key("stick_mode", INT, "2", "1|4", True, False, "Your radio's stick mode (what getStickMode() tells the game)"),
@@ -161,8 +162,14 @@ TEMPLATE = (
     "stick_menus = on\n"
     "# ELRS / Crossfire WiFi joystick: the module's IP address (empty: find it by its broadcast)\n"
     "wifi_module_ip =\n"
-    "# how often the module sends the sticks, in microseconds: 4000 = 250 Hz (ELRS allows 1000 and up)\n"
+    "# how often the ELRS module sends the sticks, in microseconds (1000-100000): 4000 = 250 Hz; also 1000 (1000 Hz),\n"
+    "# 2000 (500 Hz), 3000 (333 Hz), 5000 (200 Hz), 6667 (150 Hz), 10000 (100 Hz), 20000 (50 Hz). Saved on the web\n"
+    "# page, a change restarts a streaming ELRS module; edited here, a module streams it from its next start.\n"
+    "# Crossfire sends about 90 Hz whatever this says\n"
     "wifi_interval_us = 4000\n"
+    "# how many channels the ELRS module sends, 4-16: fewer leave the higher ones empty (a pause switch or stick\n"
+    "# mapped there gets nothing); Crossfire always sends 16\n"
+    "wifi_channels = 16\n"
     "# Bluetooth: on (ELRS BLE joysticks and Bluetooth gamepads pair automatically) or off (no Bluetooth device\n"
     "# can connect, and Bluetooth stops sharing the Pi's radio with WiFi)\n"
     "bluetooth = on\n"
@@ -360,8 +367,10 @@ def _hostname_ok(v):
 
 
 def _ipv4_ok(v):
+    # a.b.c.d (wifi_module_ip), not 0.0.0.0: that names no module, and the WiFi receiver refuses it, so the
+    # saved setting and the running module IP would disagree (as settings.c)
     m = _IP_RE.fullmatch(v)
-    return bool(m) and all(int(p) <= 255 for p in m.groups())
+    return bool(m) and all(int(p) <= 255 for p in m.groups()) and any(int(p) for p in m.groups())
 
 
 def _hdmi_mode_ok(v):

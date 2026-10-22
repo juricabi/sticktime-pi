@@ -90,7 +90,8 @@ The main menu shows the web address at the bottom for a minute (`http://192.168.
 
 - **Menus with the sticks** (goggles on): pitch up/down moves, **roll right** selects, **roll left** goes back.
   While a value is selected for editing, pitch up/down changes it. The switch on **channel 5** pauses in flight
-  (change `pause_channel`). If the radio's signal stops in flight, the game pauses.
+  (change `pause_channel`). If the radio's signal stops in flight, the game pauses (the WiFi joystick: after
+  0.5 s without stick data).
 - **Keyboard**: arrows, Enter, Esc; fly with arrows (pitch/roll), A/D (yaw), W/S (throttle), Shift = full.
 - **Gamepad**: mode 2 layout (change `stick_mode`), A = select, B/Start = back/pause.
 
@@ -148,8 +149,46 @@ game files of all three and never touch those, your tracks or your ghosts.
 1. Put the Pi and the TX module on the same **2.4 GHz** network (the module's "Home WiFi"), or join the
    module's own network from the web page (Sticks → "Join module WiFi").
 2. On the radio: ExpressLRS Lua → WiFi Connectivity → Enable WiFi (TX). The Pi finds the module by its
-   broadcast within 5 s and asks it to stream 250 times a second. Set `wifi_module_ip` if your router blocks
-   broadcasts.
+   broadcast within 5 s and asks it to stream at the packet interval below (250 times a second by default).
+   Set `wifi_module_ip` if your router blocks broadcasts.
+   - How often and how many channels: web page → Sticks → **Packet interval** (`wifi_interval_us`, in
+     microseconds: 4000 = 250 Hz, the default; the box suggests 1000 Hz down to 50 Hz) and **Channel count**
+     (`wifi_channels`, 4-16, default 16). An ELRS module only takes a new rate or count when its stream
+     starts, so when you save a change while it streams, the Pi stops its stream and starts it again (the
+     sticks pause for a moment). That happens at once when the module surely is ELRS (its broadcast was
+     seen, or it sends other than 16 channels). A module that sends 16 channels and whose broadcast the Pi
+     hasn't seen may be Crossfire (see below; an ELRS module sends no broadcast while it streams, so this is
+     the case when it kept streaming through an update or a restart of StickTime Pi): then the Pi first waits
+     for a Crossfire broadcast, up to 20 s after the stream started coming in, and restarts it only when
+     none came. If the stream drops out meanwhile, the Pi does it once the stream is back (again after 20 s),
+     unless the module broadcast as ELRS in the gap (then the start it gets already asks for your values) or
+     another module's stream took over. Fewer channels leave the higher ones empty: keep the pause switch and
+     the stick mapping within them. A faster rate gives fresher sticks (a sample is at most 4 ms old at
+     250 Hz, 1 ms at 1000 Hz) and takes more of the WiFi.
+   - Saved while no module streams, the change goes with the next start. The Pi also remembers what it last
+     asked each module (until StickTime Pi restarts), so a module that comes back still streaming older
+     values (it kept streaming through a WiFi dropout, or while you had another module set) is restarted with
+     yours, by the same rules.
+   - The stop and start only count when the module answered both. If it didn't (no answer, an error), the
+     Pi tries the stop and start 3 times in all, 5 s apart, while the module keeps streaming, then says in
+     the log (System → Log) that it gave up. If the stream stops before they took (it drops out for 3 s, or
+     you set another module), the Pi restarts the module once more when its stream is back. Plain starts go
+     out at most once every 5 s per module.
+   - Setting `wifi_module_ip` to the module that streams now changes nothing (no pause). Another module's
+     IP drops the current stream (the sticks center) and leaves the old module alone (a stop and start still
+     waiting for it is dropped); the Pi asks the new one at once (Status: "activating", then "connecting to"
+     that IP), with the rate and count saved along with the IP.
+   - Once the stream has stopped for 0.5 s, the game gets no sticks from it: with no other stick source the
+     sticks center with the throttle at the bottom, and in flight the game pauses. After 3 s the Pi lets go
+     of the module (Status no longer shows it streaming) and picks its stream up again when it comes back.
+     Setting another module drops the current stream at once.
+   - A module may still be streaming what something else asked for: another app (the PC app, another Pi),
+     or the Pi itself before an update or an edit of `sticktime.txt`. The Pi restarts such a stream once with
+     its own request only when its channel count differs from **Channel count** and the module surely is
+     ELRS (its broadcast was seen, or it sends other than 16 channels), or when it sends 16 while you asked
+     for fewer and no Crossfire broadcast came within 20 s. Otherwise it keeps that rate and count (Status
+     shows the rate it measures): switch the module's WiFi off and on (ExpressLRS Lua → WiFi
+     Connectivity), or save a new value on the web page, to get yours.
 3. **For smooth sticks the WiFi link must be steady:**
    - The most reliable setup is the Pi's own hotspot with the module joined to it: `hotspot = on`, and make
      `StickTime` (with your `hotspot_password`) the module's home network (on the module's WiFi page or in the
@@ -162,7 +201,13 @@ game files of all three and never touch those, your tracks or your ghosts.
 
 ### TBS Crossfire
 Enable the module's WiFi and the "VelociDrone Mobile" link; same network as the Pi. Broken TBS firmware:
-XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work.
+XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work. Crossfire always sends 16
+channels about 90 times a second: the packet interval and channel count settings don't change it, and the
+Pi doesn't stop and restart its stream for them once it has seen the module's broadcast (about every 8 s):
+the log says so once. A Crossfire module that isn't streaming only ever gets the start, never the stop.
+If broadcasts can't reach the Pi (`wifi_module_ip` set because the router blocks them), it can't tell
+Crossfire from ELRS: after 20 s it treats the module as ELRS, so a change of those settings then sends the
+Crossfire module the stop (`joystick_end`) and the start again.
 
 ### USB
 Plug the radio into a USB port, choose **USB Joystick (HID)**. Use a model with 100% weights, no expo
@@ -198,7 +243,7 @@ Open the address from the menu on a phone or PC on the same network:
 
 - **Status**: frame rate, frame and stick latency numbers, input source and packet rate, versions.
 - **Sticks**: live bars of every channel, input source, channel order, stick mapping (with Detect), invert,
-  pause switch, WiFi module.
+  pause switch, WiFi module (address, packet interval, channel count).
 - **Video** (and VTX control), **WiFi** (scan and join, hotspot), **Sound** (volume, music, your songs: upload MP3/OGG/WAV/FLAC),
 - **Tracks**: the StickTime track editor, your tracks c1-c8 on the Pi, the track gallery, and the emulator's
   **Install** to install or update the game on the Pi,

@@ -1,8 +1,12 @@
-/* The WiFi joystick receiver over real sockets (input_wifi.c + wifi_proto.c).
+/* The WiFi joystick receiver over real sockets (input_wifi.c + the vendored core, wifi_proto.c and
+ * wifi_net.c).
  *
  * No arguments: a self-contained loopback test (build.sh test runs it). Frames and beacons come from
  * a local UDP socket (so the "module" is 127.0.0.1), activation POSTs go to a tiny HTTP server
- * thread; it also covers bind retry, port in use, stop/start, stale POST results and live changes.
+ * thread; it also covers bind retry, port in use, stop/start, stale POST results, live changes and
+ * the request rules (R1-R13 in wifi_proto.h: a new rate or channel count restarts a streaming ELRS module,
+ * never Crossfire; a held restart, a failed one sent again, one that did not take restarted at the next
+ * lock, the module IP of the locked module).
  *
  * With arguments: a probe for host/tests/wifi_live_test.py (and for trying a real module):
  *   test_wifi_live --port N --http-port N [--module-ip IP] [--interval-us N] [--channels N]
@@ -95,13 +99,16 @@ static void send_same(uint16_t port, int n, int v) {
 static const uint8_t ELRS_BEACON[] = { 'E', 'L', 'R', 'S', 1, 0xf8, 0x2a, 10, 'U', 'n', 'i', 'f', 'i', 'e', 'd', ' ', 'T', 'X' };
 
 /* ---------------------------------------------------------------- a tiny HTTP server (the module's) */
+#define MH_BODIES 16
 typedef struct {
   plat_sock ls;
   plat_mutex mu;
   bool quit;
   int status, delay_ms;
+  int next_status, next_n;      /* the next next_n requests get next_status instead of status */
   int requests;
   char last[1024];
+  char body[MH_BODIES][96];     /* the bodies of the first MH_BODIES requests, in order */
   plat_thread th;
 } minihttp_t;
 
@@ -138,10 +145,13 @@ static void *mh_thread(void *arg) {
       if (got >= sizeof req - 1) break;
     }
     req[got] = 0;
+    const char *b = strstr(req, "\r\n\r\n");
     plat_mutex_lock(&h->mu);
+    if (h->requests < MH_BODIES) snprintf(h->body[h->requests], sizeof h->body[0], "%s", b ? b + 4 : "");
     h->requests++;
     snprintf(h->last, sizeof h->last, "%s", req);
     int status = h->status, delay = h->delay_ms;
+    if (h->next_n > 0) { status = h->next_status; h->next_n--; }
     plat_mutex_unlock(&h->mu);
     for (int t = 0; t < delay && !mh_quit(h); t += 10) plat_sleep_us(10000);
     char resp[256];
@@ -153,18 +163,25 @@ static void *mh_thread(void *arg) {
   return NULL;
 }
 
-static void mh_start(minihttp_t *h, uint16_t port, int status) {
+static void mh_start_at(minihttp_t *h, const char *ip, uint16_t port, int status) {
   memset(h, 0, sizeof *h);
   plat_mutex_init(&h->mu);
   h->status = status;
-  h->ls = plat_tcp_listen("127.0.0.1", port, 8);
-  if (h->ls == PLAT_BADSOCK) { fprintf(stderr, "cannot listen on TCP %u\n", port); exit(2); }
+  h->ls = plat_tcp_listen(ip, port, 8);
+  if (h->ls == PLAT_BADSOCK) { fprintf(stderr, "cannot listen on TCP %s:%u\n", ip, port); exit(2); }
   plat_thread_start(&h->th, mh_thread, h, false);
 }
+static void mh_start(minihttp_t *h, uint16_t port, int status) { mh_start_at(h, "127.0.0.1", port, status); }
 static void mh_set(minihttp_t *h, int status, int delay_ms) {
   plat_mutex_lock(&h->mu);
   h->status = status;
   h->delay_ms = delay_ms;
+  plat_mutex_unlock(&h->mu);
+}
+static void mh_set_next(minihttp_t *h, int status, int n) {
+  plat_mutex_lock(&h->mu);
+  h->next_status = status;
+  h->next_n = n;
   plat_mutex_unlock(&h->mu);
 }
 static int mh_requests(minihttp_t *h) {
@@ -177,6 +194,13 @@ static void mh_last(minihttp_t *h, char *out, size_t cap) {
   plat_mutex_lock(&h->mu);
   snprintf(out, cap, "%s", h->last);
   plat_mutex_unlock(&h->mu);
+}
+static const char *mh_body(minihttp_t *h, int i) {      /* the body of request i (0 = the first), "" when none */
+  static char out[96];
+  plat_mutex_lock(&h->mu);
+  snprintf(out, sizeof out, "%s", i >= 0 && i < h->requests && i < MH_BODIES ? h->body[i] : "");
+  plat_mutex_unlock(&h->mu);
+  return out;
 }
 static void mh_stop(minihttp_t *h) {
   plat_mutex_lock(&h->mu);
@@ -286,6 +310,21 @@ static void test_flow(void) {
   bool zero = true;
   for (int i = 4; i < INPUT_CH; i++) zero = zero && src.ch[i] == 0;
   CHECK(zero);
+  /* an ELRS module streaming another channel count than asked for (another app's request) is restarted
+   * once per session: joystick_end, then our joystick_begin */
+  CHECK_INT(count_in_log("127.0.0.1 streams 4 channels, 16 asked for (another app's request?) - restarting its stream"), 1);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") >= 2);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  CHECK_INT(count_in_log("Activation POST -> 127.0.0.1: 200 OK"), 2);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=4000&channels=16");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.posts, 2);                          /* a restart is one activation */
+  CHECK_INT(in.posts_ok, 2);
+  CHECK_INT(in.restarts, 1);
+  CHECK_INT(in.pending, 0);
+  CHECK(in.bound);                                 /* the lock is kept */
 
   /* a steady stream gives a rate */
   for (int i = 0; i < 60; i++) { send_same(U, 8, 16393); poll_ms(w, &src, 4); }
@@ -379,11 +418,14 @@ static void test_flow(void) {
   wifi_get_info(w, &in);
   CHECK(in.running && in.listening);
   CHECK_INT(count_in_log("Listening for joystick data on UDP 27461"), 2);
-  /* a module that kept streaming relocks at once after a restart, without a POST */
-  send_same(U, 8, 16393);
+  /* a module that kept streaming relocks at once after a restart, without a POST (8 channels never
+   * restarted it again in the first session; this one streams what is asked for) */
+  send_same(U, 16, 16393);
   POLL_UNTIL(w, &src, 1000, src.present);
   CHECK(src.present);
-  CHECK_INT(mh_requests(&mh), 1);
+  poll_ms(w, &src, 30);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_INT(count_in_log("restarting its stream"), 1);
   wifi_close(w);
   mh_stop(&mh);
 }
@@ -657,6 +699,14 @@ static void send_from(plat_sock s, uint16_t port, int n, const int *v) {
   a.sin_addr.s_addr = htonl(0x7f000001);
   sendto(s, (const char *)b, 2 + 2 * n, 0, (struct sockaddr *)&a, sizeof a);
 }
+static void send_raw_from(plat_sock s, uint16_t port, const void *d, size_t n) {
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_port = htons(port);
+  a.sin_addr.s_addr = htonl(0x7f000001);
+  sendto(s, (const char *)d, (int)n, 0, (struct sockaddr *)&a, sizeof a);
+}
 static wifi_state_t state_of(wifi_t *w) { wifi_info_t in; wifi_get_info(w, &in); return in.state; }
 
 static void FullFlow_BeaconThenChannels_OverRealUdp(void) {
@@ -825,7 +875,9 @@ static void NonStreamingState_ClearsAxes(void) {
   memset(&src, 0, sizeof src);
   wifi_t *w = open_with(U, 80, "");
   wifi_start(w, now());
-  send_same(U, 4, 30000);
+  /* 16 channels, what is asked for: 4 from a module of unknown kind would restart it (a POST in flight
+   * makes the status "activating", not "listening") */
+  send_same(U, 16, 30000);
   POLL_UNTIL(w, &src, 2000, src.present);
   CHECK(src.ch[0] > 0);
   vt += 10000000;                                    /* the stream went quiet: the tick releases the lock */
@@ -865,7 +917,7 @@ static void LogIsCapped(void) {
   vt = 0;
   wifi_t *w = open_with(U, 80, "");
   wifi_start(w, now());
-  for (int i = 0; i < 1000; i++) {                   /* each logs a beacon line (throttled or not) */
+  for (int i = 0; i < 1000; i++) {                   /* a beacon flood: logged only when a POST goes out */
     udp_send(U, "VELOCIDRONE", 11);
     if (i % 50 == 49) poll_ms(w, NULL, 2);
   }
@@ -873,11 +925,19 @@ static void LogIsCapped(void) {
   wifi_info_t in;
   wifi_get_info(w, &in);
   CHECK(in.beacons > 900);                           /* loopback may drop a few under the burst */
+  CHECK_INT(count_in_log("Discovery beacon from Crossfire module 127.0.0.1 - activating\n"), 1);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  for (int i = 0; i < 1000; i++) {                   /* each logs a line */
+    snprintf(c.module_ip, sizeof c.module_ip, "bad-%d", i);
+    wifi_configure(w, &c, now());
+  }
   plat_mutex_lock(&app.mu);
   size_t n = app.log_len;
   plat_mutex_unlock(&app.mu);
   CHECK(n > 0 && n <= sizeof app.log);               /* app_log keeps a bounded ring of whole lines */
-  int lines = count_in_log("Discovery beacon from Crossfire module 127.0.0.1 - activating\n");
+  int lines = count_in_log("Invalid module IP \"bad-");
   CHECK(lines > 50 && lines < 1000);                 /* the oldest were dropped */
   wifi_close(w);
 }
@@ -914,6 +974,673 @@ static void TrayText_ReflectsStreamingSource(void) {
   plat_sock_close(m);
 }
 
+/* ---------------------------------------------------------------- the request (interval, channels)
+ * ELRS takes them only while it isn't streaming, so a change reaches a streaming module as
+ * joystick_end + joystick_begin; Crossfire ignores them and never gets a joystick_end. */
+static void test_request_restart(void) {
+  const uint16_t U = P_BASE + 9, HP = P_BASE + 26;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.interval_us, 4000);
+  CHECK_INT(in.channels, 16);
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  CHECK_INT(mh_requests(&mh), 1);
+
+  /* a new rate while it streams: restarted at once, the lock kept */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.1: 500 Hz, 16 channels"), 1);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 2);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=16");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.interval_us, 2000);
+  CHECK_INT(in.channels, 16);
+  CHECK_INT(in.restarts, 1);
+  CHECK_INT(in.posts, 2);
+  CHECK_INT(in.posts_ok, 2);
+  CHECK_INT(in.posts_failed, 0);
+  CHECK_INT(in.pending, 0);
+  CHECK(in.bound && src.present);
+  CHECK_STR(status_of(w), "streaming");
+
+  /* the same request again (and out-of-range values that clamp to it): nothing */
+  wifi_configure(w, &c, now());
+  c.channels = 99;
+  wifi_configure(w, &c, now());
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_INT(count_in_log("Restarting the stream"), 1);
+
+  /* fewer channels: restarted again; frames of the old count that still come meanwhile don't restart it a
+   * second time */
+  c.channels = 8;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.1: 500 Hz, 8 channels"), 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 3);
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&mh), 5);
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_begin&interval=2000&channels=8");
+  CHECK_INT(count_in_log("streams 16 channels"), 0);
+  uint32_t upd = src.updates;
+  send_same(U, 8, 16393);
+  POLL_UNTIL(w, &src, 1000, src.updates != upd);
+  CHECK_INT(src.nch, 8);
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 2);
+  CHECK_INT(in.posts, 3);
+
+  /* the module's web server is gone: both POSTs of a restart fail, both are logged */
+  mh_stop(&mh);
+  c.interval_us = 5000;
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation failed for 127.0.0.1") == 1);
+  CHECK_INT(count_in_log("Stream end POST failed for 127.0.0.1: connection refused"), 1);
+  CHECK_INT(count_in_log("Activation failed for 127.0.0.1: connection refused"), 1);
+  wifi_get_info(w, &in);
+  CHECK_INT(in.posts_failed, 1);
+  CHECK_INT(in.restarts, 3);
+
+  /* not streaming: a change only waits for the next joystick_begin */
+  mh_start(&mh, HP, 200);
+  vt += 3100000;
+  poll1(w, &src);
+  CHECK(!src.present);
+  CHECK_STR(status_of(w), "listening");
+  c.interval_us = 10000;
+  c.channels = 12;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream"), 3);
+  wifi_get_info(w, &in);
+  CHECK_INT(in.interval_us, 10000);
+  CHECK_INT(in.channels, 12);
+  CHECK_INT(in.restarts, 3);
+  vt += 5100000;                                   /* past the throttle of the last POST */
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) == 1);
+  CHECK_STR(mh_body(&mh, 0), "action=joystick_begin&interval=10000&channels=12");
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* A restart whose joystick_end is refused but whose joystick_begin is taken did not apply the request (a
+ * streaming module only moved its stream): it is a failed activation, logged as one. */
+static void test_request_restart_end_refused(void) {
+  const uint16_t U = P_BASE + 12, HP = P_BASE + 29;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  mh_set_next(&mh, 503, 1);                        /* the joystick_end */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 2);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=16");
+  CHECK_INT(count_in_log("Stream end POST failed for 127.0.0.1: HTTP 503"), 1);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.posts, 2);
+  CHECK_INT(in.posts_ok, 1);
+  CHECK_INT(in.posts_failed, 1);
+  CHECK_INT(in.restarts, 1);
+  CHECK(in.bound && src.present);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* nch-channel frames of the module at U (127.0.0.1), one a (virtual) second, secs of them: a stream as
+ * the virtual clock's 1 s steps see it (the lock holds: 3 s without data release it) */
+static void stream_seconds(wifi_t *w, insrc_t *src, uint16_t U, int nch, int secs) {
+  for (int i = 0; i < secs; i++) {
+    vt += 1000000;
+    uint32_t upd = src->updates;
+    send_same(U, nch, 24570);                      /* off center: a centering shows */
+    POLL_UNTIL(w, src, 1000, src->updates != upd);
+  }
+}
+
+/* R6: a restart counts only when both POSTs got a 2xx. One that failed (the module's web server refused
+ * both while it kept streaming to us) is sent again every 5 s while that module stays locked, at most 3
+ * sends per request change; giving up is logged. */
+static void test_request_restart_failed_retried(void) {
+  const uint16_t U = P_BASE + 13, HP = P_BASE + 30;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  mh_set_next(&mh, 503, 2);                        /* the restart's joystick_end and joystick_begin */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.channels = 8;
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 503") == 1);
+  CHECK_INT(count_in_log("Stream end POST failed for 127.0.0.1: HTTP 503"), 1);
+  CHECK_INT(count_in_log("The restart of 127.0.0.1 failed - sending it again in 5 s"), 1);
+  CHECK_INT(mh_requests(&mh), 3);
+  stream_seconds(w, &src, U, 16, 4);               /* its old 16 channels: no second send yet */
+  CHECK_INT(mh_requests(&mh), 3);
+  stream_seconds(w, &src, U, 16, 2);               /* 5 s after the first send: sent again, and it takes */
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 2);
+  CHECK_INT(mh_requests(&mh), 5);
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_begin&interval=4000&channels=8");
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 2);
+  CHECK_INT(in.posts_failed, 1);
+  CHECK_INT(in.posts_ok, 2);
+  CHECK(in.bound && src.present);                  /* the lock was kept throughout */
+  stream_seconds(w, &src, U, 16, 10);              /* it took: nothing more (this fake sends 16 on) */
+  CHECK_INT(mh_requests(&mh), 5);
+
+  /* a new request whose restart keeps failing: 3 sends 5 s apart, then it gives up (logged), and no more */
+  mh_set_next(&mh, 503, 6);
+  c.channels = 12;
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 503") == 2);
+  stream_seconds(w, &src, U, 16, 6);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 503") == 3);
+  stream_seconds(w, &src, U, 16, 6);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 503") == 4);
+  CHECK_INT(count_in_log("The restart of 127.0.0.1 failed - sending it again in "), 3);
+  CHECK_INT(count_in_log("The restart of 127.0.0.1 failed 3 times - giving up"), 1);
+  CHECK_INT(mh_requests(&mh), 11);
+  stream_seconds(w, &src, U, 16, 12);
+  CHECK_INT(mh_requests(&mh), 11);
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 5);
+  CHECK_INT(in.posts_failed, 4);
+  CHECK(in.bound && src.present);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* R7 with R2: a module streaming 16 channels without a beacon yet (it may be Crossfire: an ELRS module that
+ * streamed on through a restart of the game), and within its 20 s a new request saved together with that
+ * module's IP as the module IP. The lock is kept (no centering, nothing POSTed for the target), and the
+ * held restart still goes out once the 20 s passed without a Crossfire beacon. */
+static void test_request_same_target_waits(void) {
+  const uint16_t U = P_BASE + 14, HP = P_BASE + 31;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.channels = 8;
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.1");
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("127.0.0.1 may be Crossfire (no beacon from it yet)"), 1);
+  CHECK_INT(count_in_log("Target module set to 127.0.0.1 - streaming from it already"), 1);
+  CHECK_INT(count_in_log("connecting"), 0);
+  poll_ms(w, &src, 50);
+  CHECK(src.present);                              /* the sticks were not centered */
+  CHECK_INT(state_of(w), WIFI_ST_STREAMING);
+  CHECK_INT(mh_requests(&mh), 0);                  /* it streams to us already: nothing to POST */
+  stream_seconds(w, &src, U, 16, 18);
+  CHECK_INT(mh_requests(&mh), 0);
+  stream_seconds(w, &src, U, 16, 3);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 2);
+  CHECK_INT(mh_requests(&mh), 2);
+  CHECK_STR(mh_body(&mh, 0), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_begin&interval=4000&channels=8");
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 1);
+  CHECK(in.bound && in.target == IP("127.0.0.1"));
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* R2: a held restart (a module of unknown kind streaming 16 channels) survives a pause of the stream:
+ * a short one (the lock holds), and one that loses the lock (a WiFi dropout: the sticks are centered and
+ * nothing is sent while it is away). It goes out once that module is locked again and its 20 s passed
+ * without a Crossfire beacon. */
+static void test_request_held_through_pause(void) {
+  const uint16_t U = P_BASE + 16, HP = P_BASE + 33;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.channels = 8;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("127.0.0.1 may be Crossfire (no beacon from it yet)"), 1);
+  stream_seconds(w, &src, U, 16, 5);
+  /* a short pause (2.5 s): held values, the lock kept */
+  vt += 1500000;
+  poll1(w, &src);
+  CHECK(src.present && src.ch[0] > 400);           /* the last values held */
+  stream_seconds(w, &src, U, 16, 1);
+  CHECK_INT(count_in_log("went quiet"), 0);
+  /* a pause that loses the lock */
+  vt += 3100000;
+  poll1(w, &src);
+  CHECK(!src.present);
+  CHECK_INT(src.ch[0], 0);                         /* centered */
+  CHECK_INT(count_in_log("Source 127.0.0.1 went quiet - releasing lock"), 1);
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&mh), 0);
+  /* back: locked again, the restart still held (its 20 s count from this lock) */
+  stream_seconds(w, &src, U, 16, 1);
+  CHECK(src.present);
+  CHECK_INT(count_in_log("Joystick source locked to 127.0.0.1"), 2);
+  CHECK_INT(count_in_log("may be Crossfire"), 1);
+  stream_seconds(w, &src, U, 16, 18);
+  CHECK_INT(mh_requests(&mh), 0);
+  stream_seconds(w, &src, U, 16, 3);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 2);
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.1: 250 Hz, 8 channels"), 1);
+  CHECK_INT(mh_requests(&mh), 2);
+  CHECK_STR(mh_body(&mh, 0), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_begin&interval=4000&channels=8");
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 1);
+  CHECK(in.bound);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* R2: a held restart is dropped when its module, gone quiet, sends its ELRS beacon (an ELRS module beacons
+ * only while it is not streaming): the joystick_begin that beacon gets carries the request already. */
+static void test_request_held_dropped_by_beacon(void) {
+  const uint16_t U = P_BASE + 17, HP = P_BASE + 34;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.channels = 8;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("127.0.0.1 may be Crossfire (no beacon from it yet)"), 1);
+  stream_seconds(w, &src, U, 16, 2);
+  vt += 3100000;
+  poll1(w, &src);
+  CHECK(!src.present);
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  CHECK_INT(mh_requests(&mh), 1);
+  CHECK_STR(mh_body(&mh, 0), "action=joystick_begin&interval=4000&channels=8");
+  stream_seconds(w, &src, U, 8, 25);               /* it streams the request: nothing to restart */
+  CHECK(src.present);
+  CHECK_INT(src.nch, 8);
+  CHECK_INT(mh_requests(&mh), 1);
+  CHECK_INT(count_in_log("Restarting"), 0);
+  CHECK_INT(count_in_log("- restarting its stream"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 0);
+  CHECK_INT(in.kind, WIFI_KIND_ELRS);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* R7: a restart the worker was too busy for (a slow POST to the module still in flight), then the module
+ * IP moves to another module: the module being left is not restarted, the new one gets joystick_begin at
+ * once with the request. */
+static void test_request_busy_then_target_moves(void) {
+  const uint16_t U = P_BASE + 15, HP = P_BASE + 32;
+  minihttp_t ma, mb;
+  mh_start_at(&ma, "127.0.0.2", HP, 200);
+  mh_start_at(&mb, "127.0.0.3", HP, 200);
+  mh_set(&ma, 200, 800);
+  plat_sock a = udp_from("127.0.0.2");
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_raw_from(a, U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&ma) == 1);       /* in flight: its answer takes 800 ms */
+  int v[16] = { 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393 };
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.2: 500 Hz, 16 channels"), 1);
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.3");
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Target module set to 127.0.0.3 - connecting..."), 1);
+  poll1(w, &src);
+  CHECK(!src.present);                             /* switching to another module centers the sticks */
+  CHECK_STR(status_of(w), "activating 127.0.0.3");
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mb) >= 1);
+  CHECK_STR(mh_body(&mb, 0), "action=joystick_begin&interval=2000&channels=16");
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.2: 200 OK") == 1);
+  poll_ms(w, &src, 300);
+  CHECK_INT(mh_requests(&ma), 1);                  /* no joystick_end for the module left behind */
+  CHECK_INT(count_in_log("Stream end POST"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK(in.target == IP("127.0.0.3"));
+  CHECK_INT(in.restarts, 0);
+  wifi_close(w);
+  plat_sock_close(a);
+  mh_stop(&ma);
+  mh_stop(&mb);
+}
+
+static void test_request_crossfire(void) {
+  const uint16_t U = P_BASE + 10, HP = P_BASE + 27;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, "VELOCIDRONE", 11);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK_STR(src.name, "Crossfire 127.0.0.1");
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Crossfire module 127.0.0.1 ignores the rate and channel count: it always sends 16 channels at about 90 Hz"), 1);
+  c.channels = 8;                                  /* logged once per session */
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("ignores the rate and channel count"), 1);
+  /* its 16 channels are no mismatch to restart for */
+  uint32_t upd = src.updates;
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.updates != upd);
+  poll_ms(w, &src, 100);
+  CHECK_INT(mh_requests(&mh), 1);                  /* never a joystick_end */
+  CHECK_INT(count_in_log("Restarting"), 0);
+  CHECK_INT(count_in_log("restarting its stream"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 0);
+  CHECK_INT(in.interval_us, 2000);
+  CHECK_INT(in.channels, 8);
+  CHECK(in.bound);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* The module IP and the request in one change (R8): the new target's joystick_begin carries the request;
+ * the module left behind is not restarted for it. Locked to it again, it is restarted because it was asked
+ * for another request (R3). The module locked now set as the target keeps its lock (R7) and is restarted
+ * for the new request. */
+static void test_request_with_target(void) {
+  const uint16_t U = P_BASE + 11, HP = P_BASE + 28;
+  minihttp_t ma, mb;
+  mh_start_at(&ma, "127.0.0.2", HP, 200);
+  mh_start_at(&mb, "127.0.0.3", HP, 200);
+  plat_sock a = udp_from("127.0.0.2");
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_raw_from(a, U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.2: 200 OK") == 1);
+  int v[16] = { 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393, 16393 };
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK_STR(src.name, "ELRS 127.0.0.2");
+
+  /* another module, and a new rate */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.3");
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mb) >= 1);
+  CHECK_STR(mh_body(&mb, 0), "action=joystick_begin&interval=2000&channels=16");
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&ma), 1);                  /* no joystick_end for the module left behind */
+  CHECK_INT(count_in_log("Restarting"), 0);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK(in.target == IP("127.0.0.3"));
+  CHECK_INT(in.restarts, 0);
+  CHECK_INT(in.interval_us, 2000);
+
+  /* back to discovery, locked to .2 again: it streams what its activation asked for (250 Hz), not the
+   * rate changed since (500 Hz), so it is restarted when it locks (R3; ELRS by its beacon: at once) */
+  c.module_ip[0] = 0;
+  wifi_configure(w, &c, now());
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 1000, wifi_last_arrival_us(w) && state_of(w) == WIFI_ST_STREAMING);
+  wifi_get_info(w, &in);
+  CHECK(in.bound && in.source == IP("127.0.0.2"));
+  CHECK_INT(count_in_log("127.0.0.2 still streams 250 Hz, 16 channels from before the change - restarting its "
+                         "stream with 500 Hz, 16 channels"), 1);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&ma) >= 3);
+  CHECK_STR(mh_body(&ma, 1), "action=joystick_end");
+  CHECK_STR(mh_body(&ma, 2), "action=joystick_begin&interval=2000&channels=16");
+  /* then .2 as the target with a new rate (R7): the lock is kept (it streams to us already: no centering,
+   * no joystick_begin for the target), and the request restarts its stream */
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.2");
+  c.interval_us = 5000;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.2: 200 Hz, 16 channels"), 1);
+  CHECK_INT(count_in_log("Target module set to 127.0.0.2 - streaming from it already"), 1);
+  CHECK_INT(count_in_log("Target module set to 127.0.0.2 - connecting..."), 0);
+  poll1(w, &src);
+  CHECK_INT(state_of(w), WIFI_ST_STREAMING);
+  CHECK(src.present);                              /* the sticks were not centered */
+  POLL_UNTIL(w, &src, 3000, mh_requests(&ma) >= 5);
+  CHECK_STR(mh_body(&ma, 3), "action=joystick_end");
+  CHECK_STR(mh_body(&ma, 4), "action=joystick_begin&interval=5000&channels=16");
+  send_from(a, U, 16, v);                          /* it streams on */
+  POLL_UNTIL(w, &src, 1000, state_of(w) == WIFI_ST_STREAMING);
+  CHECK_INT(state_of(w), WIFI_ST_STREAMING);
+  poll_ms(w, &src, 50);
+  /* any later POST asks for the same */
+  for (int i = 5; i < mh_requests(&ma) && i < MH_BODIES; i++)
+    CHECK_STR(mh_body(&ma, i), "action=joystick_begin&interval=5000&channels=16");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 2);
+  CHECK_INT(mh_requests(&mb), 1);
+  wifi_close(w);
+  plat_sock_close(a);
+  mh_stop(&ma);
+  mh_stop(&mb);
+}
+
+/* R9 with R3 (the core): a stop cuts a restart short (its answer still awaited: dropped with the session).
+ * The module may still stream its old request (an ELRS module streams on through our stop), so when it locks
+ * again after the start it is restarted once more. */
+static void test_request_cut_by_stop(void) {
+  const uint16_t U = P_BASE + 19, HP = P_BASE + 36;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  mh_set(&mh, 200, 1500);                          /* the restart's answers take 1.5 s */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.1: 500 Hz, 16 channels"), 1);
+  POLL_UNTIL(w, &src, 2000, mh_requests(&mh) == 2);  /* its joystick_end is in flight */
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  wifi_stop(w);
+  wifi_start(w, now());
+  mh_set(&mh, 200, 0);
+  poll_ms(w, &src, 200);
+  CHECK_INT(count_in_log("Stream end POST"), 0);     /* its result went with the session */
+  CHECK_INT(count_in_log("Activation POST -> 127.0.0.1"), 1);
+  send_same(U, 16, 16393);                         /* the module streamed on */
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  CHECK_INT(count_in_log("127.0.0.1 may still stream its old request (Stop cut its restart short) - restarting its "
+                         "stream with 500 Hz, 16 channels"), 1);
+  POLL_UNTIL(w, &src, 4000, mh_requests(&mh) >= 4);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_begin&interval=2000&channels=16");
+  POLL_UNTIL(w, &src, 3000, count_in_log("Stream end POST -> 127.0.0.1: 200") == 1);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  stream_seconds(w, &src, U, 16, 6);               /* it took: nothing more */
+  CHECK_INT(mh_requests(&mh), 4);
+  CHECK_INT(count_in_log("may still stream its old request"), 1);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 2);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* R6 with R3 (the core): a failed restart is sent again only while its module stays locked. When the lock
+ * goes first (a 3 s pause), what the module streams is not known: nothing is sent while it is not locked, and
+ * when it locks again it is restarted once more. A rate that is no preset is logged with its interval. */
+static void test_request_failed_then_quiet(void) {
+  const uint16_t U = P_BASE + 37, HP = P_BASE + 38;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  mh_set_next(&mh, 503, 2);                        /* the restart's joystick_end and joystick_begin */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  c.interval_us = 3500;
+  wifi_configure(w, &c, now());
+  CHECK_INT(count_in_log("Restarting the stream of 127.0.0.1: 286 Hz (3500 us), 16 channels"), 1);
+  POLL_UNTIL(w, &src, 3000, count_in_log("The restart of 127.0.0.1 failed - sending it again in 5 s") == 1);
+  CHECK_INT(count_in_log("The restart of 127.0.0.1 failed - sending it again in 5 s"), 1);
+  CHECK_INT(mh_requests(&mh), 3);
+  vt += 3100000;                                   /* the stream pauses: the lock goes before the retry */
+  poll1(w, &src);
+  CHECK(!src.present);
+  CHECK_INT(count_in_log("Source 127.0.0.1 went quiet - releasing lock"), 1);
+  vt += 3000000;                                   /* past the retry's time: not locked, nothing sent */
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&mh), 3);
+  send_same(U, 16, 16393);                         /* back, with its old request */
+  POLL_UNTIL(w, &src, 1000, src.present);
+  CHECK(src.present);
+  CHECK_INT(count_in_log("127.0.0.1 may still stream its old request (its restart failed) - restarting its stream "
+                         "with 286 Hz (3500 us), 16 channels"), 1);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 5);
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_begin&interval=3500&channels=16");
+  POLL_UNTIL(w, &src, 3000, count_in_log("Stream end POST -> 127.0.0.1: 200") == 1);
+  CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  stream_seconds(w, &src, U, 16, 7);               /* it took: nothing more */
+  CHECK_INT(mh_requests(&mh), 5);
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK_INT(in.restarts, 2);
+  CHECK_INT(in.posts_failed, 1);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
 static int self_test(void) {
   plat_net_init();
   app_init(&app);
@@ -939,6 +1666,17 @@ static int self_test(void) {
   test_stale_result_discarded();
   test_configure();
   test_bad_port_and_nulls();
+  test_request_restart();
+  test_request_restart_end_refused();
+  test_request_restart_failed_retried();
+  test_request_same_target_waits();
+  test_request_held_through_pause();
+  test_request_held_dropped_by_beacon();
+  test_request_busy_then_target_moves();
+  test_request_crossfire();
+  test_request_with_target();
+  test_request_cut_by_stop();
+  test_request_failed_then_quiet();
   fprintf(stderr, "  self-test took %.1f s\n", (double)(plat_now_us() - t0) / 1e6);
   plat_sock_close(udp_tx);
   T_DONE();
@@ -1099,10 +1837,12 @@ static int probe(int argc, char **argv) {
       ev_begin("stats");
       printf(",\"hz\":%.2f,\"jitter\":%.3f,\"frames\":%d,\"rx\":%u,\"beacons\":%u,\"malformed\":%u,"
              "\"dropped_filter\":%u,\"dropped_other\":%u,\"applied\":%u,\"posts\":%u,\"posts_ok\":%u,"
-             "\"posts_failed\":%u,\"pending\":%d,\"live\":%s,\"present\":%s,\"listening\":%s",
+             "\"posts_failed\":%u,\"pending\":%d,\"live\":%s,\"present\":%s,\"listening\":%s,"
+             "\"interval_us\":%d,\"channels\":%d,\"restarts\":%u",
              in.rate_hz, in.jitter_ms, in.frames_last_s, in.rx, in.beacons, in.malformed, in.dropped_filter,
              in.dropped_other, in.applied, in.posts, in.posts_ok, in.posts_failed, in.pending,
-             live ? "true" : "false", src.present ? "true" : "false", in.listening ? "true" : "false");
+             live ? "true" : "false", src.present ? "true" : "false", in.listening ? "true" : "false",
+             in.interval_us, in.channels, in.restarts);
       ev_end();
       if (in.bound && in.frames_last_s > 0 && (min_rate < 0 || in.rate_hz >= min_rate) &&
           (max_rate < 0 || in.rate_hz <= max_rate))

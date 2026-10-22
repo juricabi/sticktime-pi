@@ -65,8 +65,8 @@ static void read_wifi_config(host_t *h, wifi_config_t *wc) {
   wc->port = 11000;
   wc->http_port = 80;
   plat_strlcpy(wc->module_ip, settings_get(h->set, "wifi_module_ip"), sizeof wc->module_ip);
-  wc->interval_us = settings_get_int(h->set, "wifi_interval_us", 4000, 1000, 100000);
-  wc->channels = 16;
+  wc->interval_us = settings_get_int(h->set, "wifi_interval_us", WIFI_INTERVAL_DEFAULT, WIFI_INTERVAL_MIN, WIFI_INTERVAL_MAX);
+  wc->channels = settings_get_int(h->set, "wifi_channels", WIFI_CHANNELS_DEFAULT, WIFI_MIN_CH, WIFI_MAX_CH);
 }
 
 /* STICKTIME_LAT: "0" = off (the emulator's PC mode), a number = seconds, "auto" = measured

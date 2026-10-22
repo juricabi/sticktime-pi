@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration scenarios for the WiFi joystick receiver: the C probe (test_wifi_live with arguments,
-which runs input_wifi.c + wifi_proto.c over real sockets) against fake modules (fake_elrs.py), all
-on loopback. Standard library only (Python 3.11+).
+which runs input_wifi.c + the vendored core, third_party/elrs-wifi, over real sockets) against fake
+modules (fake_elrs.py), all on loopback. Standard library only (Python 3.11+).
 
     python host/tests/wifi_live_test.py                 all scenarios
     python host/tests/wifi_live_test.py two_modules -v  some, with every probe event printed
@@ -282,7 +282,8 @@ def explicit_ip(c):
 
 @scenario
 def post_failure_retry(c):
-    """POSTs answered 500 twice: logged, no hint, retried only every 5 s; the third succeeds -> streaming"""
+    """POSTs answered 500 twice: logged, no hint, retried only every 5 s (beacons within the throttle are
+    counted, not logged); the third succeeds -> streaming"""
     p = c.probe()
     m = c.fake("127.0.0.2", beacon_interval=1.0, http_fail_first=2)
     check(p.wait_log("Activation POST -> 127.0.0.2: 500", 3), "no 500 log")
@@ -292,7 +293,10 @@ def post_failure_retry(c):
     gaps = [b - a for a, b in zip(t, t[1:])]
     check(all(4.8 <= g <= 6.5 for g in gaps), f"POST gaps {gaps} (throttle 5 s, beacons every 1 s)")
     check(len(p.logs("Activation POST -> 127.0.0.2: 500")) == 2, "two 500 results")
-    check(len(p.logs("Discovery beacon from ELRS")) >= 8, "beacons in between are logged (throttled)")
+    # the beacons in between are counted, but only one that sends a POST is logged (no flood in the log)
+    check(max(e["beacons"] for e in p.events("stats")) >= 8, "beacons in between are counted")
+    check(len(p.logs("Discovery beacon from ELRS")) == 3, f"{len(p.logs('Discovery beacon from ELRS'))} beacon "
+          "log lines (expected one per POST)")
     check(not p.logs("!! Activated OK"), "a failed POST must not start the 'no data' hint")
     return "gaps " + ", ".join(f"{g:.2f}" for g in gaps) + " s"
 
@@ -586,6 +590,86 @@ def probe_expectations(c):
     code3, _, _ = run("--bogus")
     check(code3 == 2, f"unknown argument: exit {code3}")
     return f"met after {dt:.1f} s"
+
+
+@scenario
+def request_change(c):
+    """a new rate, then a new channel count, while an ELRS module streams: each restarts it (joystick_end,
+    then joystick_begin with the new request), the lock is kept and the new rate / count arrives"""
+    p = c.probe()
+    m = c.fake("127.0.0.2")
+    check(p.wait_state("streaming", 4, module="ELRS 127.0.0.2"), f"not streaming ({p.last_state()})")
+    st = p.wait_stats(lambda e: e["frames"] > 100, 3, p.mark())
+    check(st and 200 <= st["hz"] <= 300, f"rate {st and st['hz']} Hz before the change (expected ~250)")
+    k = p.mark()
+    p.cmd("interval 2000")
+    check(p.wait_log("Restarting the stream of 127.0.0.2: 500 Hz, 16 channels", 2, k), "no restart log")
+    check(p.wait_log("Stream end POST -> 127.0.0.2: 200", 3, k), "no joystick_end result")
+    check(p.wait_log("Activation POST -> 127.0.0.2: 200 OK", 3, k), "no joystick_begin result")
+    posts = [x for x in m.posts if x["method"] == "POST"]
+    check([x["params"].get("action") for x in posts] == ["joystick_begin", "joystick_end", "joystick_begin"],
+          f"POSTs {[x['body'] for x in posts]}")
+    check(posts[1]["body"] == "action=joystick_end", f"end body {posts[1]['body']!r}")
+    check(posts[2]["body"] == "action=joystick_begin&interval=2000&channels=16", f"begin body {posts[2]['body']!r}")
+    check(m.state()["active"] and m.state()["interval_us"] == 2000, f"module state {m.state()}")
+    p.wait_stats(lambda e: True, 2, p.mark())          # skip the window with the change in it
+    st = p.wait_stats(lambda e: True, 2, p.mark())
+    check(st and 400 <= st["hz"] <= 600, f"rate {st and st['hz']} Hz after the change (expected ~500)")
+    check(st["interval_us"] == 2000 and st["channels"] == 16 and st["restarts"] == 1, f"probe {st}")
+    check(st["posts"] == 2 and st["posts_ok"] == 2 and st["pending"] == 0, f"probe {st}")
+    k2 = p.mark()
+    p.cmd("channels 8")
+    check(p.wait_log("Restarting the stream of 127.0.0.2: 500 Hz, 8 channels", 2, k2), "no restart log")
+    check(p.wait_frame(lambda e: e["n"] == 8 and len(e["val"]) == 8, 3, k2), "no 8-channel frames after the restart")
+    check(m.state()["channels"] == 8 and m.state()["interval_us"] == 2000, f"module state {m.state()}")
+    time.sleep(0.5)
+    check(m.npost() == 5, f"{m.npost()} POSTs (expected 5: begin, then end + begin twice)")
+    check(not p.logs("restarting its stream", k), "16-channel frames still on their way restarted it once more")
+    check(not [e for e in p.events("state", k) if e["state"] != "streaming"], "the lock was lost during a restart")
+    return f"{st['hz']:.0f} Hz after the change"
+
+
+@scenario
+def request_crossfire(c):
+    """Crossfire ignores the rate and channel count: a change is logged once and never sent (no joystick_end)"""
+    p = c.probe()
+    m = c.fake("127.0.0.2", kind="xf", beacon_interval=0.7)
+    check(p.wait_state("streaming", 4, module="Crossfire 127.0.0.2"), f"not streaming ({p.last_state()})")
+    k = p.mark()
+    p.cmd("interval 2000")
+    check(p.wait_log("Crossfire module 127.0.0.2 ignores the rate and channel count", 2, k), "no log")
+    p.cmd("channels 8")
+    time.sleep(1.5)
+    check(m.npost() == 1, f"{m.npost()} POSTs (expected only the first joystick_begin)")
+    check(not [x for x in m.posts if x["params"].get("action") == "joystick_end"], "Crossfire got a joystick_end")
+    check(len(p.logs("ignores the rate and channel count", k)) == 1, "logged more than once")
+    st = p.wait_stats(lambda e: True, 2, p.mark())
+    check(st and 75 <= st["hz"] <= 100, f"rate {st and st['hz']} Hz (expected ~90)")
+    check(st["restarts"] == 0 and st["interval_us"] == 2000 and st["channels"] == 8, f"probe {st}")
+    f = p.wait_frame(lambda e: True, 2, p.mark())
+    check(f and f["n"] == 16, f"frame {f}")
+    return f"{st['hz']:.0f} Hz"
+
+
+@scenario
+def leftover_request(c):
+    """a module still streaming another app's request (8 channels at 100 Hz) to this host, which ELRS keeps
+    until it is restarted: restarted once with ours (16 channels at 250 Hz)"""
+    m = c.fake("127.0.0.2", beacons_enabled=False)
+    status, body = fake_elrs.post_udpcontrol("127.0.0.2", c.base + 1, dict(action="joystick_begin", interval=10000,
+                                                                           channels=8), source_ip="127.0.0.1")
+    check(status == 200 and m.state()["channels"] == 8, f"the other app's POST: {status} {body} {m.state()}")
+    p = c.probe()
+    check(p.wait_log("127.0.0.2 streams 8 channels, 16 asked for (another app's request?) - restarting its stream", 3),
+          "no restart for the leftover request")
+    check(p.wait_frame(lambda e: e["n"] == 16, 3), "no 16-channel frames after the restart")
+    check(m.state()["channels"] == 16 and m.state()["interval_us"] == 4000, f"module state {m.state()}")
+    p.wait_stats(lambda e: True, 2, p.mark())
+    st = p.wait_stats(lambda e: True, 2, p.mark())
+    check(st and 200 <= st["hz"] <= 300, f"rate {st and st['hz']} Hz (expected ~250)")
+    check(st["restarts"] == 1 and m.npost() == 3, f"restarts {st['restarts']}, {m.npost()} POSTs")
+    check(len(p.logs("restarting its stream")) == 1, "restarted more than once")
+    return f"{st['hz']:.0f} Hz after the restart"
 
 
 # ---------------------------------------------------------------- runner

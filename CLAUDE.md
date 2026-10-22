@@ -17,8 +17,11 @@ go in `.local/` (ignored).
 - `docs/WEB_API.md`: the web API contract. `docs/USER_GUIDE.md`: for end users.
 
 Keep the sibling repos checked out next to this one. The plan points into them:
-`../sticktime` (game, `web/src/engine.js` = the reference to port) and
-`../ELRS-Crossfire-WiFi-Joystick-Windows` (`JoystickEngine.cs` = the WiFi protocol to port).
+`../sticktime` (game, `web/src/engine.js` = the reference to port),
+`../ELRS-Crossfire-WiFi-Joystick-Windows` (`JoystickEngine.cs` = the WiFi protocol's reference behaviour) and
+`../elrs-crossfire-wifi-joystick-linux` (`core/` = the WiFi joystick protocol core, shared with the owner's
+Linux app and vendored unmodified in `host/third_party/elrs-wifi/`: change it there, then
+`tools/vendor_elrs_wifi.sh`; CI checks the copy with `--check`).
 
 ## Owner's requirements
 
@@ -52,11 +55,11 @@ host/         native host (C)
   src/        main, host, scenario, etx, lcd, font, video_drm/fb/png, input_evdev/wifi, nav, web, web_api,
               settings, audio, sfx, dsp, music, songs, sys, plat, app
   tests/      unit tests (test_*.c), linux/ (Linux-only), scenarios/, golden/, test drivers (*.py)
-  third_party/          Lua 5.3.6, stb, minimp3, dr_libs (unmodified, see its README)
+  third_party/          Lua 5.3.6, stb, minimp3, dr_libs, elrs-wifi = the WiFi joystick core (all unmodified, see its README)
   fonts/      Roboto Regular/Bold TTF (OFL), converted from sticktime/web/vendor/*.woff2
 web/          the on-device web page + tests/
 image/        image build (build.sh, base.env), rootfs/ (units, /usr/lib/sticktime helpers, updater), tests
-tools/        patch_editor.py, compare_emulator.py
+tools/        patch_editor.py, compare_emulator.py, make_app_package.py, vendor_elrs_wifi.sh
 .github/      CI workflows, issue templates
 docs/         PLAN, RESEARCH, DEVELOPMENT, WEB_API, USER_GUIDE
 ```

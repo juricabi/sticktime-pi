@@ -240,6 +240,27 @@ class UiTest(unittest.TestCase):
         self.assertIn("= 250 Hz", p.inner_text(self.field("sticks", "wifi_interval_us")))
         p.fill("#f-sticks-wifi_interval_us", "2000")
         self.assertIn("= 500 Hz", p.inner_text(self.field("sticks", "wifi_interval_us")))
+        p.fill("#f-sticks-wifi_interval_us", "6667")
+        self.assertIn("= 150 Hz", p.inner_text(self.field("sticks", "wifi_interval_us")))
+        # the WiFi module's rates as suggestions, with their Hz; the channel count right after it
+        self.assertEqual(p.get_attribute("#f-sticks-wifi_interval_us", "list"), "f-sticks-wifi_interval_us-list")
+        self.assertEqual(p.eval_on_selector_all("#f-sticks-wifi_interval_us-list option", "els => els.map((e) => e.value + ' ' + e.label)"),
+                         ["1000 1000 Hz", "2000 500 Hz", "3000 333 Hz", "4000 250 Hz (default)", "5000 200 Hz", "6667 150 Hz",
+                          "10000 100 Hz", "20000 50 Hz"])
+        self.assertEqual(p.eval_on_selector("#f-sticks-wifi_channels", "e => [...e.options].map((o) => o.textContent)"),
+                         [f"{i} (CH1-CH{i})" for i in range(4, 17)])
+        self.assertEqual(p.input_value("#f-sticks-wifi_channels"), "16")
+        keys = p.eval_on_selector_all('form[data-form="sticks"] .field', "els => els.map((e) => (e.querySelector('[id^=f-sticks-]') || {}).id)")
+        self.assertEqual(keys[keys.index("f-sticks-wifi_interval_us") + 1], "f-sticks-wifi_channels")
+        self.assertIn("Crossfire always sends 16", p.inner_text(self.field("sticks", "wifi_channels")))
+        self.assertIn("restarts a streaming ELRS module", p.inner_text(self.field("sticks", "wifi_interval_us")))
+        p.select_option("#f-sticks-wifi_channels", "8")
+        self.assertTrue(p.is_visible(f"{self.field('sticks', 'wifi_channels')} .flag.changed"))
+        self.save("sticks")
+        self.until(lambda: self.posts("/api/settings"))
+        self.assertEqual(self.posts("/api/settings")[-1]["body"], b"wifi_interval_us = 6667\nwifi_channels = 8\n")
+        self.until(lambda: self.pi.value("wifi_channels") == "8")
+        self.assertEqual(self.pi.value("wifi_interval_us"), "6667")
 
     def test_a_newer_pi_adds_keys(self):
         # keys this page doesn't know: under System, More settings, by their kind (an unknown kind: text)

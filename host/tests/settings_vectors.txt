@@ -563,6 +563,14 @@ raw: hotspot_ssid = \sCaf\xC3\xA9\s
 
 # ---- effective values: validation, defaults, normalization
 
+# 0.0.0.0 names no module: the WiFi receiver would refuse it and run in discovery while the setting shows it
+case: module_ip_all_zero
+in: wifi_module_ip = 0.0.0.0\n
+warn: line 1: wifi_module_ip must be an IPv4 address (like 192.168.1.50) or empty (using the default)
+get: wifi_module_ip =
+raw: wifi_module_ip = 0.0.0.0
+invalid: wifi_module_ip = 0.0.0.0
+
 case: known_invalid
 in: video = vga\n
 in: tv = PAL\n
@@ -582,6 +590,7 @@ in: script = /SCRIPTS/../x.lua\n
 in: input = ble\n
 in: wifi_interval_us = 999\n
 in: wifi_password = short\n
+in: wifi_channels = 3\n
 warn: line 1: video must be one of av, hdmi (using the default)
 warn: line 3: margin must be a whole number from 0 to 20 (using the default)
 warn: line 5: stick_menus must be on or off (using the default)
@@ -597,6 +606,7 @@ warn: line 15: script must be an SD path ending in .lua (like /SCRIPTS/TOOLS/Sti
 warn: line 16: input must be one of auto, wifi, usb, bluetooth, gamepad, joystick, keyboard (using the default)
 warn: line 17: wifi_interval_us must be a whole number from 1000 to 100000 (using the default)
 warn: line 18: wifi_password must be empty, 8-63 characters or 64 hex digits (using the default)
+warn: line 19: wifi_channels must be a whole number from 4 to 16 (using the default)
 get: video = av
 raw: video = vga
 get: tv = pal
@@ -616,6 +626,8 @@ get: script = /SCRIPTS/TOOLS/StickTime.lua
 get: input = auto
 get: wifi_interval_us = 4000
 get: wifi_password =
+get: wifi_channels = 16
+raw: wifi_channels = 3
 int: margin 3 0 20 = 0
 set: margin = 12
 get: margin = 12
@@ -820,6 +832,15 @@ valid: wifi_interval_us = 1000
 valid: wifi_interval_us = 100000
 invalid: wifi_interval_us = 999
 invalid: wifi_interval_us = 100001
+valid: wifi_interval_us = 6667
+valid: wifi_channels = 4
+valid: wifi_channels = 16
+valid: wifi_channels = 8
+invalid: wifi_channels = 3
+invalid: wifi_channels = 17
+invalid: wifi_channels = 0
+invalid: wifi_channels = 8.0
+invalid: wifi_channels =
 valid: stick_mode = 1
 valid: stick_mode = 4
 invalid: stick_mode = 0
@@ -956,8 +977,10 @@ valid: wifi_password = a"b#c\\d e
 valid: wifi_module_ip =
 valid: wifi_module_ip = 10.0.0.1
 valid: wifi_module_ip = 192.168.1.50
-valid: wifi_module_ip = 0.0.0.0
 valid: wifi_module_ip = 255.255.255.255
+valid: wifi_module_ip = 0.0.0.1
+valid: wifi_module_ip = 10.0.0.0
+invalid: wifi_module_ip = 0.0.0.0
 invalid: wifi_module_ip = 256.0.0.1
 invalid: wifi_module_ip = 10.0.0
 invalid: wifi_module_ip = 10.0.0.1.5
@@ -1101,6 +1124,8 @@ get: wifi_module_ip =
 valid: wifi_module_ip =
 get: wifi_interval_us = 4000
 valid: wifi_interval_us = 4000
+get: wifi_channels = 16
+valid: wifi_channels = 16
 get: bluetooth = on
 valid: bluetooth = on
 get: latency = 0

@@ -10,6 +10,8 @@ an AI assistant).
 ```
 sticktime/        https://github.com/juricabi/sticktime   (the game; web/src/engine.js is the reference)
 sticktime-pi/     this repo
+elrs-crossfire-wifi-joystick-linux/   https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux
+                  (only to change the WiFi joystick core: its core/ is vendored here, see below)
 ```
 Keep `sticktime` next to this repo: the tests run its `StickTime.lua` and compare against its emulator.
 
@@ -37,10 +39,13 @@ host/build.sh native clean     # remove build/native-edgetx/
 NUMS=ref host/build.sh native  # Lua with double floats, like the browser (for comparisons with engine.js)
 ```
 Unit tests are `host/tests/test_*.c` (drawing, fonts, the EdgeTX Lua API, settings, input, menu
-navigation, video, web server, WiFi protocol, audio, motor sound, music, the thread pool, the GPU's
-geometry). `test_lcd_golden` replays recorded drawing calls and must match `engine.js` byte for byte, drawn
-at once and recorded and drawn in bands on four threads (drawing = multi); it skips when its references
-(in `build/golden/`, made by `host/tests/golden/ref.js`) are missing.
+navigation, video, web server, the WiFi joystick receiver over loopback sockets, audio, motor sound, music,
+the thread pool, the GPU's geometry) and the vendored WiFi joystick core's own,
+`host/third_party/elrs-wifi/tests/test_*.c` (`test_wifi_proto`: the protocol, every engine test of the
+Windows app ported; `test_wifi_net`: the activation POST against a scripted server): `build.sh` builds and
+runs them with the others. `test_lcd_golden` replays recorded drawing calls and must match `engine.js` byte
+for byte, drawn at once and recorded and drawn in bands on four threads (drawing = multi); it skips when its
+references (in `build/golden/`, made by `host/tests/golden/ref.js`) are missing.
 
 **The GPU helper** (`sticktime-gpu`, drawing = gpu: `host/src/gpu_main.c`, `gpu_geom.c`) is a program of its
 own, built against glibc 2.31 and dynamic, because it loads Mesa's EGL and GLES 2 at run time; `build.sh`
@@ -63,13 +68,19 @@ python image/test/test_setup.py                    # boot-time setup helpers (se
 python image/tests/test_update.py                  # the updater against a fake GitHub (~4 min)
 python host/tests/check_settings_keys.py           # settings.py and settings_keys.h describe the same keys
 python host/tests/vtx_live_test.py                 # VTX control: the real program + the fake VTX (--pty on Linux: termios)
+python host/tests/wifi_live_test.py                # WiFi joystick: the receiver (test_wifi_live as a probe) + fake ELRS/Crossfire modules
+python host/tests/test_wifi_docs.py                # the WiFi joystick's numbers in the docs (restart tries, lock loss, 0.5 s pause) match the code
 ```
 (add `.exe` to the binaries on Windows.) Scenarios are Lua scripts in `host/tests/scenarios/`; the
 scenario API is documented at the top of `host/src/scenario.c`, screenshots go to
 `build/scenario-shots/`. `host/tests/fake_vtx.py` is a fake SmartAudio 1.0/2.0/2.1 and Tramp VTX (with the
 one-wire echo and clone quirks) on TCP or a pty; the program takes it with `--vtx-port tcp:127.0.0.1:PORT` (or
 `tty:/dev/pts/N`), `web_test_main` with `STP_VTX_PORT`, and `web_api_test.py` and `web/tests/test_real_server.py`
-start one themselves. `compare_emulator.py` writes `build/compare/<size>/*_side.png`: look at the
+start one themselves. `host/tests/fake_elrs.py` is a fake ELRS / Crossfire WiFi joystick module (beacons,
+`/udpcontrol` with `joystick_begin` and `joystick_end`, the stream; also a program for trying a real Pi
+without a radio); `wifi_live_test.py` runs it against the receiver, including a request change restarting an
+ELRS stream (`--probe` takes another build's `test_wifi_live`, e.g. a wrapper running the aarch64 one under
+qemu). `compare_emulator.py` writes `build/compare/<size>/*_side.png`: look at the
 pictures, not only the numbers (text antialiasing and single-pixel 3D edges differ a little).
 
 ### The program headless
@@ -96,6 +107,22 @@ for the editor, `editor/index.html` (`python tools/patch_editor.py ../sticktime/
   vkms in a VM (`--recovery`, `--vt`, `--sys`; `--strict-timing` only on real hardware).
 
 Build them like the unit tests, linked with the objects from `build/<target>/obj/` (see each file's header).
+
+### The WiFi joystick core (vendored)
+
+`host/third_party/elrs-wifi/` (`wifi_proto.c/.h`, `wifi_net.c/.h`, their tests) is the protocol core of the
+owner's Linux app, [elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux)
+`core/` (MIT), copied unmodified; `host/tests/fake_elrs.py` comes with it. Never edit them here:
+
+```sh
+# 1. change core/ in ../elrs-crossfire-wifi-joystick-linux, test it there, commit
+tools/vendor_elrs_wifi.sh            # 2. copy it here (or: tools/vendor_elrs_wifi.sh PATH); writes VENDOR
+host/build.sh native test            # 3. its tests and ours
+python host/tests/wifi_live_test.py
+tools/vendor_elrs_wifi.sh --check    # what CI runs: the files match VENDOR (commit + SHA-256 each)
+python host/tests/test_vendor_elrs_wifi.py   # the script itself, on made-up repositories (CI too)
+```
+`host/build.sh` compiles it with `-DWIFI_USER_AGENT="sticktime-pi"` (the activation POST's User-Agent).
 
 ## The SD image
 
@@ -133,8 +160,10 @@ test those on a Pi 4.
 
 ## CI
 
-- `.github/workflows/build.yml` (push, pull request): the host on x86_64 with unit tests and scenarios,
-  the static aarch64 program, the Python tests on 3.11 and 3.13, the web UI in headless Chromium.
+- `.github/workflows/build.yml` (push, pull request): the vendored WiFi joystick core's check
+  (`tools/vendor_elrs_wifi.sh --check`), the host on x86_64 with unit tests, the WiFi joystick receiver
+  against fake modules (`wifi_live_test.py`) and scenarios, the static aarch64 program, the Python tests on
+  3.11 and 3.13, the web UI in headless Chromium.
 - `.github/workflows/image.yml` (tags `v*`, manual): the app package for the updater, the SD image and its
   QEMU boot test, and on tags a GitHub release with all of it. The release notes: `docs/releases/<tag>.md`
   (what's new, how to update) when the tagged commit has it, then the install text and the image's info.
@@ -146,10 +175,11 @@ test those on a Pi 4.
 ```
 host/src/        the C program: main.c (CLI, frame loop), host.c (frame step, error screen, reloads, overlay,
                  audio feed), scenario.c (headless test API), etx.c (EdgeTX Lua API), lcd.c/font.c (drawing),
-                 video*.c (drm/fb/png), input*.c, nav.c, wifi_proto.c, web.c/web_api.c, settings.c,
+                 video*.c (drm/fb/png), input*.c, nav.c, web.c/web_api.c, settings.c,
                  audio.c/sfx.c/dsp.c/music*.c/songs.c, sys.c, plat.c, app.c
 host/tests/      unit tests (test_*.c), linux/, scenarios/, golden/, test drivers (*.py)
-host/third_party/  Lua 5.3.6, stb, minimp3, dr_libs (unmodified, see its README)
+host/third_party/  Lua 5.3.6, stb, minimp3, dr_libs, elrs-wifi (the WiFi joystick protocol core: wifi_proto.c,
+                 wifi_net.c), all unmodified, see its README
 host/fonts/      Roboto (OFL)
 web/             the Pi's web page (index.html, app.js, style.css, pi-sd.js) and its tests/
 image/           build.sh, base.env (pinned inputs), rootfs/ (systemd units, /usr/lib/sticktime helpers,
@@ -157,7 +187,9 @@ image/           build.sh, base.env (pinned inputs), rootfs/ (systemd units, /us
                  also go into every app package as lib/ (tools/make_app_package.py lib_files) and reach
                  running Pis through the updater's sync (stupdate/system.py); systemd units and other
                  files outside /usr/lib/sticktime still need a new image
-tools/           patch_editor.py (makes the emulator page work on the Pi), compare_emulator.py
+tools/           patch_editor.py (makes the emulator page work on the Pi), compare_emulator.py,
+                 make_app_package.py (the updater's app package), vendor_elrs_wifi.sh (copies and checks the
+                 WiFi joystick core)
 build/, out/     build output and images (ignored by git)
 ```
 

@@ -274,11 +274,12 @@ static int b64v(char c) {
 }
 static size_t b64dec(const char *s, unsigned char *out) {
   size_t n = 0;
-  int acc = 0, bits = 0;
+  unsigned acc = 0;                 /* only its low bits matter: unsigned, so the old ones shift out (no overflow) */
+  int bits = 0;
   for (; *s; s++) {
     int v = b64v(*s);
     if (v < 0) continue;
-    acc = (acc << 6) | v; bits += 6;
+    acc = (acc << 6) | (unsigned)v; bits += 6;
     if (bits >= 8) { bits -= 8; out[n++] = (unsigned char)((acc >> bits) & 0xFF); }
   }
   return n;

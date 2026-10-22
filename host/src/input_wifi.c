@@ -1,8 +1,10 @@
-/* ELRS / Crossfire WiFi joystick receiver: see input_wifi.h. The protocol is wifi_proto.c. */
+/* ELRS / Crossfire WiFi joystick receiver: see input_wifi.h. The protocol is the vendored core
+ * (third_party/elrs-wifi): wifi_proto.c, and wifi_net.c for the activation POST. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
 #include "input_wifi.h"
+#include "wifi_net.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -12,14 +14,8 @@
 
 #ifndef _WIN32
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/uio.h>
 #include <time.h>
-#include <unistd.h>
-#endif
-#ifdef __linux__
-#include <ifaddrs.h>
-#include <net/if.h>
 #endif
 
 #define DRAIN_MAX 256
@@ -83,7 +79,7 @@ void wifi_config_default(wifi_config_t *c) {
   c->port = WIFI_PORT_DEFAULT;
   c->http_port = WIFI_HTTP_PORT_DEFAULT;
   c->interval_us = WIFI_INTERVAL_DEFAULT;
-  c->channels = WIFI_MAX_CH;
+  c->channels = WIFI_CHANNELS_DEFAULT;
 }
 
 static void config_clean(wifi_config_t *out, const wifi_config_t *in) {
@@ -91,205 +87,20 @@ static void config_clean(wifi_config_t *out, const wifi_config_t *in) {
   *out = *in;
   out->module_ip[sizeof out->module_ip - 1] = 0;
   if (!out->http_port) out->http_port = WIFI_HTTP_PORT_DEFAULT;
-  if (out->interval_us < WIFI_INTERVAL_MIN) out->interval_us = WIFI_INTERVAL_MIN;
-  if (out->interval_us > WIFI_INTERVAL_MAX) out->interval_us = WIFI_INTERVAL_MAX;
-  if (out->channels < WIFI_MIN_CH) out->channels = WIFI_MIN_CH;
-  if (out->channels > WIFI_MAX_CH) out->channels = WIFI_MAX_CH;
+  out->interval_us = wifi_clamp_interval(out->interval_us);
+  out->channels = wifi_clamp_channels(out->channels);
 }
 
 /* ================================================================ HTTP worker */
-static int sock_err(void) {
-#ifdef _WIN32
-  return WSAGetLastError();
-#else
-  return errno;
-#endif
-}
+/* wifi_net_post asks this about every 100 ms: a stop or close ends a hanging request quickly */
+typedef struct { wifi_t *w; uint32_t session; } post_ctx_t;
 
-static bool in_progress(int e) {
-#ifdef _WIN32
-  return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
-#else
-  return e == EINPROGRESS || e == EAGAIN || e == EWOULDBLOCK || e == EINTR;
-#endif
-}
-
-static void err_text(int e, char *out, size_t cap) {
-  const char *t = NULL;
-#ifdef _WIN32
-  if (e == WSAECONNREFUSED) t = "connection refused";
-  else if (e == WSAETIMEDOUT) t = "timed out";
-  else if (e == WSAEHOSTUNREACH) t = "host unreachable";
-  else if (e == WSAENETUNREACH) t = "network unreachable";
-  else if (e == WSAECONNRESET) t = "connection reset";
-  else if (e == WSAECONNABORTED) t = "connection aborted";
-  else if (e == WSAEADDRNOTAVAIL) t = "address not available";
-  else if (e == WSAEADDRINUSE) t = "address already in use";
-  else if (e == WSAEACCES) t = "permission denied";
-#else
-  if (e == ECONNREFUSED) t = "connection refused";
-  else if (e == ETIMEDOUT) t = "timed out";
-  else if (e == EHOSTUNREACH) t = "host unreachable";
-  else if (e == ENETUNREACH) t = "network unreachable";
-  else if (e == ECONNRESET) t = "connection reset";
-  else if (e == ECONNABORTED) t = "connection aborted";
-  else if (e == EPIPE) t = "connection closed";
-  else if (e == EADDRNOTAVAIL) t = "address not available";
-  else if (e == EADDRINUSE) t = "address already in use";
-  else if (e == EACCES) t = "permission denied";
-#endif
-  if (t) snprintf(out, cap, "%s", t);
-  else if (e) snprintf(out, cap, "error %d", e);
-  else if (cap) out[0] = 0;     /* lost (Windows clears it when the failed socket is closed) */
-}
-
-/* 1 ready, 0 timeout, -1 error */
-static int wait_sock(plat_sock s, bool wr, int ms) {
-#ifdef _WIN32
-  fd_set f, e;
-  FD_ZERO(&f);
-  FD_ZERO(&e);
-  FD_SET(s, &f);
-  FD_SET(s, &e);
-  struct timeval tv = { ms / 1000, (ms % 1000) * 1000 };
-  int r = select(0, wr ? NULL : &f, wr ? &f : NULL, &e, &tv);
-  return r < 0 ? -1 : r > 0 ? 1 : 0;
-#else
-  struct pollfd p = { s, (short)(wr ? POLLOUT : POLLIN), 0 };
-  int r = poll(&p, 1, ms);
-  if (r < 0) return errno == EINTR ? 0 : -1;
-  return r > 0 ? 1 : 0;
-#endif
-}
-
-static bool aborted(wifi_t *w, uint32_t session) {
-  plat_mutex_lock(&w->mu);
-  bool a = w->quit || wifi_actq_stale(&w->q, session);
-  plat_mutex_unlock(&w->mu);
+static bool post_aborted(void *ud) {
+  const post_ctx_t *c = ud;
+  plat_mutex_lock(&c->w->mu);
+  bool a = c->w->quit || wifi_actq_stale(&c->w->q, c->session);
+  plat_mutex_unlock(&c->w->mu);
   return a;
-}
-
-/* Wait in short slices so a stop or close ends a hanging request quickly.
- * 1 ready, 0 deadline passed, -1 aborted, -2 error */
-static int wait_io(wifi_t *w, uint32_t session, plat_sock s, bool wr, int64_t deadline) {
-  for (;;) {
-    int64_t left = deadline - plat_now_us();
-    if (left <= 0) return 0;
-    int ms = left > 100000 ? 100 : (int)((left + 999) / 1000);
-    int r = wait_sock(s, wr, ms);
-    if (r > 0) return 1;
-    if (r < 0) return -2;
-    if (aborted(w, session)) return -1;
-  }
-}
-
-static const char *head_end(const char *b, size_t n, size_t *len) {
-  for (size_t i = 0; i + 1 < n; i++) {
-    if (b[i] == '\n' && b[i + 1] == '\n') { *len = i + 2; return b + i; }
-    if (i + 3 < n && b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') { *len = i + 4; return b + i; }
-  }
-  return NULL;
-}
-
-/* One POST /udpcontrol, everything within WIFI_POST_TIMEOUT_MS. Any 2xx is success (the body,
- * "ok", is not checked, like the reference). */
-static void do_post(wifi_t *w, const wifi_actreq_t *rq, wifi_actres_t *rs) {
-  memset(rs, 0, sizeof *rs);
-  rs->ip = rq->ip;
-  rs->session = rq->session;
-  char req[512];
-  int len = wifi_build_post(req, sizeof req, rq->ip, rq->http_port, rq->body);
-  if (len < 0) { snprintf(rs->err, sizeof rs->err, "request too long"); return; }
-  int64_t deadline = plat_now_us() + (int64_t)WIFI_POST_TIMEOUT_MS * 1000;
-
-  plat_sock s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (s == PLAT_BADSOCK) { err_text(sock_err(), rs->err, sizeof rs->err); return; }
-#ifndef _WIN32
-  fcntl(s, F_SETFD, FD_CLOEXEC);
-#endif
-  plat_sock_nonblock(s, true);
-  struct sockaddr_in a;
-  memset(&a, 0, sizeof a);
-  a.sin_family = AF_INET;
-  a.sin_port = htons(rq->http_port);
-  a.sin_addr.s_addr = rq->ip;
-  int r = connect(s, (struct sockaddr *)&a, sizeof a), e = 0, st;
-  if (r != 0) {
-    e = sock_err();
-    if (!in_progress(e)) { err_text(e, rs->err, sizeof rs->err); goto done; }
-    st = wait_io(w, rq->session, s, true, deadline);
-    if (st == 0) { snprintf(rs->err, sizeof rs->err, "timed out after %d s", WIFI_POST_TIMEOUT_MS / 1000); goto done; }
-    if (st < 0) { snprintf(rs->err, sizeof rs->err, st == -1 ? "aborted" : "wait failed"); goto done; }
-    plat_socklen el = sizeof e;
-    e = 0;
-    if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&e, &el) != 0) e = sock_err();
-    if (e) { err_text(e, rs->err, sizeof rs->err); goto done; }
-  }
-
-  for (int sent = 0; sent < len;) {
-#ifdef MSG_NOSIGNAL
-    int k = (int)send(s, req + sent, (size_t)(len - sent), MSG_NOSIGNAL);
-#else
-    int k = (int)send(s, req + sent, len - sent, 0);
-#endif
-    if (k > 0) { sent += k; continue; }
-    e = sock_err();
-    if (k < 0 && in_progress(e)) {
-      st = wait_io(w, rq->session, s, true, deadline);
-      if (st == 1) continue;
-      snprintf(rs->err, sizeof rs->err, st == 0 ? "timed out after 5 s" : st == -1 ? "aborted" : "wait failed");
-      goto done;
-    }
-    err_text(e, rs->err, sizeof rs->err);
-    goto done;
-  }
-
-  char resp[1024];
-  size_t got = 0, hlen = 0;
-  long clen = -1;
-  bool timed_out = false, have_head = false;
-  for (;;) {
-    if (got >= sizeof resp - 1) break;          /* the status line is all we need */
-    int k = (int)recv(s, resp + got, (int)(sizeof resp - 1 - got), 0);
-    if (k > 0) {
-      got += (size_t)k;
-      if (!have_head && head_end(resp, got, &hlen)) {
-        have_head = true;
-        clen = wifi_http_content_length(resp, hlen);
-      }
-      /* read the body too when its length is known, so the module never sees a reset */
-      if (have_head && (clen < 0 ? false : got >= hlen + (size_t)clen)) break;
-      continue;
-    }
-    if (k == 0) break;                          /* Connection: close */
-    e = sock_err();
-    if (in_progress(e)) {
-      st = wait_io(w, rq->session, s, false, deadline);
-      if (st == 1) continue;
-      if (st == -1) { snprintf(rs->err, sizeof rs->err, "aborted"); goto done; }
-      timed_out = st == 0;
-      if (!timed_out) err_text(e, rs->err, sizeof rs->err);
-      break;
-    }
-    err_text(e, rs->err, sizeof rs->err);       /* e.g. reset after the reply: the status still counts */
-    break;
-  }
-  resp[got] = 0;
-  int code = wifi_parse_http_status(resp, got, rs->reason, sizeof rs->reason);
-  if (code > 0) {
-    rs->status = code;
-    rs->ok = code >= 200 && code <= 299;
-    rs->err[0] = 0;
-  } else if (code == 0) {
-    snprintf(rs->err, sizeof rs->err, "not an HTTP reply");
-  } else if (timed_out) {
-    snprintf(rs->err, sizeof rs->err, "timed out after %d s", WIFI_POST_TIMEOUT_MS / 1000);
-  } else if (!rs->err[0]) {
-    snprintf(rs->err, sizeof rs->err, got ? "incomplete reply" : "closed without a reply");
-  }
-done:
-  if (!rs->status && !rs->err[0]) snprintf(rs->err, sizeof rs->err, "failed");
-  plat_sock_close(s);
 }
 
 static void *worker(void *arg) {
@@ -303,8 +114,10 @@ static void *worker(void *arg) {
       continue;
     }
     plat_mutex_unlock(&w->mu);
+    /* joystick_begin, after a joystick_end for a restart; a 2xx is success (the body is not checked) */
     wifi_actres_t rs;
-    do_post(w, &rq, &rs);
+    post_ctx_t ctx = { w, rq.session };
+    wifi_net_post(&rq, &rs, WIFI_POST_TIMEOUT_MS, post_aborted, &ctx);
     plat_mutex_lock(&w->mu);
     wifi_actq_put(&w->q, &rs);        /* dropped when the session changed meanwhile */
   }
@@ -384,40 +197,28 @@ static void h_frame(void *ud, uint32_t src, const uint16_t *raw, int n) {
   s->nch = (uint8_t)n;
 }
 
-static int h_activate(void *ud, uint32_t ip) {
+static int h_activate(void *ud, const wifi_act_t *a) {
   wifi_t *w = ud;
   if (!w->worker_ok) return WIFI_ACT_FAILED;
   if (w->sock == PLAT_BADSOCK) return WIFI_ACT_BUSY;        /* not listening: POST after the bind */
   char body[64];
-  if (wifi_build_body(body, sizeof body, "joystick_begin", w->cfg.interval_us, w->cfg.channels) < 0)
+  if (wifi_build_body(body, sizeof body, "joystick_begin", a->interval_us, a->channels) < 0)
     return WIFI_ACT_FAILED;
   plat_mutex_lock(&w->mu);
-  int r = wifi_actq_push(&w->q, ip, w->cfg.http_port, body);
+  bool was_pending = wifi_actq_is_pending(&w->q, a->ip);
+  int r = wifi_actq_push(&w->q, a->ip, w->cfg.http_port, body, a->restart);
   if (r == WIFI_ACT_QUEUED) plat_cond_signal(&w->cv);
   plat_mutex_unlock(&w->mu);
-  if (r == WIFI_ACT_QUEUED) w->posts++;
+  /* a restart that took over a request still in the queue is still one activation (one result) */
+  if (r == WIFI_ACT_QUEUED && !was_pending) w->posts++;
   return r;
 }
 
 /* ================================================================ socket */
 static void log_local_addresses(wifi_t *w) {
 #ifdef __linux__
-  struct ifaddrs *ifa = NULL;
-  if (getifaddrs(&ifa) != 0) return;
-  char line[300] = "";
-  size_t len = 0;
-  int n = 0;
-  for (struct ifaddrs *i = ifa; i; i = i->ifa_next) {
-    if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || (i->ifa_flags & IFF_LOOPBACK) || !(i->ifa_flags & IFF_UP))
-      continue;
-    char ip[16];
-    wifi_ip_str(((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr, ip);
-    int k = snprintf(line + len, sizeof line - len, "%s%s (%s)", n ? ", " : "", ip, i->ifa_name);
-    if (k < 0 || (size_t)k >= sizeof line - len) break;
-    len += (size_t)k;
-    n++;
-  }
-  freeifaddrs(ifa);
+  char line[300];
+  int n = wifi_net_local_ipv4(line, sizeof line);
   if (n) {
     wlog(w, "This Pi: %s", line);
     if (n > 1) wlog(w, "Multiple adapters - your module must be on one of these networks.");
@@ -430,12 +231,12 @@ static void log_local_addresses(wifi_t *w) {
 static void try_bind(wifi_t *w, int64_t now) {
   plat_sock s = plat_udp_bind(w->cfg.port, false, false);
   if (s == PLAT_BADSOCK) {
-    int e = sock_err();
+    int e = wifi_net_errno();
     if (++w->bind_tries < BIND_TRIES) { w->bind_at = now + BIND_RETRY_US; return; }
     w->bind_at = now + BIND_ERROR_RETRY_US;
     if (!w->bind_error) {
       char detail[64], why[64];
-      err_text(e, why, sizeof why);
+      wifi_net_err_text(e, why, sizeof why);
       w->bind_error = true;
       wlog(w, "ERROR: cannot listen on UDP port %u - it may already be in use (another instance, or another app "
               "on this port).%s%s", w->cfg.port, why[0] ? " " : "", why);
@@ -463,7 +264,7 @@ static void try_bind(wifi_t *w, int64_t now) {
 static void recv_error(wifi_t *w, int e, int64_t now) {
   if (e == w->last_err && now - w->last_err_us < RECV_ERR_LOG_US) return;
   char t[64];
-  err_text(e, t, sizeof t);
+  wifi_net_err_text(e, t, sizeof t);
   wlog(w, "recv error: %s", t);
   w->last_err = e;
   w->last_err_us = now;
@@ -549,15 +350,27 @@ static void collect_results(wifi_t *w, int64_t now) {
   while (n < WIFI_ACTQ && wifi_actq_get(&w->q, &res[n])) n++;
   plat_mutex_unlock(&w->mu);
   for (int i = 0; i < n; i++) {
+    const wifi_actres_t *r = &res[i];
     char ip[16];
-    wifi_ip_str(res[i].ip, ip);
-    if (res[i].status > 0)
-      wlog(w, "Activation POST -> %s: %d%s%s", ip, res[i].status, res[i].reason[0] ? " " : "", res[i].reason);
+    wifi_ip_str(r->ip, ip);
+    /* a restart: its joystick_end first (a failure there still lets the joystick_begin go out). It only
+     * took when both got a 2xx: a streaming module that missed the joystick_end just moved its stream and
+     * kept its old request (r->ok is the joystick_begin's alone) */
+    bool ok = r->ok;
+    if (r->restart) {
+      bool end_ok = r->end_status >= 200 && r->end_status <= 299;
+      if (end_ok) wlog(w, "Stream end POST -> %s: %d", ip, r->end_status);
+      else if (r->end_status > 0) wlog(w, "Stream end POST failed for %s: HTTP %d", ip, r->end_status);
+      else wlog(w, "Stream end POST failed for %s: %s", ip, r->end_err[0] ? r->end_err : "failed");
+      ok = ok && end_ok;
+    }
+    if (r->status > 0)
+      wlog(w, "Activation POST -> %s: %d%s%s", ip, r->status, r->reason[0] ? " " : "", r->reason);
     else
-      wlog(w, "Activation failed for %s: %s", ip, res[i].err);
-    if (res[i].ok) w->posts_ok++;
+      wlog(w, "Activation failed for %s: %s", ip, r->err[0] ? r->err : "failed");
+    if (ok) w->posts_ok++;
     else w->posts_failed++;
-    wifi_proto_activation_done(&w->p, res[i].ip, res[i].ok, now);
+    wifi_proto_activation_done(&w->p, r->ip, ok, now);
   }
 }
 
@@ -585,6 +398,7 @@ wifi_t *wifi_open(app_t *app, const wifi_config_t *cfg) {
   config_clean(&w->cfg, cfg);
   wifi_hooks_t h = { w, h_log, NULL, h_frame, NULL, h_activate };
   wifi_proto_init(&w->p, &h);
+  wifi_proto_set_request(&w->p, w->cfg.interval_us, w->cfg.channels, 0);   /* not locked: nothing sent */
   plat_mutex_init(&w->mu);
   plat_cond_init(&w->cv);
   wifi_actq_init(&w->q);
@@ -671,6 +485,13 @@ void wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now) {
   bool ip_changed = ra != rb || a != b || (ra < 0 && strcmp(c.module_ip, w->cfg.module_ip));
   bool port_changed = c.port != w->cfg.port;
   w->cfg = c;
+  /* The request before the target, so the joystick_begin a new target gets asks for it. Locked to a
+   * module the new target replaces, there's nothing to restart: that module isn't ours any more. */
+  if (ip_changed && ra > 0 && a && w->p.bound && a != w->p.bound_ip) {
+    wifi_proto_store_request(&w->p, c.interval_us, c.channels);
+  } else {
+    wifi_proto_set_request(&w->p, c.interval_us, c.channels, now);   /* locked: restarts it so they apply */
+  }
   if (ip_changed) apply_target(w, now);
   if (port_changed && w->running) {
     wifi_stop(w);
@@ -680,13 +501,28 @@ void wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now) {
   }
 }
 
-static int first_pending(const wifi_t *w, uint32_t *ip) {
+static int npending(const wifi_t *w) {
   plat_mutex *mu = (plat_mutex *)&w->mu;
   plat_mutex_lock(mu);
   int n = w->q.npending;
-  if (n && ip) *ip = w->q.pending[0];
   plat_mutex_unlock(mu);
   return n;
+}
+
+/* the module shown as "activating": with a module IP set, only its own POST (one still in flight to a
+ * module just left behind is not what the user waits for: the state is "connecting to <ip>"), else the
+ * first queued or in flight; 0 = none */
+static uint32_t activating_ip(const wifi_t *w) {
+  plat_mutex *mu = (plat_mutex *)&w->mu;
+  uint32_t ip = 0;
+  plat_mutex_lock(mu);
+  if (w->p.target) {
+    if (wifi_actq_is_pending(&w->q, w->p.target)) ip = w->p.target;
+  } else if (w->q.npending) {
+    ip = w->q.pending[0];
+  }
+  plat_mutex_unlock(mu);
+  return ip;
 }
 
 void wifi_fill_status(const wifi_t *w, app_status_t *st) {
@@ -701,7 +537,7 @@ void wifi_fill_status(const wifi_t *w, app_status_t *st) {
   }
   const wifi_proto_t *p = &w->p;
   char ip[16];
-  uint32_t pend = 0;
+  uint32_t pend;
   snprintf(st->wifi_module, sizeof st->wifi_module, "%s", p->bound ? w->name : "");
   st->wifi_rate_hz = p->bound ? (float)p->last_hz : 0.0f;
   st->wifi_dropped = p->dropped_filter;
@@ -715,7 +551,7 @@ void wifi_fill_status(const wifi_t *w, app_status_t *st) {
       if (!strncmp(p->detail, "module found", 12)) {
         wifi_ip_str(p->nostick_ip, ip);
         snprintf(st->wifi_state, sizeof st->wifi_state, "no stick data from %s", ip);
-      } else if (first_pending(w, &pend)) {
+      } else if ((pend = activating_ip(w)) != 0) {
         wifi_ip_str(pend, ip);
         snprintf(st->wifi_state, sizeof st->wifi_state, "activating %s", ip);
       } else if (!strncmp(p->detail, "activated", 9)) {
@@ -764,7 +600,10 @@ void wifi_get_info(const wifi_t *w, wifi_info_t *o) {
   o->posts = w->posts;
   o->posts_ok = w->posts_ok;
   o->posts_failed = w->posts_failed;
-  o->pending = first_pending(w, NULL);
+  o->pending = npending(w);
+  o->interval_us = p->interval_us;
+  o->channels = p->channels;
+  o->restarts = p->restarts;
   o->nch = p->nch;
   memcpy(o->raw, p->raw, sizeof o->raw);
   o->last_arrival_us = wifi_last_arrival_us(w);
