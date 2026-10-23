@@ -158,9 +158,9 @@ game files of all three and never touch those, your tracks or your ghosts.
      sticks pause for a moment). That happens at once when the module surely is ELRS (its broadcast was
      seen, or it sends other than 16 channels). A module that sends 16 channels and whose broadcast the Pi
      hasn't seen may be Crossfire (see below; an ELRS module sends no broadcast while it streams, so this is
-     the case when it kept streaming through an update or a restart of StickTime Pi): then the Pi first waits
-     for a Crossfire broadcast, up to 20 s after the stream started coming in, and restarts it only when
-     none came. If the stream drops out meanwhile, the Pi does it once the stream is back (again after 20 s),
+     the case when it still streams to the Pi from before, e.g. after the Pi's power was pulled): then the Pi
+     first waits for a Crossfire broadcast, up to 20 s after the stream started coming in, and restarts it
+     only when none came. If the stream drops out meanwhile, the Pi does it once the stream is back (again after 20 s),
      unless the module broadcast as ELRS in the gap (then the start it gets already asks for your values) or
      another module's stream took over. Fewer channels leave the higher ones empty: keep the pause switch and
      the stick mapping within them. A faster rate gives fresher sticks (a sample is at most 4 ms old at
@@ -183,7 +183,8 @@ game files of all three and never touch those, your tracks or your ghosts.
      of the module (Status no longer shows it streaming) and picks its stream up again when it comes back.
      Setting another module drops the current stream at once.
    - A module may still be streaming what something else asked for: another app (the PC app, another Pi),
-     or the Pi itself before an update or an edit of `sticktime.txt`. The Pi restarts such a stream once with
+     or the Pi itself before its power was pulled (a shutdown, a reboot, a restart of the game or a StickTime Pi
+     update stops the module's stream on the way out, see 4. below). The Pi restarts such a stream once with
      its own request only when its channel count differs from **Channel count** and the module surely is
      ELRS (its broadcast was seen, or it sends other than 16 channels), or when it sends 16 while you asked
      for fewer and no Crossfire broadcast came within 20 s. Otherwise it keeps that rate and count (Status
@@ -198,16 +199,51 @@ game files of all three and never touch those, your tracks or your ghosts.
    - Don't press **Scan** on the web page's WiFi tab while flying: a scan pauses the WiFi joystick for a moment.
    - Pauses of 0.25 s or more are counted on the web page (Status → Inputs → Pauses) and logged with the time
      and the Pi's WiFi signal (System → Log).
+4. **Flying with the PC app (or another device) afterwards, and back:** an ELRS module streams to whoever
+   started it last until it gets a stop, and it broadcasts only while it isn't streaming, so the PC app can't
+   find a module that still streams to the Pi. Two ways to let go of it:
+   - Press **Release module** on the web page (Status → Inputs). The Pi sends the module the stop
+     (`joystick_end`) and stops listening; the module broadcasts again and the PC app finds it. The game
+     gets no sticks from it meanwhile. Status → Inputs shows the module's answer, and the log (System → Log)
+     says `Released <ip>: it broadcasts again, any app can connect to it`. The release lasts until you press
+     **Connect** there or StickTime Pi starts again (System → Restart the game, a setting marked "restarts the
+     game", a StickTime Pi update, a reboot): then the Pi listens again. With `wifi_module_ip` set, that takes
+     the module back at once, also from the PC app. Settings you save meanwhile apply on Connect: the
+     released module takes the rate and channel count from the start the Pi sends it, with no stop and start.
+   - Or shut the Pi down from the web page (System → Shut down). On the way out (a shutdown or a reboot) the
+     Pi sends the module the stop the same way and waits at most 1.5 s for its answer. Its log is gone after
+     that: with `keep_logs = on` the lines are in the system journal (`journalctl -b -1` over SSH).
+
+   The PC must be on the module's network to find it. With the Pi's hotspot (the module joined to
+   `StickTime`, see 3. above), join `StickTime` from the PC too, and use **Release module**, not a shutdown: a
+   shutdown takes the hotspot, the module's only network, away. With "Join module WiFi", join the module's own
+   network from the PC (ELRS: `ExpressLRS TX`).
+
+   If the module didn't confirm the stop (Status → Inputs says so, the log says `Releasing <ip> failed`), or
+   the Pi's power was pulled (that sends nothing), switch the module's WiFi off and on (ExpressLRS Lua → WiFi
+   Connectivity) or power it off and on.
+
+   **Back to the Pi:** stop the PC app first. Its new versions release the module when they stop; with an
+   older one, switch the module's WiFi off and on. Then press **Connect** (Status → Inputs), or start the Pi:
+   it finds the module by its next broadcast, within 5 s. With `wifi_module_ip` set, Connect starts the
+   module at once, even while the PC app still streams from it (the PC app then gets nothing).
+
+   A restart of the game stops the module's stream on the way out too, then listens again (also after a
+   Release): the WiFi sticks come back with the module's next broadcast, within 5 s (at once with
+   `wifi_module_ip` set).
 
 ### TBS Crossfire
 Enable the module's WiFi and the "VelociDrone Mobile" link; same network as the Pi. Broken TBS firmware:
 XF 6.42/6.48 and WiFi 3.20 send no stick data; 6.31/6.36 and WiFi 2.17-3.10 work. Crossfire always sends 16
 channels about 90 times a second: the packet interval and channel count settings don't change it, and the
 Pi doesn't stop and restart its stream for them once it has seen the module's broadcast (about every 8 s):
-the log says so once. A Crossfire module that isn't streaming only ever gets the start, never the stop.
+the log says so once. Release and the Pi's shutdown send nothing to a Crossfire module whose broadcast the Pi
+has seen (the log says so): it keeps broadcasting while it streams, so the PC app finds it anyway. So once its
+broadcast was seen, a Crossfire module only ever gets the start, never the stop.
 If broadcasts can't reach the Pi (`wifi_module_ip` set because the router blocks them), it can't tell
 Crossfire from ELRS: after 20 s it treats the module as ELRS, so a change of those settings then sends the
-Crossfire module the stop (`joystick_end`) and the start again.
+Crossfire module the stop (`joystick_end`) and the start again. Release and the Pi's shutdown send it the stop
+at any time, because its broadcast was never seen.
 
 ### USB
 Plug the radio into a USB port, choose **USB Joystick (HID)**. Use a model with 100% weights, no expo
@@ -241,7 +277,8 @@ The web page's **Sticks** tab shows every channel of every source live: move a s
 
 Open the address from the menu on a phone or PC on the same network:
 
-- **Status**: frame rate, frame and stick latency numbers, input source and packet rate, versions.
+- **Status**: frame rate, frame and stick latency numbers, input source and packet rate, **Release module** and
+  **Connect** for the WiFi joystick (see [ExpressLRS WiFi joystick](#expresslrs-wifi-joystick)), versions.
 - **Sticks**: live bars of every channel, input source, channel order, stick mapping (with Detect), invert,
   pause switch, WiFi module (address, packet interval, channel count).
 - **Video** (and VTX control), **WiFi** (scan and join, hotspot), **Sound** (volume, music, your songs: upload MP3/OGG/WAV/FLAC),
@@ -439,6 +476,9 @@ more only overloads the goggles' receiver. Never run a VTX without its antenna.
 | Wrong shape | `aspect = 16:9` or `4:3`. |
 | Can't find the web page | Look at the bottom of the main menu for the address. Phones on mobile data: turn it off. On the hotspot: http://10.42.0.1. |
 | WiFi joystick not found | Same 2.4 GHz network; some routers isolate clients (turn "AP isolation" off) or block broadcasts (set `wifi_module_ip`). One client per module. |
+| The PC app doesn't find the ELRS module after flying with the Pi | The module still streams to the Pi, and it broadcasts only while it doesn't. Press **Release module** (Status → Inputs) or shut the Pi down from the web page; if Status says the module didn't confirm the stop, or after a pulled power plug, switch the module's WiFi off and on. The PC must be on the module's network: with the Pi's hotspot, join `StickTime` from the PC and use Release module (a shutdown takes the hotspot away). |
+| WiFi joystick not found, Status says "released" | The module was released for another app (**Release module**). Press **Connect** (Status → Inputs); a restart of the game or a reboot listens again too. |
+| Status stays "listening" after Connect | Another app (the PC app) still streams from the module, so it doesn't broadcast. Stop that app, or switch the module's WiFi off and on; the Pi finds it within 5 s. With `wifi_module_ip` set, Connect takes the module at once. |
 | Sticks stop for a moment, then work again | A pause in the WiFi joystick's data: see the log (System → Log, "the stick data paused") and the tips under "ExpressLRS WiFi joystick" (the Pi's hotspot, a better signal, no WiFi scan while flying). |
 | Sticks move the wrong way | `invert = ele` etc., or `channel_order` (AETR, TAER, ...). |
 | A stick moves the wrong thing (yaw on throttle, ...) | Sticks → Stick mapping → **Detect**, then Save (see [Which channel is which stick](#which-channel-is-which-stick)). |

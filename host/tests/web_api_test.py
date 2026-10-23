@@ -65,6 +65,7 @@ sd_write = game
 KEYS = {"enter": 0x202, "exit": 0x201, "next": 0x1E00, "prev": 0x1D00, "inc": 0x1E00, "dec": 0x1D00,
         "nextpage": 0x204, "prevpage": 0x203, "menu": 0x206, "up": -101, "down": -102}
 CMD_RELOAD_GAME, CMD_RELOAD_SETTINGS, CMD_QUIT, CMD_SCREENSHOT, CMD_MUSIC_NEXT, CMD_SONGS_CHANGED = 1, 2, 4, 8, 16, 32
+CMD_WIFI_RELEASE, CMD_WIFI_CONNECT = 64, 128
 SLOT = "SCRIPTS/TOOLS/StickTimeTracks"
 
 
@@ -688,6 +689,7 @@ def status_route():
     eq(inp["sources"][0]["name"], "ELRS 10.0.0.1")
     eq(inp["sources"][1]["kind"], "keyboard")
     eq(j["wifi_joystick"]["state"], "streaming")
+    eq(sorted(j["wifi_joystick"]), ["dropped", "gap_max_ms", "gaps", "module", "rate_hz", "release", "state"])
     eq(j["audio"]["device"], "jack")
     eq(j["audio"]["music"], "Song 3 (generated)")
     for k in ("ip", "iface", "ssid", "mode", "hostname"):
@@ -1300,6 +1302,14 @@ def sd_game_install():
             files[f"{d}/{n}"] = f"-- {d}/{n}\n".encode()
     for n in ("q1.txt", "q5.txt", "t1.txt", "t8.txt"):
         files[f"{lite}/{n}"] = f"{n}\n".encode()
+    # another spelling of one of these files, left by an earlier test (sd_put_and_policy writes
+    # SCRIPTS/TOOLS/stickTimeLite.LUA), takes its PUT: one file whatever the case, as on the FAT card. The reads
+    # below use the exact spelling, so start without those
+    for rel in files:
+        d, n = rel.rsplit("/", 1)
+        for other in os.listdir(sdp(d)):
+            if other.lower() == n.lower() and other != n:
+                os.remove(sdp(f"{d}/{other}"))
     mark = len(events())
     for rel, body in files.items():
         eq(sd("PUT", rel, body).status, 200, rel)
@@ -1636,6 +1646,47 @@ def wifi_module_ap():
     is_error(post("/api/wifi/module-ap", "frsky"), 400, "BadRequest")
     is_error(post("/api/wifi/module-ap", ""), 400, "BadRequest")
     post("/api/settings", "wifi_module_ip =\n")
+
+
+@test
+def wifi_joystick_release():
+    """Release and Connect go to the frame loop as commands (it releases the module and stops listening, or
+    listens again); the status says "released" and the release's outcome; of the two, the last one asked wins.
+    Nothing is saved (the program's next start listens again): no release file in the state folder"""
+    def wj():
+        return is_json(get("/api/status"))["wifi_joystick"]
+    eq(wj()["release"], "", "no release yet")
+    mark = len(events())
+    eq(is_json(post("/api/wifi_joystick/release")), {"ok": True})
+    ok(wait_for(lambda: cmd_bits(mark) & CMD_WIFI_RELEASE), "release reached the frame loop")
+    ok(wait_for(lambda: wj()["state"] == "released"), "the status says released")
+    eq(wj()["module"], "")
+    eq(wj()["release"], "ok", "the outcome (the fake frame loop's)")
+    eq([f for f in os.listdir(path("state")) if "releas" in f.lower()], [], "a Release saves nothing")
+    eq(post("/api/wifi_joystick/release", "anything").status, 200, "a body is ignored")
+    mark = len(events())
+    eq(is_json(post("/api/wifi_joystick/connect")), {"ok": True})
+    ok(wait_for(lambda: cmd_bits(mark) & CMD_WIFI_CONNECT), "connect reached the frame loop")
+    ok(wait_for(lambda: wj()["state"] == "streaming"), "listening again")
+    eq(post("/api/wifi_joystick/connect").status, 200, "Connect while not released: fine")
+    # never both in one take: the one asked last replaces the other
+    mark = len(events())
+    for _ in range(25):
+        eq(post("/api/wifi_joystick/release").status, 200)
+        eq(post("/api/wifi_joystick/connect").status, 200)
+    ok(wait_for(lambda: cmd_bits(mark) & CMD_WIFI_CONNECT))
+    both = CMD_WIFI_RELEASE | CMD_WIFI_CONNECT
+    bad = [e for e in events()[mark:] if e.startswith("cmd ") and int(e.split()[1]) & both == both]
+    eq(bad, [], "release and connect in one take")
+    ok(wait_for(lambda: wj()["state"] == "streaming"), "connect was the last")
+    log = get("/api/log").body
+    ok(b"web: WiFi joystick release" in log and b"web: WiFi joystick connect" in log, "the log says who asked")
+    is_error(get("/api/wifi_joystick/release"), 405, "MethodNotAllowed")
+    is_error(get("/api/wifi_joystick/connect"), 405, "MethodNotAllowed")
+    is_error(post("/api/wifi_joystick/release", xst=False), 403, "Forbidden")
+    is_error(post("/api/wifi_joystick/connect", headers={"Origin": "http://evil.com"}), 403, "Forbidden")
+    is_error(post("/api/wifi_joystick"), 404, "NotFound")
+    is_error(post("/api/wifi_joystick/stop"), 404, "NotFound")
 
 
 # ================================================================ updates and the system

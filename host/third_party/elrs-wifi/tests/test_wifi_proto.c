@@ -46,13 +46,22 @@ static void on_frame(void *ud, uint32_t src, const uint16_t *raw, int n) {
 static void on_stats(void *ud, double hz, double jit, int frames) {
   st.hz = hz; st.jit = jit; st.frames = frames; st.count++;
 }
-/* plain activations (joystick_begin) are what the ported C# tests count; restarts go to their own list */
+/* plain activations (joystick_begin) are what the ported C# tests count; restarts and releases (R14) go to
+ * their own lists */
 static wifi_act_t restarts[MAXREC];
 static int nrestarts;
+static wifi_act_t releases[MAXREC];
+static int nreleases;
 static wifi_act_t last_act;
 static int restart_result;
+static int release_result;
 static int on_activate(void *ud, const wifi_act_t *a) {
   last_act = *a;
+  if (a->release) {
+    if (nreleases < MAXREC) releases[nreleases] = *a;
+    nreleases++;
+    return release_result;
+  }
   if (a->restart) {
     if (nrestarts < MAXREC) restarts[nrestarts] = *a;
     nrestarts++;
@@ -65,11 +74,12 @@ static int on_activate(void *ud, const wifi_act_t *a) {
 static const wifi_hooks_t HOOKS = { NULL, on_log, on_state, on_frame, on_stats, on_activate };
 
 static void H(void) {
-  napplied = nlogs = nstates = nactivated = nrestarts = 0;
+  napplied = nlogs = nstates = nactivated = nrestarts = nreleases = 0;
   memset(&st, 0, sizeof st);
   memset(&last_act, 0, sizeof last_act);
   act_result = WIFI_ACT_OK;
   restart_result = WIFI_ACT_OK;
+  release_result = WIFI_ACT_QUEUED;
   now_us = 1000000000;            /* nonzero, like the C# clock */
   wifi_proto_init(&P, &HOOKS);
 }
@@ -886,7 +896,7 @@ static void SetTarget_PostsAtOnce_AndReportsState(void) {
   CHECK_INT(count_logs("Target module set to 192.168.2.138 - connecting..."), 1);
   for (int i = 0; i < 5; i++) SENDF("192.168.1.10", 9, 9, 9, 9);
   CHECK_INT(napplied, 1);
-  /* the throttle entry of the new target is dropped, so a repeat posts again at once */
+  /* the throttle of the new target is lifted, so a repeat posts again at once */
   adv(1);
   CHECK_INT(wifi_proto_set_target(&P, "192.168.2.138", now_us), 0);
   CHECK_INT(nactivated, 2);
@@ -1878,7 +1888,7 @@ static void Restart_BypassesAndRestartsTheThrottle(void) {
   str("ELRS", DEF_IP);                               /* POST at t0 */
   CHECK_INT(nactivated, 1);
   adv(1.0);
-  CHECK_INT(wifi_proto_set_target(&P, DEF_IP, now_us), 0);   /* target: throttle entry removed, POST */
+  CHECK_INT(wifi_proto_set_target(&P, DEF_IP, now_us), 0);   /* target: throttle lifted, POST */
   CHECK_INT(nactivated, 2);
   adv(1.0);
   CHECK(wifi_proto_restart(&P, now_us));             /* within the throttle: goes out anyway */
@@ -3121,6 +3131,1660 @@ static void Describe_NonPresetIntervalsInTheLog(void) {
                        "activating it with 286 Hz (3500 us), 8 channels"), 1);
 }
 
+/* ---------------------------------------------------------------- R14: release */
+/* ReleaseTests.cs ports the ones that choose the modules under the same names (JoystickEngine.cs has the same R14;
+ * Release_ModuleIpWhosePostIsInFlight is Release_ModuleIpSet_NoPostCanGoOut_ItsLastActivationCounts there: its POSTs
+ * to one module queue) */
+static int count_exact(const char *line) {
+  int c = 0;
+  for (int i = 0; i < nlogs && i < MAXREC; i++) if (!strcmp(logs[i], line)) c++;
+  return c;
+}
+/* the log lines of R14, exactly (shared by every app) */
+static const char *rel_line(char *b, size_t cap, const char *fmt_kind, const char *ip, const char *why) {
+  if (!strcmp(fmt_kind, "sent"))
+    snprintf(b, cap, "Releasing %s: joystick_end, so it stops streaming and broadcasts again", ip);
+  else if (!strcmp(fmt_kind, "xf"))
+    snprintf(b, cap, "Not releasing %s: Crossfire broadcasts while streaming, other apps find it as it is", ip);
+  else if (!strcmp(fmt_kind, "busy"))
+    snprintf(b, cap, "Releasing %s failed: the request queue is full - it may stream on until its WiFi or power is "
+             "cycled", ip);
+  else if (!strcmp(fmt_kind, "done"))
+    snprintf(b, cap, "Released %s: it broadcasts again, any app can connect to it", ip);
+  else
+    snprintf(b, cap, "Releasing %s failed: %s - it may stream on until its WiFi or power is cycled", ip, why);
+  return b;
+}
+#define REL(kind, ip) rel_line((char[320]){0}, 320, kind, ip, NULL)
+#define REL_FAILED(ip, why) rel_line((char[320]){0}, 320, "failed", ip, why)
+static int count_released(uint32_t ip) {
+  int c = 0;
+  for (int i = 0; i < nreleases && i < MAXREC; i++) if (releases[i].ip == ip) c++;
+  return c;
+}
+/* a release changes nothing in the engine: every byte the same */
+static wifi_proto_t snap;
+static void snapshot(void) { memcpy(&snap, &P, sizeof P); }
+static bool unchanged(void) { return memcmp(&snap, &P, sizeof P) == 0; }
+/* a release that took: every byte the same but ip's asked request, which is forgotten (R3, R14); the others stay */
+static bool unchanged_but_forgot(const char *ip) {
+  if (asked_iv(ip) != -1 || P.nasked != snap.nasked - 1) return false;
+  for (int i = 0; i < snap.nasked; i++) {
+    if (snap.asked[i].ip == IP(ip)) continue;
+    int k = 0;
+    while (k < P.nasked && P.asked[k].ip != snap.asked[i].ip) k++;
+    if (k == P.nasked || P.asked[k].interval_us != snap.asked[i].interval_us ||
+        P.asked[k].channels != snap.asked[i].channels || P.asked[k].seq != snap.asked[i].seq)
+      return false;
+  }
+  wifi_proto_t a = P, b = snap;
+  memset(a.asked, 0, sizeof a.asked);
+  memset(b.asked, 0, sizeof b.asked);
+  a.nasked = b.nasked = 0;
+  return memcmp(&a, &b, sizeof a) == 0;
+}
+
+/* the hook's activations and restarts are never releases */
+static void Release_ActivationsAndRestarts_AreNoReleases(void) {
+  H();
+  str("ELRS", DEF_IP);
+  CHECK(!last_act.release && !last_act.restart);
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  CHECK(restarts[0].restart && !restarts[0].release);
+  CHECK_INT(nreleases, 0);
+}
+
+/* the locked module, ELRS by its beacon: joystick_end alone, through the hook (QUEUED: the result comes later) */
+static void Release_LockedElrs(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  for (int i = 0; i < 40; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }   /* activated 4 s ago */
+  CHECK(P.bound && wifi_proto_kind(&P, IP(DEF_IP)) == WIFI_KIND_ELRS);
+  int na = nactivated, nr = nrestarts, nl = nlogs, ns = nstates;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP(DEF_IP) && releases[0].release && !releases[0].restart);
+  CHECK_INT(releases[0].interval_us, 0);
+  CHECK_INT(releases[0].channels, 0);
+  CHECK_INT(nactivated, na);
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(nstates, ns);
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_STR(logs[nl], "Releasing 192.168.1.50: joystick_end, so it stops streaming and broadcasts again");
+  /* its result, later: logged, and what it was asked is forgotten (it is idle now), nothing else */
+  CHECK_INT(asked_iv(DEF_IP), 4000);
+  wifi_proto_release_done(&P, IP(DEF_IP), true, 200, "");
+  CHECK(unchanged_but_forgot(DEF_IP));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl + 1], "Released 192.168.1.50: it broadcasts again, any app can connect to it");
+  /* the engine goes on as before (the host stops after it); the lock stays without an asked request */
+  adv(0.1);
+  send_same(DEF_IP, 16, 100);
+  CHECK(P.bound && P.bound_ip == IP(DEF_IP));
+  CHECK_INT(nreleases, 1);
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(asked_iv(DEF_IP), -1);
+}
+
+/* unknown kind (no beacon: an ELRS module streaming since before we started never beaconed to us): it gets it */
+static void Release_UnknownKind_GetsIt(void) {
+  H();
+  send_same("10.0.0.5", 16, 100);
+  for (int i = 0; i < 40; i++) { adv(0.1); send_same("10.0.0.5", 16, 100); tick(); }
+  CHECK(P.bound && wifi_proto_kind(&P, IP("10.0.0.5")) == WIFI_KIND_UNKNOWN);
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.5") && releases[0].release);
+  CHECK_INT(count_exact(REL("sent", "10.0.0.5")), 1);
+  /* also with 8 channels (surely no Crossfire) */
+  H();
+  wifi_proto_set_request(&P, 4000, 8, now_us);
+  send_same("10.0.0.5", 8, 100);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(count_released(IP("10.0.0.5")), 1);
+}
+
+/* known as Crossfire by its beacon: logged, not sent - locked, or activated a moment ago */
+static void Release_KnownCrossfire_LoggedNotSent(void) {
+  H();
+  str("VELOCIDRONE", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  for (int i = 0; i < 40; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK(P.bound && wifi_proto_kind(&P, IP(DEF_IP)) == WIFI_KIND_XF);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 0);
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_STR(logs[nl], "Not releasing 192.168.1.50: Crossfire broadcasts while streaming, other apps find it as it is");
+  /* activated 1 s ago, not streaming to us yet */
+  H();
+  str("VELOCIDRONE", "10.0.0.6");
+  adv(1);
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_STR(logs[nl], REL("xf", "10.0.0.6"));
+  /* locked and activated a moment ago: logged once */
+  H();
+  str("VELOCIDRONE", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_INT(count_exact(REL("xf", DEF_IP)), 1);
+}
+
+/* activated less than WIFI_SOURCE_TIMEOUT_US ago and not locked (it may be about to stream to us): sent; older:
+ * not */
+static void Release_RecentlyActivated_NotLocked(void) {
+  H();
+  str("ELRS", "10.0.0.7");
+  adv(2.9);
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.7") && releases[0].release && !releases[0].restart);
+  CHECK_INT(count_exact(REL("sent", "10.0.0.7")), 1);
+  /* the edge: less than, not at */
+  H();
+  str("ELRS", "10.0.0.7");
+  now_us += WIFI_SOURCE_TIMEOUT_US - 1;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  H();
+  str("ELRS", "10.0.0.7");
+  now_us += WIFI_SOURCE_TIMEOUT_US;
+  int nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+  CHECK_INT(nlogs, nl);                              /* no module: nothing logged */
+  /* a failed activation is in the act table too: it may have reached the module */
+  H();
+  act_result = WIFI_ACT_FAILED;
+  str("ELRS", "10.0.0.7");
+  adv(1);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  /* one the hook refused (BUSY) never went out: nothing to release */
+  H();
+  act_result = WIFI_ACT_BUSY;
+  str("ELRS", "10.0.0.7");
+  adv(1);
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  /* the module IP, unknown kind, activated a moment ago: it gets it (unknown kind does) */
+  H();
+  wifi_proto_set_target(&P, "10.0.0.8", now_us);
+  adv(0.5);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.8"));
+}
+
+/* locked and activated a moment ago: one joystick_end, one line */
+static void Release_LockedAndRecent_EachIpOnce(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  adv(0.5);
+  send_same(DEF_IP, 16, 100);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+  CHECK_INT(count_prefix("Releasing "), 1);
+  /* restarted after its last frame (its activation is newer than its lock's last frame): still once */
+  adv(0.05);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  adv(0.01);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+  CHECK_INT(count_prefix("Releasing "), 2);
+}
+
+/* several: the locked module first, then the ones activated lately in the order they were activated */
+static void Release_Several_InOrder(void) {
+  H();
+  str("ELRS", "10.0.0.2");           /* A: first in the act table */
+  adv(6);
+  str("ELRS", "10.0.0.9");           /* D: 4 s before the stop */
+  adv(1.5);
+  str("ELRS", "10.0.0.3");           /* C: 2.5 s before */
+  adv(0.5);
+  str("ELRS", "10.0.0.2");           /* A again (throttle passed): 2 s before, first in the table still */
+  adv(0.5);
+  str("VELOCIDRONE", "10.0.0.4");    /* X, Crossfire: 1.5 s before */
+  adv(0.5);
+  send_same("10.0.0.5", 16, 100);    /* B streams to us (unknown kind): locked */
+  for (int i = 0; i < 10; i++) { adv(0.1); send_same("10.0.0.5", 16, 100); tick(); }
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.5"));
+  CHECK(P.act[0].ip == IP("10.0.0.2"));
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 3);
+  CHECK(releases[0].ip == IP("10.0.0.5"));
+  CHECK(releases[1].ip == IP("10.0.0.3"));
+  CHECK(releases[2].ip == IP("10.0.0.2"));
+  CHECK_INT(nlogs, nl + 4);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.5"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.3"));
+  CHECK_STR(logs[nl + 2], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 3], REL("xf", "10.0.0.4"));
+  CHECK_INT(count_released(IP("10.0.0.9")), 0);
+  CHECK_INT(count_released(IP("10.0.0.4")), 0);
+}
+
+/* no module streaming to us and none activated lately: nothing sent, nothing logged */
+static void Release_NoModule_Silent(void) {
+  H();
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nlogs, 0);
+  CHECK_INT(nreleases, 0);
+  /* the lock went (silence): its activation is older than WIFI_SOURCE_TIMEOUT_US */
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  for (int i = 0; i < 40; i++) { adv(0.1); tick(); }
+  CHECK(!P.bound);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK(unchanged());
+  CHECK_INT(nlogs, nl);
+  CHECK_INT(nreleases, 0);
+  /* its next beacon activates it again: now it gets it (its frames are older than that activation) */
+  adv(2);
+  str("ELRS", DEF_IP);
+  adv(0.5);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP(DEF_IP));
+}
+
+/* the act entry of ip says it locked after its activation (act_note_locked) */
+static bool act_locked(const char *ip) {
+  for (int i = 0; i < P.nact; i++) if (P.act[i].ip == IP(ip)) return P.act[i].locked;
+  return false;
+}
+
+/* R7: the module left for another module IP gets nothing at the switch. It streams on to us (it does not know it
+ * was left), so a stop releases it while its last frame is less than WIFI_SOURCE_TIMEOUT_US old, also one in the
+ * same step, before its next frame comes: the switch puts it in the dropped table. Known to stream, it goes before
+ * the new module IP, activated a moment ago. Its last frame counts, not the switch: quiet that long, it went away. */
+static void Release_ModuleLeftForAnotherModuleIp(void) {
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  adv(0.5);
+  send_same("10.0.0.2", 16, 100);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);
+  CHECK(!P.bound);
+  CHECK_INT(nreleases, 0);                           /* nothing at the switch (R7) */
+  CHECK_INT(nrestarts, 0);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);      /* a stop in the same step */
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK(releases[1].ip == IP("10.0.0.3"));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.3"));
+  /* no frame of it since, 2.9 s after its last one: still; at WIFI_SOURCE_TIMEOUT_US, gone (and the new module IP's
+   * activation is as old) */
+  adv(2.9);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  adv(0.1);
+  nreleases = 0;
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nlogs, nl);
+  /* the switch 2 s after its last frame (the lock held): 1 s after the switch it is gone, the new module IP not */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  adv(2);
+  tick();
+  CHECK(P.bound);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  adv(0.9);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  adv(0.1);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  /* a lock already stale at the switch (no tick since): not a module that streams to us */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  adv(3.05);
+  CHECK(P.bound);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  /* the module IP set to the locked module itself, streaming: nothing changes, it is released as the locked one */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  adv(0.5);
+  send_same("10.0.0.2", 16, 100);
+  wifi_proto_set_target(&P, "10.0.0.2", now_us);
+  CHECK(P.bound);
+  CHECK_INT(P.ndropped, 0);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+}
+
+/* the same when the new module IP has locked since, also before the module left sent another frame, and down a
+ * chain of switches: each module left goes by its last frame, the one heard longest ago first. Its act entry keeps
+ * that it locked after its activation, so the act rule does not add it; one restarted or activated again after
+ * its last frame gets it by the act rule, once. */
+static void Release_ModuleLeft_NewOneLockedSince(void) {
+  H();
+  str("ELRS", "10.0.0.2");                           /* A: activated, locks */
+  send_same("10.0.0.2", 16, 100);
+  adv(0.5);
+  send_same("10.0.0.2", 16, 100);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);   /* B */
+  adv(0.1);
+  send_same("10.0.0.3", 16, 100);                    /* B locks, before A's next frame */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.3"));
+  CHECK(act_locked("10.0.0.2"));
+  adv(0.5);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK(releases[1].ip == IP("10.0.0.2"));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.3"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.2"));
+  /* on to C, which locks too: C, then A and B by their last frames */
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.4", now_us), 0);
+  adv(0.1);
+  send_same("10.0.0.4", 16, 100);
+  CHECK(act_locked("10.0.0.3"));
+  adv(0.1);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK_INT(nreleases, 3);
+  CHECK(releases[0].ip == IP("10.0.0.4"));
+  CHECK(releases[1].ip == IP("10.0.0.2"));
+  CHECK(releases[2].ip == IP("10.0.0.3"));
+  /* A and B quiet for WIFI_SOURCE_TIMEOUT_US, C streams on: only C */
+  for (int i = 0; i < 30; i++) { adv(0.1); send_same("10.0.0.4", 16, 100); tick(); }
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.4"));
+  /* back to A, activated again and not locked since: C (left a moment ago, it streams on), then A, once */
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.2", now_us), 0);
+  adv(0.1);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.4"));
+  CHECK(releases[1].ip == IP("10.0.0.2"));
+  /* A restarted 2 s after its last frame, then left for B, which locks: when A's last frame is 3 s old, A has not
+   * locked since the restart, and the act rule releases it */
+  H();
+  str("ELRS", "10.0.0.2");
+  send_same("10.0.0.2", 16, 100);
+  adv(2);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK_INT(nrestarts, 1);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);
+  adv(0.1);
+  send_same("10.0.0.3", 16, 100);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.3"));
+  CHECK(!act_locked("10.0.0.2"));
+  adv(1);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK(releases[1].ip == IP("10.0.0.2"));
+  CHECK_INT(count_exact(REL("sent", "10.0.0.2")), 1);
+}
+
+/* the dropped modules go by when their last frame came, not by when the table learned of them: C, a 2nd source
+ * heard after A's last applied frame, goes after A when the switch to B (which puts A in the table) and the stop
+ * come before the next frame of either */
+static void Release_ModuleLeft_ByItsLastFrame(void) {
+  H();
+  str("ELRS", "10.0.0.2");                           /* A */
+  str("ELRS", "10.0.0.5");                           /* C */
+  send_same("10.0.0.2", 16, 100);                    /* A locks */
+  adv(0.004);
+  send_same("10.0.0.5", 16, 100);                    /* C: the 2nd source */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  adv(0.002);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK_INT(nreleases, 3);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK(releases[1].ip == IP("10.0.0.5"));
+  CHECK(releases[2].ip == IP("10.0.0.3"));
+  /* A in the table from when it was a 2nd source: the switch moves it on to its last frame, applied since */
+  H();
+  str("ELRS", "10.0.0.2");
+  str("ELRS", "10.0.0.5");
+  send_same("10.0.0.5", 16, 100);                    /* C locks */
+  adv(0.004);
+  send_same("10.0.0.2", 16, 100);                    /* A: the 2nd source */
+  adv(3.1);
+  tick();
+  CHECK(!P.bound);
+  send_same("10.0.0.2", 16, 100);                    /* A locks */
+  int64_t a_last = now_us;
+  adv(0.004);
+  send_same("10.0.0.5", 16, 100);                    /* C: the 2nd source now */
+  adv(0.002);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  bool found = false;
+  for (int i = 0; i < P.ndropped; i++)
+    if (P.dropped[i].ip == IP("10.0.0.2")) { found = true; CHECK(P.dropped[i].t_us == a_last); }
+  CHECK(found);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK(releases[1].ip == IP("10.0.0.5"));
+  CHECK(releases[2].ip == IP("10.0.0.3"));
+}
+
+/* the frames of a module that streams to us, dropped: n rounds of 0.1 s, each module once per round, ticking */
+static void stream_rounds(int n, const char *a, const char *b, const char *c) {
+  for (int i = 0; i < n; i++) {
+    adv(0.1);
+    if (a) send_same(a, 16, 100);
+    if (b) send_same(b, 16, 100);
+    if (c) send_same(c, 16, 100);
+    tick();
+  }
+}
+
+/* two ELRS modules beacon, both are activated, A locks and B streams to us as the ignored 2nd source: a stop
+ * releases both (B can't be found by another app either), the locked one first. Not once B is quiet. */
+static void Release_SecondSource_StreamingToUs(void) {
+  H();
+  str("ELRS", "10.0.0.2");
+  str("ELRS", "10.0.0.3");
+  CHECK_INT(nactivated, 2);
+  stream_rounds(100, "10.0.0.2", "10.0.0.3", NULL);  /* 10 s: B's activation is long past */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(count_logs("Ignoring 2nd source 10.0.0.3 (locked to 10.0.0.2)"), 1);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.2") && releases[0].release && !releases[0].restart);
+  CHECK(releases[1].ip == IP("10.0.0.3") && releases[1].release && !releases[1].restart);
+  CHECK_INT(releases[1].interval_us, 0);
+  CHECK_INT(releases[1].channels, 0);
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.3"));
+  /* B went quiet: less than WIFI_SOURCE_TIMEOUT_US after its last frame it still gets it, at that time not */
+  int64_t b_last = now_us;
+  stream_rounds(10, "10.0.0.2", NULL, NULL);
+  now_us = b_last + WIFI_SOURCE_TIMEOUT_US - 1;
+  send_same("10.0.0.2", 16, 100);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK_INT(count_released(IP("10.0.0.3")), 1);
+  now_us = b_last + WIFI_SOURCE_TIMEOUT_US;
+  send_same("10.0.0.2", 16, 100);
+  nreleases = 0;
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK_INT(nlogs, nl + 1);
+}
+
+/* a 2nd source known as Crossfire by its beacon: logged, not sent. One of unknown kind (it streams to us since
+ * before we started, so it never beaconed to us, and we never activated it): sent. */
+static void Release_SecondSource_Kinds(void) {
+  H();
+  str("ELRS", "10.0.0.2");
+  str("VELOCIDRONE", "10.0.0.4");
+  stream_rounds(50, "10.0.0.2", "10.0.0.4", NULL);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  int nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 1], REL("xf", "10.0.0.4"));
+  H();
+  stream_rounds(50, "10.0.0.5", "10.0.0.6", NULL);   /* neither beaconed nor was activated */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.5"));
+  CHECK_INT(nactivated, 0);
+  CHECK(wifi_proto_kind(&P, IP("10.0.0.6")) == WIFI_KIND_UNKNOWN);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(releases[0].ip == IP("10.0.0.5"));
+  CHECK(releases[1].ip == IP("10.0.0.6"));
+  CHECK_INT(count_exact(REL("sent", "10.0.0.6")), 1);
+}
+
+/* what is known about the modules we drop outlives a change of the lock (the "Ignoring 2nd source" warnings
+ * do not): C streamed to us until a moment before B took over the lock from A, which went quiet */
+static void Release_Dropped_KeptThroughLockChanges(void) {
+  H();
+  stream_rounds(5, "10.0.0.2", NULL, NULL);          /* A locks */
+  int64_t a_last = now_us;
+  stream_rounds(29, NULL, "10.0.0.7", NULL);         /* C: 2nd source while A's lock holds */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(count_logs("Ignoring 2nd source 10.0.0.7 (locked to 10.0.0.2)"), 1);
+  now_us = a_last + WIFI_SOURCE_TIMEOUT_US + 50000;
+  send_same("10.0.0.3", 16, 100);                    /* B: A's lock is stale, B takes it */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.3"));
+  CHECK_INT(P.nwarned, 0);
+  adv(0.1);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK(releases[1].ip == IP("10.0.0.7"));
+  CHECK_INT(count_released(IP("10.0.0.2")), 0);      /* quiet for more than 3 s */
+}
+
+/* R7 sends the module left for another module IP nothing at the switch; when it still streams to us at the stop
+ * (we drop its frames: it is not the module IP, and we activated it or had it locked this session), the stop
+ * releases it. A module we activated this session that never locked (a 2nd source then) the same. */
+static void Release_ModuleLeft_StillStreaming(void) {
+  H();
+  str("ELRS", "10.0.0.2");                           /* A: activated, locks */
+  str("ELRS", "10.0.0.4");                           /* D: activated, a 2nd source */
+  stream_rounds(10, "10.0.0.2", "10.0.0.4", NULL);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);   /* B */
+  CHECK_INT(nreleases, 0);                           /* nothing to A at the switch */
+  CHECK_INT(nrestarts, 0);
+  stream_rounds(50, "10.0.0.2", "10.0.0.3", "10.0.0.4");         /* B locks; A and D stream on to us */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.3"));
+  CHECK_INT(nreleases, 0);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 3);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK(releases[1].ip == IP("10.0.0.2"));           /* heard longest ago first: A, then D, each round */
+  CHECK(releases[2].ip == IP("10.0.0.4"));
+  CHECK_INT(nlogs, nl + 3);
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 2], REL("sent", "10.0.0.4"));
+  /* A and D quiet for WIFI_SOURCE_TIMEOUT_US: only B */
+  stream_rounds(31, NULL, "10.0.0.3", NULL);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+}
+
+/* a module found streaming (we never activated it), locked this session, then left by a switch to another module IP,
+ * that streams on to us: a stop releases it, of unknown kind (it never beaconed to us) or known as ELRS, also when
+ * the new module IP locked since, and down a chain of switches. A new session (reset) forgets that it had the lock. */
+static void Release_ModuleLeft_FoundStreaming(void) {
+  H();
+  stream_rounds(20, "10.0.0.6", NULL, NULL);         /* found streaming, unknown kind: locks */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.6"));
+  CHECK_INT(nactivated, 0);
+  CHECK(wifi_proto_kind(&P, IP("10.0.0.6")) == WIFI_KIND_UNKNOWN);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.7", now_us), 0);
+  CHECK_INT(nreleases, 0);                           /* nothing at the switch (R7) */
+  stream_rounds(40, "10.0.0.6", "10.0.0.7", NULL);   /* 10.0.0.7 locks; 10.0.0.6 streams on to us */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.7"));
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.7"));
+  CHECK(releases[1].ip == IP("10.0.0.6"));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.6"));
+  /* on to 10.0.0.8, which does not answer: both stream on to us and go first, heard longest ago first */
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.8", now_us), 0);
+  stream_rounds(10, "10.0.0.6", "10.0.0.7", NULL);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK(releases[0].ip == IP("10.0.0.6"));
+  CHECK(releases[1].ip == IP("10.0.0.7"));
+  CHECK(releases[2].ip == IP("10.0.0.8"));
+  /* quiet for WIFI_SOURCE_TIMEOUT_US: nothing (10.0.0.8's activation is older too, its re-POST not due yet) */
+  for (int i = 0; i < 31; i++) { adv(0.1); tick(); }
+  nreleases = 0;
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+  CHECK_INT(nlogs, nl);
+  /* known as ELRS by its beacon in the last session (reset keeps it) */
+  H();
+  str("ELRS", "10.0.0.6");
+  wifi_proto_reset(&P);
+  stream_rounds(20, "10.0.0.6", NULL, NULL);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.6"));
+  wifi_proto_set_target(&P, "10.0.0.7", now_us);
+  stream_rounds(40, "10.0.0.6", "10.0.0.7", NULL);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(releases[0].ip == IP("10.0.0.7"));
+  CHECK(releases[1].ip == IP("10.0.0.6"));
+  /* locked in the last session only: unknown kind, neither activated nor locked this session, left alone */
+  H();
+  stream_rounds(20, "10.0.0.5", NULL, NULL);
+  CHECK_INT(P.nheld, 1);
+  wifi_proto_reset(&P);
+  CHECK_INT(P.nheld, 0);
+  wifi_proto_set_target(&P, "10.0.0.7", now_us);
+  stream_rounds(40, "10.0.0.5", "10.0.0.7", NULL);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.7"));
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.7"));
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_INT(count_exact(REL("sent", "10.0.0.5")), 0);
+}
+
+/* more modules take the lock in one session than the table holds: the one locked longest ago is forgotten, and a
+ * module that locks again counts from then */
+static void Release_Held_TableFull(void) {
+  H();
+  static const char *const ips[] = { "10.0.2.1", "10.0.2.2", "10.0.2.3", "10.0.2.4", "10.0.2.5", "10.0.2.6",
+                                     "10.0.2.7", "10.0.2.8", "10.0.2.9" };
+  for (int i = 0; i < 9; i++) {                      /* each locks once the one before went quiet */
+    send_same(ips[i], 16, 100);
+    CHECK(P.bound && P.bound_ip == IP(ips[i]));
+    adv(3.1);
+    tick();
+    CHECK(!P.bound);
+  }
+  CHECK_INT(P.nheld, WIFI_TABLE);
+  CHECK(P.held[0] == IP(ips[1]) && P.held[WIFI_TABLE - 1] == IP(ips[8]));
+  send_same(ips[1], 16, 100);                        /* locks again: now the one locked last */
+  CHECK_INT(P.nheld, WIFI_TABLE);
+  CHECK(P.held[0] == IP(ips[2]) && P.held[WIFI_TABLE - 1] == IP(ips[1]));
+  adv(3.1);
+  tick();
+  wifi_proto_set_target(&P, "10.0.0.7", now_us);
+  for (int i = 0; i < 5; i++) {
+    adv(0.1);
+    send_same(ips[0], 16, 100);
+    send_same(ips[1], 16, 100);
+    send_same(ips[2], 16, 100);
+    tick();
+  }
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK_INT(nreleases, 3);
+  CHECK(releases[0].ip == IP(ips[1]));
+  CHECK(releases[1].ip == IP(ips[2]));
+  CHECK(releases[2].ip == IP("10.0.0.7"));
+  CHECK_INT(count_released(IP(ips[0])), 0);
+}
+
+/* with a module IP set, other modules' beacons are not heard: a module of unknown kind that we neither activated nor
+ * had locked this session and that streams to us is left alone (it could be a Crossfire we can't tell). One whose
+ * kind a beacon told, in an earlier session too (reset keeps it), is not: ELRS is released, Crossfire logged. */
+static void Release_ModuleIpSet_UnknownOther_LeftAlone(void) {
+  H();
+  str("ELRS", "10.0.0.6");                           /* known as ELRS (reset keeps it), activated... */
+  str("VELOCIDRONE", "10.0.0.4");                    /* known as Crossfire */
+  wifi_proto_reset(&P);                              /* ...in the last session */
+  CHECK(wifi_proto_kind(&P, IP("10.0.0.6")) == WIFI_KIND_ELRS);
+  CHECK(wifi_proto_kind(&P, IP("10.0.0.4")) == WIFI_KIND_XF);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  for (int i = 0; i < 50; i++) {                     /* B locks; 10.0.0.5 (unknown), 10.0.0.6 and 10.0.0.4 stream to us */
+    adv(0.1);
+    send_same("10.0.0.3", 16, 100);
+    send_same("10.0.0.5", 16, 100);
+    send_same("10.0.0.6", 16, 100);
+    send_same("10.0.0.4", 16, 100);
+    tick();
+  }
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.3"));
+  CHECK_INT(P.dropped_other, 150);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK(releases[1].ip == IP("10.0.0.6"));
+  CHECK_INT(nlogs, nl + 3);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.3"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.6"));
+  CHECK_STR(logs[nl + 2], REL("xf", "10.0.0.4"));
+  CHECK_INT(count_logs("10.0.0.5"), 0);
+  /* the module IP itself, not locked, sending placeholder frames: released (it streams to us), also when its
+   * last activation (the module IP is POSTed again every 5 s while it is not locked) is 3 s old */
+  H();
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  for (int i = 0; i < 80; i++) { adv(0.1); send_placeholder("10.0.0.3"); tick(); }
+  CHECK_INT(nactivated, 2);
+  CHECK(now_us - act_at[1] >= WIFI_SOURCE_TIMEOUT_US);
+  CHECK(!P.bound);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+}
+
+/* With a module IP set, a module of unknown kind that is not the module IP but that we activated this session (the
+ * module IP before a switch, which never locked) streams to us: its frames are dropped, so it is released after
+ * the module IP, also once its activation is more than 3 s old */
+static void Release_ModuleIpSet_ActivatedUnknownOther(void) {
+  H();
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);    /* activated, unknown kind */
+  adv(0.1);
+  wifi_proto_set_target(&P, "10.0.0.4", now_us);
+  for (int i = 0; i < 40; i++) {                     /* both stream to us for 4 s; 10.0.0.4 locks */
+    adv(0.1);
+    send_same("10.0.0.3", 16, 100);
+    send_same("10.0.0.4", 16, 100);
+    tick();
+  }
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.4"));
+  CHECK(wifi_proto_kind(&P, IP("10.0.0.3")) == WIFI_KIND_UNKNOWN);
+  CHECK(activated[0] == IP("10.0.0.3") && now_us - act_at[0] >= WIFI_SOURCE_TIMEOUT_US);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.4"));
+  CHECK(releases[1].ip == IP("10.0.0.3"));
+}
+
+/* a module that streams placeholder frames to us never locks: released while they come (it streams to us),
+ * also long after its activation; one known as Crossfire is logged, not sent */
+static void Release_PlaceholderStream(void) {
+  H();
+  str("ELRS", "10.0.0.2");
+  for (int i = 0; i < 60; i++) { adv(0.1); send_placeholder("10.0.0.2"); tick(); }
+  CHECK(!P.bound);
+  CHECK(has_state(WIFI_ST_SEARCHING, "module found, but it is sending no stick data"));
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK_INT(count_exact(REL("sent", "10.0.0.2")), 1);
+  /* quiet since: nothing */
+  for (int i = 0; i < 31; i++) { adv(0.1); tick(); }
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+  /* Crossfire */
+  H();
+  str("VELOCIDRONE", "10.0.0.4");
+  for (int i = 0; i < 60; i++) { adv(0.1); send_placeholder("10.0.0.4"); tick(); }
+  int nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+  CHECK_INT(nlogs, nl + 1);
+  CHECK_STR(logs[nl], REL("xf", "10.0.0.4"));
+  /* placeholder frames from another module while one is locked */
+  H();
+  for (int i = 0; i < 60; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); send_placeholder("10.0.0.8"); tick(); }
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK(releases[1].ip == IP("10.0.0.8"));
+  /* the locked module's own placeholder frames (fast stick movement): released once, as the locked one */
+  H();
+  for (int i = 0; i < 20; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); send_placeholder("10.0.0.2"); tick(); }
+  CHECK(P.bound);
+  CHECK_INT(P.ndropped, 0);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nreleases, 1);
+}
+
+/* a new session (reset) forgets them, as the act table: the host releases before it resets (Stop) */
+static void Release_Dropped_ClearedByReset(void) {
+  H();
+  stream_rounds(30, "10.0.0.2", "10.0.0.3", NULL);
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  wifi_proto_reset(&P);
+  CHECK_INT(P.ndropped, 0);
+  nreleases = 0;
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK_INT(nreleases, 0);
+}
+
+/* more modules stream to us than the table holds: the one heard longest ago is left out, never a crash or a
+ * module twice */
+static void Release_Dropped_TableFull(void) {
+  H();
+  static const char *const ips[] = { "10.0.1.1", "10.0.1.2", "10.0.1.3", "10.0.1.4", "10.0.1.5", "10.0.1.6",
+                                     "10.0.1.7", "10.0.1.8", "10.0.1.9" };
+  send_same(DEF_IP, 16, 100);
+  for (int r = 0; r < 20; r++) {
+    adv(0.1);
+    send_same(DEF_IP, 16, 100);
+    for (int i = 0; i < 9; i++) send_same(ips[i], 16, 100);
+    tick();
+  }
+  CHECK_INT(P.ndropped, WIFI_TABLE);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1 + WIFI_TABLE);
+  CHECK_INT(nreleases, 1 + WIFI_TABLE);
+  CHECK(releases[0].ip == IP(DEF_IP));
+  for (int i = 1; i < 9; i++) CHECK(releases[i].ip == IP(ips[i]));
+  CHECK_INT(count_released(IP(ips[0])), 0);
+}
+
+/* the hook BUSY (the request queue full): the failure is logged, nothing counted */
+static void Release_HookBusy(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  release_result = WIFI_ACT_BUSY;
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 0);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 1);
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], "Releasing 192.168.1.50: joystick_end, so it stops streaming and broadcasts again");
+  CHECK_STR(logs[nl + 1], "Releasing 192.168.1.50 failed: the request queue is full - it may stream on until its "
+                          "WiFi or power is cycled");
+}
+
+/* a hook that answers at once (OK or FAILED) gets its result reported as by wifi_proto_release_done */
+static void Release_SyncResults(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  release_result = WIFI_ACT_OK;
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged_but_forgot(DEF_IP));               /* as wifi_proto_release_done with ok */
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", DEF_IP));
+  CHECK_STR(logs[nl + 1], "Released 192.168.1.50: it broadcasts again, any app can connect to it");
+  release_result = WIFI_ACT_FAILED;
+  nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", DEF_IP));
+  CHECK_STR(logs[nl + 1], "Releasing 192.168.1.50 failed: no answer - it may stream on until its WiFi or power is "
+                          "cycled");
+  /* no activate hook: as a FAILED one */
+  P.h.activate = NULL;
+  nl = nlogs;
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl + 1], REL_FAILED(DEF_IP, "no answer"));
+}
+
+/* wifi_proto_release_done: the texts, and nothing but a log line (10.0.0.1 was never asked anything: nothing to
+ * forget) */
+static void ReleaseDone_Texts(void) {
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  snapshot();
+  wifi_proto_release_done(&P, IP("10.0.0.1"), true, 200, "");
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 500, "");
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 404, "ignored when there is a status");
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 0, "connection refused");
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 0, "");
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 0, NULL);
+  wifi_proto_release_done(&P, IP("10.0.0.1"), false, 0, "timed out after 5 s");
+  CHECK(unchanged());
+  CHECK_INT(count_exact("Released 10.0.0.1: it broadcasts again, any app can connect to it"), 1);
+  CHECK_INT(count_exact("Releasing 10.0.0.1 failed: HTTP 500 - it may stream on until its WiFi or power is cycled"), 1);
+  CHECK_INT(count_exact(REL_FAILED("10.0.0.1", "HTTP 404")), 1);
+  CHECK_INT(count_exact(REL_FAILED("10.0.0.1", "connection refused")), 1);
+  CHECK_INT(count_exact(REL_FAILED("10.0.0.1", "no answer")), 2);
+  CHECK_INT(count_exact(REL_FAILED("10.0.0.1", "timed out after 5 s")), 1);
+  CHECK_INT(count_exact(REL("done", "10.0.0.1")), 1);
+  CHECK_INT(nreleases, 0);
+}
+
+/* restarts held, in flight or failed are left as they were */
+static void Release_RestartsUnderWay_Untouched(void) {
+  /* held: it may be Crossfire */
+  H();
+  send_same(DEF_IP, 16, 100);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_wait);
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  for (int i = 0; i < 205; i++) { adv(0.1); send_same(DEF_IP, 16, 100); tick(); }
+  CHECK_INT(nrestarts, 1);                          /* the held restart went out as before */
+  /* in flight, then failed: sent again as before */
+  H();
+  str("ELRS", DEF_IP);
+  send_same(DEF_IP, 16, 100);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  CHECK(P.restart_res_ip == IP(DEF_IP));
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  CHECK(unchanged());
+  wifi_proto_activation_done(&P, IP(DEF_IP), false, now_us);
+  CHECK_INT(count_logs("The restart of 192.168.1.50 failed - sending it again in 5 s"), 1);
+}
+
+/* the host's order on stop with the real queue: wifi_actq_new_session, wifi_proto_release, wifi_proto_reset;
+ * the release outlives the session, its result comes back through wifi_actq_get to wifi_proto_release_done */
+static wifi_actq_t HQ;
+static int q_activate(void *ud, const wifi_act_t *a) {
+  on_activate(ud, a);
+  if (a->release) return wifi_actq_push_release(&HQ, a->ip, 80);
+  char body[64];
+  wifi_build_body(body, sizeof body, "joystick_begin", a->interval_us, a->channels);
+  return wifi_actq_push(&HQ, a->ip, 80, body, a->restart);
+}
+static void Release_HostOrder_WithTheQueue(void) {
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  str("ELRS", DEF_IP);
+  CHECK(wifi_actq_take(&HQ, &rq));                  /* the worker: the joystick_begin */
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.ok = true; rs.status = 200;
+  wifi_actq_put(&HQ, &rs);
+  CHECK(wifi_actq_get(&HQ, &out) && !out.release);
+  wifi_proto_activation_done(&P, out.ip, out.ok, now_us);
+  send_same(DEF_IP, 16, 100);                       /* locked */
+  wifi_proto_set_request(&P, 2000, 16, now_us);     /* a restart, queued */
+  CHECK(wifi_actq_take(&HQ, &rq) && rq.end_first);  /* in flight on the worker */
+  uint32_t old = rq.session;
+  /* Stop */
+  wifi_actq_new_session(&HQ);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  wifi_proto_reset(&P);
+  CHECK_INT(asked_iv(DEF_IP), 0);                   /* the reset cut its restart short (R9) */
+  CHECK_INT(wifi_actq_releases(&HQ), 1);
+  CHECK(wifi_actq_stale(&HQ, old));                 /* the worker aborts the restart */
+  rs.session = old; rs.restart = true; rs.ok = false; rs.status = 0;
+  snprintf(rs.err, sizeof rs.err, "aborted");
+  wifi_actq_put(&HQ, &rs);                          /* dropped */
+  CHECK(wifi_actq_take(&HQ, &rq));
+  CHECK(rq.release && rq.ip == IP(DEF_IP) && rq.session == WIFI_ACTQ_ANY);
+  CHECK(!wifi_actq_stale(&HQ, rq.session));
+  CHECK(!wifi_actq_take(&HQ, &rq));
+  memset(&rs, 0, sizeof rs);
+  rs.ip = IP(DEF_IP); rs.session = WIFI_ACTQ_ANY; rs.release = true; rs.ok = true; rs.status = 200;
+  wifi_actq_put(&HQ, &rs);
+  CHECK_INT(wifi_actq_releases(&HQ), 1);
+  CHECK(wifi_actq_get(&HQ, &out));
+  CHECK(out.release && out.ok);
+  wifi_proto_release_done(&P, out.ip, out.ok, out.status, out.err);
+  CHECK_INT(wifi_actq_releases(&HQ), 0);
+  CHECK(!wifi_actq_get(&HQ, &out));
+  CHECK_INT(count_exact(REL("done", DEF_IP)), 1);
+  CHECK_INT(asked_iv(DEF_IP), -1);                  /* idle after the joystick_end that came after the cut restart */
+}
+
+/* the module IP set while a POST to it is in flight: the hook is BUSY and nothing new goes out, but the one in
+ * flight did, so a stop releases it. Its throttle stays lifted: once the result is in, the next tick posts. */
+static void Release_ModuleIpWhosePostIsInFlight(void) {
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  str("ELRS", "10.0.0.3");                          /* its joystick_begin, queued */
+  CHECK(wifi_actq_take(&HQ, &rq));                  /* in flight on the worker */
+  adv(0.2);
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);
+  CHECK_INT(nactivated, 2);                         /* asked again: BUSY (pending) */
+  CHECK_INT(HQ.rq_n, 0);
+  adv(0.3);
+  /* Stop */
+  wifi_actq_new_session(&HQ);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  wifi_proto_reset(&P);
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.3"));
+  CHECK_INT(count_exact(REL("sent", "10.0.0.3")), 1);
+  CHECK_INT(wifi_actq_releases(&HQ), 1);
+  /* not stopped: tried on every tick while BUSY, posted once the result is in, then throttled again */
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  str("ELRS", "10.0.0.3");
+  CHECK(wifi_actq_take(&HQ, &rq));
+  adv(0.2);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  adv(0.1);
+  tick();
+  CHECK_INT(nactivated, 3);
+  CHECK_INT(HQ.rq_n, 0);
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.ok = true; rs.status = 200;
+  wifi_actq_put(&HQ, &rs);
+  CHECK(wifi_actq_get(&HQ, &out));
+  wifi_proto_activation_done(&P, out.ip, out.ok, now_us);
+  adv(0.1);
+  tick();
+  CHECK_INT(nactivated, 4);
+  CHECK_INT(HQ.rq_n, 1);
+  adv(0.1);
+  tick();
+  CHECK_INT(nactivated, 4);
+  /* the same for an explicit restart of the module IP (not locked, unknown kind: a plain joystick_begin) */
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_proto_set_target(&P, "10.0.0.8", now_us);
+  CHECK(wifi_actq_take(&HQ, &rq));
+  adv(0.2);
+  CHECK(wifi_proto_restart(&P, now_us));
+  CHECK_INT(nactivated, 2);
+  CHECK_INT(HQ.rq_n, 0);
+  adv(0.3);
+  wifi_actq_new_session(&HQ);
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  wifi_proto_reset(&P);
+  CHECK_INT(nreleases, 1);
+  CHECK(releases[0].ip == IP("10.0.0.8"));
+  /* what the one in flight asked for stays known (R8 with a module IP set again): the module locks streaming it,
+   * and is restarted (R3) */
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_proto_store_request(&P, 4000, 8);
+  wifi_proto_set_target(&P, "10.0.0.8", now_us);    /* 250 Hz, 8 channels: in flight */
+  CHECK(wifi_actq_take(&HQ, &rq));
+  adv(0.2);
+  wifi_proto_store_request(&P, 2000, 8);
+  wifi_proto_set_target(&P, "10.0.0.8", now_us);    /* BUSY */
+  adv(0.05);
+  send_same("10.0.0.8", 8, 100);                     /* it streams before it answers */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.8"));
+  CHECK_INT(count_logs("10.0.0.8 still streams 250 Hz, 8 channels from before the change - restarting its stream "
+                       "with 500 Hz, 8 channels"), 1);
+  CHECK_INT(nrestarts, 1);
+}
+
+/* stop/start rounds with the module IP set while the worker waits on a POST to a module that does not answer:
+ * one release stays queued, not one per round, and each start's joystick_begin goes in */
+static void Release_StopStartRounds_OneReleaseQueued(void) {
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_actreq_t rq;
+  wifi_proto_set_target(&P, "10.0.0.2", now_us);
+  CHECK(wifi_actq_take(&HQ, &rq));                  /* the worker waits on it */
+  for (int k = 0; k < 10; k++) {
+    adv(0.2);
+    wifi_actq_new_session(&HQ);                     /* Stop */
+    CHECK_INT(wifi_proto_release(&P, now_us), 1);
+    wifi_proto_reset(&P);
+    adv(0.2);
+    wifi_actq_new_session(&HQ);                     /* Start */
+    int na = nactivated;
+    tick();                                         /* the module IP: its joystick_begin */
+    CHECK_INT(nactivated, na + 1);
+    CHECK_INT(HQ.rq_n, 2);
+  }
+  CHECK_INT(nreleases, 10);
+  CHECK_INT(count_exact(REL("sent", "10.0.0.2")), 10);
+  CHECK_INT(count_exact(REL("busy", "10.0.0.2")), 0);
+  CHECK_INT(wifi_actq_releases(&HQ), 1);
+  CHECK(wifi_actq_take(&HQ, &rq) && rq.release && rq.ip == IP("10.0.0.2"));
+  CHECK(wifi_actq_take(&HQ, &rq) && !rq.release && rq.ip == IP("10.0.0.2") && rq.session == HQ.session);
+}
+
+/* the modules known to stream to us go first, the ones activated a moment ago (that may not even be there) after
+ * them: the host's worker sends the releases in turn, and an exit waits at most WIFI_RELEASE_WAIT_US. A locks, the
+ * module IP is set to X (a typo, or a module that is off) and A streams on to us: A, then X. */
+static void Release_KnownStreamingFirst(void) {
+  H();
+  str("ELRS", "10.0.0.2");                           /* A: activated, locks */
+  stream_rounds(5, "10.0.0.2", NULL, NULL);
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(wifi_proto_set_target(&P, "10.0.0.3", now_us), 0);   /* X: activated now, never streams */
+  stream_rounds(3, "10.0.0.2", NULL, NULL);
+  int nl = nlogs;
+  snapshot();
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  CHECK(unchanged());
+  CHECK_INT(nreleases, 2);
+  CHECK(releases[0].ip == IP("10.0.0.2"));
+  CHECK(releases[1].ip == IP("10.0.0.3"));
+  CHECK_INT(nlogs, nl + 2);
+  CHECK_STR(logs[nl], REL("sent", "10.0.0.2"));
+  CHECK_STR(logs[nl + 1], REL("sent", "10.0.0.3"));
+  /* all three: the locked module, then a 2nd source, then one activated a moment ago */
+  H();
+  str("ELRS", "10.0.0.4");                           /* D: activated, never streams */
+  adv(0.5);
+  stream_rounds(10, "10.0.0.5", "10.0.0.6", NULL);   /* found streaming: 10.0.0.5 locks, 10.0.0.6 a 2nd source */
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.5"));
+  CHECK_INT(wifi_proto_release(&P, now_us), 3);
+  CHECK(releases[0].ip == IP("10.0.0.5"));
+  CHECK(releases[1].ip == IP("10.0.0.6"));
+  CHECK(releases[2].ip == IP("10.0.0.4"));
+  /* with the real queue, in the host's order on stop: X's joystick_begin in flight is aborted (stale), and the
+   * worker takes A's release first */
+  H();
+  P.h.activate = q_activate;
+  wifi_actq_init(&HQ);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  str("ELRS", "10.0.0.2");
+  CHECK(wifi_actq_take(&HQ, &rq));
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.ok = true; rs.status = 200;
+  wifi_actq_put(&HQ, &rs);
+  CHECK(wifi_actq_get(&HQ, &out));
+  wifi_proto_activation_done(&P, out.ip, out.ok, now_us);
+  stream_rounds(5, "10.0.0.2", NULL, NULL);
+  wifi_proto_set_target(&P, "10.0.0.3", now_us);
+  CHECK(wifi_actq_take(&HQ, &rq) && rq.ip == IP("10.0.0.3") && !rq.release);   /* in flight: X does not answer */
+  stream_rounds(3, "10.0.0.2", NULL, NULL);
+  wifi_actq_new_session(&HQ);                        /* Stop, or exit */
+  CHECK_INT(wifi_proto_release(&P, now_us), 2);
+  wifi_proto_reset(&P);
+  CHECK(wifi_actq_stale(&HQ, rq.session));
+  CHECK_INT(wifi_actq_releases(&HQ), 2);
+  CHECK(wifi_actq_take(&HQ, &rq) && rq.release && rq.ip == IP("10.0.0.2"));
+  CHECK(wifi_actq_take(&HQ, &rq) && rq.release && rq.ip == IP("10.0.0.3"));
+  CHECK(!wifi_actq_take(&HQ, &rq));
+}
+
+/* R14 + R3: a release that took forgets what its module was asked. The module is idle after its joystick_end and
+ * streams what its next joystick_begin asks for, so stop, another rate, start (StickTime Pi: Release, a setting,
+ * Connect) with the module IP set must not restart it for the old request when it locks again. Here: a new engine
+ * with ip as the module IP, known as ELRS by its beacon or of unknown kind, locked for 2 s. */
+static void lock_module_ip(const char *ip, bool beacon) {
+  H();
+  if (beacon) str("ELRS", ip);                       /* known as ELRS (it beacons while idle) */
+  CHECK_INT(wifi_proto_set_target(&P, ip, now_us), 0);
+  for (int i = 0; i < 20; i++) { adv(0.1); send_same(ip, 16, 100); tick(); }
+  CHECK(P.bound && P.bound_ip == IP(ip));
+}
+/* the host's stop: the release (its result comes later), then the reset */
+static void stop_releasing(void) {
+  CHECK_INT(wifi_proto_release(&P, now_us), 1);
+  wifi_proto_reset(&P);
+  adv(0.05);
+}
+/* the host's start: its first tick posts the module IP's joystick_begin (what it asks for: want_us); the module,
+ * idle, streams it */
+static void start_and_lock(const char *ip, int want_us) {
+  int na = nactivated;
+  tick();
+  CHECK_INT(nactivated, na + 1);
+  CHECK(last_act.ip == IP(ip) && !last_act.restart && !last_act.release && last_act.interval_us == want_us);
+  adv(0.05);
+  send_same(ip, 16, 100);
+  CHECK(P.bound && P.bound_ip == IP(ip));
+}
+
+static void Release_Took_ForgetsTheAskedRequest(void) {
+  /* known as ELRS: before, it was restarted at once ("still streams 250 Hz, 16 channels from before the change") */
+  lock_module_ip("10.0.0.2", true);
+  CHECK_INT(asked_iv("10.0.0.2"), 4000);
+  stop_releasing();
+  CHECK_INT(asked_iv("10.0.0.2"), 4000);             /* kept by the reset (R9) */
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  CHECK_INT(asked_iv("10.0.0.2"), -1);
+  CHECK_INT(wifi_proto_kind(&P, IP("10.0.0.2")), WIFI_KIND_ELRS);   /* the kind stays */
+  adv(2);
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));              /* stopped: stored */
+  int nr = nrestarts;
+  start_and_lock("10.0.0.2", 2000);
+  CHECK_INT(asked_iv("10.0.0.2"), 2000);             /* what its joystick_begin asked */
+  for (int i = 0; i < 250; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(count_logs("from before the change"), 0);
+  /* a change while it is locked restarts it as always (R2) */
+  CHECK(wifi_proto_set_request(&P, 4000, 16, now_us));
+  CHECK_INT(nrestarts, nr + 1);
+  CHECK(restarts[nr].ip == IP("10.0.0.2") && restarts[nr].interval_us == 4000);
+
+  /* unknown kind (its beacons never reach us): before, held as maybe Crossfire, then restarted 20 s into the
+   * session, a pause in flight */
+  lock_module_ip("10.0.0.2", false);
+  stop_releasing();
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  adv(2);
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  nr = nrestarts;
+  int nl = nlogs;
+  start_and_lock("10.0.0.2", 2000);
+  for (int i = 0; i < 250; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(nrestarts, nr);
+  CHECK(!P.restart_wait);
+  for (int i = nl; i < nlogs && i < MAXREC; i++) CHECK(!strstr(logs[i], "may be Crossfire") && !strstr(logs[i], "Restarting"));
+
+  /* the request unchanged: nothing either way */
+  lock_module_ip("10.0.0.2", true);
+  stop_releasing();
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  nr = nrestarts;
+  start_and_lock("10.0.0.2", 4000);
+  for (int i = 0; i < 30; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(asked_iv("10.0.0.2"), 4000);
+}
+
+/* A restart the stop cut short leaves the asked request unknown (R9); the release after it took, so the module is
+ * idle and that is forgotten too: no "may still stream its old request (Stop cut its restart short)" restart. */
+static void Release_Took_AfterACutRestart(void) {
+  lock_module_ip("10.0.0.2", true);
+  restart_result = WIFI_ACT_QUEUED;
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK(P.restart_res_ip == IP("10.0.0.2"));
+  stop_releasing();
+  CHECK_INT(asked_iv("10.0.0.2"), 0);                /* cut short (WIFI_ASKED_CUT) */
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  CHECK_INT(asked_iv("10.0.0.2"), -1);
+  restart_result = WIFI_ACT_OK;
+  int nr = nrestarts;
+  start_and_lock("10.0.0.2", 2000);
+  for (int i = 0; i < 30; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(count_logs("Stop cut its restart short"), 0);
+  /* the release failed: the module may stream on with its old request, so its next lock restarts it (as before) */
+  lock_module_ip("10.0.0.2", true);
+  restart_result = WIFI_ACT_QUEUED;
+  wifi_proto_set_request(&P, 2000, 16, now_us);
+  stop_releasing();
+  wifi_proto_release_done(&P, IP("10.0.0.2"), false, 0, "timed out after 2 s");
+  CHECK_INT(asked_iv("10.0.0.2"), 0);
+  restart_result = WIFI_ACT_OK;
+  nr = nrestarts;
+  int na = nactivated;
+  tick();
+  CHECK_INT(nactivated, na + 1);
+  adv(0.05);
+  send_same("10.0.0.2", 16, 100);
+  CHECK_INT(nrestarts, nr + 1);
+  CHECK_INT(count_exact("10.0.0.2 may still stream its old request (Stop cut its restart short) - restarting its "
+                        "stream with 500 Hz, 16 channels"), 1);
+}
+
+/* A release that missed its joystick_end (it failed, or was cut short at an exit) leaves the asked request as it
+ * was: the module streams on, and a change made meanwhile restarts it when it locks again (R3) */
+static void Release_Failed_KeepsTheAskedRequest(void) {
+  static const char *why[] = { "timed out after 2 s", "no answer in time", "not sent, the wait ran out before its turn" };
+  for (int k = 0; k < 4; k++) {
+    lock_module_ip("10.0.0.2", true);
+    stop_releasing();
+    if (k < 3) wifi_proto_release_done(&P, IP("10.0.0.2"), false, 0, why[k]);
+    else wifi_proto_release_done(&P, IP("10.0.0.2"), false, 503, "");
+    CHECK_INT(asked_iv("10.0.0.2"), 4000);
+    adv(2);
+    wifi_proto_set_request(&P, 2000, 16, now_us);
+    int nr = nrestarts;
+    start_and_lock("10.0.0.2", 2000);
+    CHECK_INT(nrestarts, nr + 1);
+    CHECK_INT(count_exact("10.0.0.2 still streams 250 Hz, 16 channels from before the change - restarting its "
+                          "stream with 500 Hz, 16 channels"), 1);
+  }
+}
+
+/* The release's answer taken while its module is locked again (it locked in the new session on frames that came
+ * before its joystick_end did): the lock stays, nothing is sent, and its asked request is taken again at its next
+ * lock, from the joystick_begin of this session */
+static void Release_Took_WhileLockedAgain(void) {
+  lock_module_ip("10.0.0.2", true);
+  stop_releasing();
+  int nr = nrestarts, na = nactivated, nrel = nreleases;
+  start_and_lock("10.0.0.2", 4000);
+  CHECK_INT(asked_iv("10.0.0.2"), 4000);
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  CHECK(P.bound && P.bound_ip == IP("10.0.0.2"));
+  CHECK_INT(asked_iv("10.0.0.2"), -1);
+  for (int i = 0; i < 30; i++) { adv(0.1); send_same("10.0.0.2", 16, 100); tick(); }
+  CHECK_INT(nrestarts, nr);
+  CHECK_INT(nactivated, na + 1);
+  CHECK_INT(nreleases, nrel);
+  /* its joystick_end stopped it; the lock goes, the module IP's re-POST starts it again: locked, no restart */
+  for (int i = 0; i < 31; i++) { adv(0.1); tick(); }
+  CHECK(!P.bound);
+  for (int i = 0; i < 30 && nactivated == na + 1; i++) { adv(0.1); tick(); }
+  CHECK_INT(nactivated, na + 2);
+  adv(0.05);
+  send_same("10.0.0.2", 16, 100);
+  CHECK(P.bound);
+  CHECK_INT(asked_iv("10.0.0.2"), 4000);
+  CHECK_INT(nrestarts, nr);
+  /* a change while it is locked without an asked request restarts it (R2) */
+  lock_module_ip("10.0.0.2", true);
+  wifi_proto_release_done(&P, IP("10.0.0.2"), true, 200, "");
+  nr = nrestarts;
+  CHECK(wifi_proto_set_request(&P, 2000, 16, now_us));
+  CHECK_INT(nrestarts, nr + 1);
+  CHECK_INT(asked_iv("10.0.0.2"), 2000);
+}
+
+/* ---- the queue's releases */
+static void ActQueue_Release_PushTakePutGet(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  CHECK_INT(wifi_actq_releases(&q), 0);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 8080), WIFI_ACT_QUEUED);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.1")));
+  CHECK_INT(q.npending, 0);
+  CHECK_INT(wifi_actq_releases(&q), 1);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.1") && rq.http_port == 8080 && rq.release && !rq.end_first);
+  CHECK(rq.session == WIFI_ACTQ_ANY);
+  CHECK_STR(rq.body, "");
+  CHECK(!wifi_actq_stale(&q, rq.session));
+  CHECK_INT(wifi_actq_releases(&q), 1);             /* in flight */
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.release = true; rs.ok = true; rs.status = 200;
+  wifi_actq_put(&q, &rs);
+  CHECK_INT(wifi_actq_releases(&q), 1);             /* until its result is taken */
+  CHECK(wifi_actq_get(&q, &out));
+  CHECK(out.release && out.ok && out.status == 200 && out.ip == IP("10.0.0.1"));
+  CHECK_INT(wifi_actq_releases(&q), 0);
+  CHECK(!wifi_actq_get(&q, &out));
+  CHECK_INT(wifi_actq_releases(&q), 0);
+  /* a plain push into a slot a release used is no release */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(!rq.release && rq.session == q.session);
+}
+
+/* releases (queued, in flight, their results) outlive every new session; the session's own are dropped */
+static void ActQueue_Release_SurvivesNewSession(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.2"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.3"), 80, "r", true), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.4"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(q.rq_n, 4);
+  wifi_actq_new_session(&q);
+  CHECK_INT(q.rq_n, 2);
+  CHECK_INT(wifi_actq_releases(&q), 2);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.1")) && !wifi_actq_is_pending(&q, IP("10.0.0.3")));
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.release && rq.ip == IP("10.0.0.2"));
+  /* in flight across another new session: never stale */
+  wifi_actq_new_session(&q);
+  CHECK(!wifi_actq_stale(&q, rq.session));
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.release = true; rs.status = 500;
+  wifi_actq_put(&q, &rs);
+  /* its result across a new session */
+  wifi_actq_new_session(&q);
+  CHECK_INT(q.rs_n, 1);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.release && rq.ip == IP("10.0.0.4"));
+  CHECK(!wifi_actq_take(&q, &rq));
+  CHECK_INT(wifi_actq_releases(&q), 2);
+  CHECK(wifi_actq_get(&q, &out));
+  CHECK(out.release && out.ip == IP("10.0.0.2") && !out.ok && out.status == 500);
+  CHECK_INT(wifi_actq_releases(&q), 1);
+  rs.ip = rq.ip; rs.status = 200; rs.ok = true;
+  wifi_actq_put(&q, &rs);
+  CHECK(wifi_actq_get(&q, &out));
+  CHECK(out.release && out.ip == IP("10.0.0.4") && out.ok);
+  CHECK_INT(wifi_actq_releases(&q), 0);
+}
+
+/* new_session keeps them in their order, also with the rings wrapped */
+static void ActQueue_Release_KeptInOrder_RingsWrapped(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  char ip[32];
+  memset(&rs, 0, sizeof rs);
+  for (int i = 0; i < 5; i++) {                      /* both heads to 5 */
+    snprintf(ip, sizeof ip, "10.0.1.%d", i);
+    wifi_actq_push(&q, IP(ip), 80, "b", false);
+    wifi_actq_take(&q, &rq);
+    rs.ip = rq.ip; rs.session = rq.session;
+    wifi_actq_put(&q, &rs);
+    wifi_actq_get(&q, &out);
+  }
+  CHECK_INT(q.rq_head, 5);
+  CHECK_INT(q.rs_head, 5);
+  wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false);
+  wifi_actq_push_release(&q, IP("10.0.2.1"), 80);
+  wifi_actq_push(&q, IP("10.0.0.2"), 80, "b", false);
+  wifi_actq_push_release(&q, IP("10.0.2.2"), 80);
+  wifi_actq_push(&q, IP("10.0.0.3"), 80, "b", true);
+  wifi_actq_push_release(&q, IP("10.0.2.3"), 80);
+  CHECK_INT(q.rq_n, 6);                              /* slots 5, 6, 7, 0, 1, 2 */
+  wifi_actq_new_session(&q);
+  CHECK_INT(q.rq_n, 3);
+  for (int i = 1; i <= 3; i++) {
+    snprintf(ip, sizeof ip, "10.0.2.%d", i);
+    CHECK(wifi_actq_take(&q, &rq));
+    CHECK(rq.release && rq.ip == IP(ip));
+  }
+  CHECK(!wifi_actq_take(&q, &rq));
+  /* the results: two of the session among the three releases */
+  wifi_actq_push(&q, IP("10.0.0.7"), 80, "b", false);
+  wifi_actq_push(&q, IP("10.0.0.8"), 80, "b", false);
+  uint32_t s = q.session;
+  wifi_actres_t r7 = rs, r8 = rs, a = rs;
+  r7.ip = IP("10.0.0.7"); r7.session = s;
+  r8.ip = IP("10.0.0.8"); r8.session = s;
+  a.session = WIFI_ACTQ_ANY; a.release = true;
+  wifi_actq_put(&q, &r7);
+  a.ip = IP("10.0.2.1"); wifi_actq_put(&q, &a);
+  wifi_actq_put(&q, &r8);
+  a.ip = IP("10.0.2.2"); wifi_actq_put(&q, &a);
+  a.ip = IP("10.0.2.3"); wifi_actq_put(&q, &a);
+  CHECK_INT(q.rs_n, 5);                              /* slots 5, 6, 7, 0, 1 */
+  wifi_actq_new_session(&q);
+  CHECK_INT(q.rs_n, 3);
+  CHECK_INT(wifi_actq_releases(&q), 3);
+  for (int i = 1; i <= 3; i++) {
+    snprintf(ip, sizeof ip, "10.0.2.%d", i);
+    CHECK(wifi_actq_get(&q, &out));
+    CHECK(out.release && out.ip == IP(ip));
+    CHECK_INT(wifi_actq_releases(&q), 3 - i);
+  }
+  CHECK(!wifi_actq_get(&q, &out));
+  /* results of this session and releases mixed: in order, each counted where it belongs */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.9"), 80, "b", false), WIFI_ACT_QUEUED);
+  wifi_actq_push_release(&q, IP("10.0.0.9"), 80);
+  CHECK(wifi_actq_take(&q, &rq) && !rq.release);
+  rs.ip = rq.ip; rs.session = rq.session; rs.release = false;
+  wifi_actq_put(&q, &rs);
+  CHECK(wifi_actq_take(&q, &rq) && rq.release);
+  a.ip = rq.ip;
+  wifi_actq_put(&q, &a);
+  CHECK(wifi_actq_get(&q, &out) && !out.release);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.9")));
+  CHECK_INT(wifi_actq_releases(&q), 1);
+  CHECK(wifi_actq_get(&q, &out) && out.release);
+  CHECK_INT(wifi_actq_releases(&q), 0);
+}
+
+/* not pending: a release to an IP with a request queued is accepted and goes after it; a begin to an IP with a
+ * release queued is accepted, and a restart never takes a release over */
+static void ActQueue_Release_NotPending(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "begin", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "restart", true), WIFI_ACT_QUEUED);   /* the begin becomes it */
+  CHECK_INT(q.rq_n, 2);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.1") && !rq.release && rq.end_first);
+  CHECK_STR(rq.body, "restart");
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.1") && rq.release && !rq.end_first);
+  CHECK_STR(rq.body, "");
+  /* the other way round */
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.2"), 80), WIFI_ACT_QUEUED);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.2")));
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "begin", false), WIFI_ACT_QUEUED);
+  /* the begin becomes the restart, not the release */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.2"), 80, "restart", true), WIFI_ACT_QUEUED);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.2") && rq.release && !rq.end_first);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(rq.ip == IP("10.0.0.2") && !rq.release && rq.end_first);
+  CHECK_STR(rq.body, "restart");
+  /* a restart to an IP with only a release queued is a request of its own */
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.3"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.3"), 80, "restart", true), WIFI_ACT_QUEUED);
+  CHECK_INT(q.rq_n, 2);
+  CHECK(wifi_actq_take(&q, &rq) && rq.release);
+  CHECK(wifi_actq_take(&q, &rq) && !rq.release && rq.end_first);
+}
+
+/* BUSY only when the request ring is full (pending IPs do not count) */
+static void ActQueue_Release_BusyWhenFull(void) {
+  wifi_actq_t q;
+  wifi_actreq_t rq;
+  char ip[32];
+  wifi_actq_init(&q);
+  for (int i = 1; i <= WIFI_ACTQ; i++) {
+    snprintf(ip, sizeof ip, "10.0.0.%d", i);
+    CHECK_INT(wifi_actq_push(&q, IP(ip), 80, "b", false), WIFI_ACT_QUEUED);
+  }
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_releases(&q), 0);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_releases(&q), 1);
+  /* every IP pending, the ring empty: a begin is BUSY, a release goes in */
+  wifi_actq_init(&q);
+  for (int i = 1; i <= WIFI_ACTQ; i++) {
+    snprintf(ip, sizeof ip, "10.0.0.%d", i);
+    wifi_actq_push(&q, IP(ip), 80, "b", false);
+    wifi_actq_take(&q, &rq);
+  }
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.99"), 80), WIFI_ACT_QUEUED);
+  /* a ring full of releases */
+  wifi_actq_init(&q);
+  for (int i = 1; i <= WIFI_ACTQ; i++) {
+    snprintf(ip, sizeof ip, "10.0.0.%d", i);
+    CHECK_INT(wifi_actq_push_release(&q, IP(ip), 80), WIFI_ACT_QUEUED);
+  }
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.99"), 80), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_BUSY);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.99")));
+  CHECK_INT(wifi_actq_releases(&q), WIFI_ACTQ);
+  /* the impossible overflow of the result ring drops the oldest; a release dropped is no longer counted */
+  wifi_actres_t rs, out;
+  memset(&rs, 0, sizeof rs);
+  for (int i = 0; i < WIFI_ACTQ; i++) {
+    CHECK(wifi_actq_take(&q, &rq));
+    rs.ip = rq.ip; rs.session = rq.session; rs.release = true;
+    wifi_actq_put(&q, &rs);
+  }
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.99"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK(wifi_actq_take(&q, &rq));
+  rs.ip = rq.ip; rs.session = rq.session; rs.release = false;
+  wifi_actq_put(&q, &rs);
+  CHECK_INT(wifi_actq_releases(&q), WIFI_ACTQ - 1);
+  int got = 0, rel = 0;
+  while (wifi_actq_get(&q, &out)) { got++; if (out.release) rel++; }
+  CHECK_INT(got, WIFI_ACTQ);
+  CHECK_INT(rel, WIFI_ACTQ - 1);
+  CHECK_INT(wifi_actq_releases(&q), 0);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.99")));
+}
+
+/* WIFI_ACTQ_ANY is never stale, and the session counter never becomes it */
+static void ActQueue_Release_NeverStale_SessionWrapSkipsAny(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  CHECK(!wifi_actq_stale(&q, WIFI_ACTQ_ANY));
+  for (int i = 0; i < 3; i++) {
+    wifi_actq_new_session(&q);
+    CHECK(!wifi_actq_stale(&q, WIFI_ACTQ_ANY));
+  }
+  q.session = WIFI_ACTQ_ANY - 2;
+  wifi_actq_new_session(&q);
+  CHECK(q.session == WIFI_ACTQ_ANY - 1);
+  wifi_actq_push_release(&q, IP("10.0.0.5"), 80);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);
+  wifi_actq_new_session(&q);                         /* the wrap */
+  CHECK(q.session != WIFI_ACTQ_ANY);
+  CHECK(q.session == 0);
+  CHECK(wifi_actq_stale(&q, WIFI_ACTQ_ANY - 1));
+  CHECK(!wifi_actq_stale(&q, WIFI_ACTQ_ANY));
+  CHECK_INT(q.rq_n, 1);                              /* only the release */
+  CHECK(wifi_actq_take(&q, &rq) && rq.release);
+  /* the session after the wrap works as any other */
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK(wifi_actq_take(&q, &rq));
+  CHECK(!rq.release && rq.session == q.session && !wifi_actq_stale(&q, rq.session));
+  memset(&rs, 0, sizeof rs);
+  rs.ip = rq.ip; rs.session = rq.session; rs.ok = true;
+  wifi_actq_put(&q, &rs);
+  CHECK(wifi_actq_get(&q, &out) && out.ok && !out.release);
+  CHECK(!wifi_actq_is_pending(&q, IP("10.0.0.1")));
+  CHECK_INT(wifi_actq_releases(&q), 1);              /* 10.0.0.5's result is not taken yet */
+  wifi_actq_new_session(&q);
+  CHECK(q.session == 1);
+}
+
+/* a release to an IP whose last queued request is a release not taken yet is that one (its HTTP port the new
+ * one); after a request to that IP, or once it is in flight, it is a request of its own */
+static void ActQueue_Release_SameIpQueuedOnce(void) {
+  wifi_actq_t q;
+  wifi_actq_init(&q);
+  wifi_actreq_t rq;
+  wifi_actres_t rs, out;
+  char ip[32];
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.2"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 8080), WIFI_ACT_QUEUED);
+  CHECK_INT(q.rq_n, 2);
+  CHECK_INT(wifi_actq_releases(&q), 2);
+  CHECK_INT(wifi_actq_push(&q, IP("10.0.0.1"), 80, "b", false), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(q.rq_n, 4);
+  CHECK_INT(wifi_actq_releases(&q), 3);
+  CHECK(wifi_actq_take(&q, &rq) && rq.release && rq.ip == IP("10.0.0.1") && rq.http_port == 8080);
+  CHECK(wifi_actq_take(&q, &rq) && rq.release && rq.ip == IP("10.0.0.2"));
+  CHECK(wifi_actq_take(&q, &rq) && !rq.release && rq.ip == IP("10.0.0.1"));
+  CHECK(wifi_actq_take(&q, &rq) && rq.release && rq.ip == IP("10.0.0.1"));
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.1"), 80), WIFI_ACT_QUEUED);     /* that one is in flight */
+  CHECK_INT(q.rq_n, 1);
+  CHECK_INT(wifi_actq_releases(&q), 4);
+  /* each counted one has its result */
+  memset(&rs, 0, sizeof rs);
+  rs.session = WIFI_ACTQ_ANY; rs.release = true; rs.ok = true;
+  rs.ip = IP("10.0.0.1"); wifi_actq_put(&q, &rs);
+  CHECK(wifi_actq_take(&q, &rq));
+  wifi_actq_put(&q, &rs);
+  int got = 0;
+  while (wifi_actq_get(&q, &out)) if (out.release) got++;
+  CHECK_INT(got, 2);
+  CHECK_INT(wifi_actq_releases(&q), 2);              /* the two taken before without a result (not put here) */
+  /* a full ring: a release to an IP it holds a release for still goes in, as that one */
+  wifi_actq_init(&q);
+  for (int i = 1; i <= WIFI_ACTQ; i++) {
+    snprintf(ip, sizeof ip, "10.0.0.%d", i);
+    CHECK_INT(wifi_actq_push_release(&q, IP(ip), 80), WIFI_ACT_QUEUED);
+  }
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.3"), 80), WIFI_ACT_QUEUED);
+  CHECK_INT(wifi_actq_push_release(&q, IP("10.0.0.99"), 80), WIFI_ACT_BUSY);
+  CHECK_INT(wifi_actq_releases(&q), WIFI_ACTQ);
+}
+
 int main(void) {
   /* BeaconTests */
   ElrsBeacon_TriggersActivation();
@@ -3255,5 +4919,47 @@ int main(void) {
   Restart_HeldWindowJustPassed_OneRestart();
   Restart_Pending_NoEndToAnUnlockedModuleNotKnownAsElrs();
   Describe_NonPresetIntervalsInTheLog();
+  /* R14: release */
+  Release_ActivationsAndRestarts_AreNoReleases();
+  Release_LockedElrs();
+  Release_UnknownKind_GetsIt();
+  Release_KnownCrossfire_LoggedNotSent();
+  Release_RecentlyActivated_NotLocked();
+  Release_LockedAndRecent_EachIpOnce();
+  Release_Several_InOrder();
+  Release_NoModule_Silent();
+  Release_ModuleLeftForAnotherModuleIp();
+  Release_ModuleLeft_NewOneLockedSince();
+  Release_ModuleLeft_ByItsLastFrame();
+  Release_SecondSource_StreamingToUs();
+  Release_SecondSource_Kinds();
+  Release_Dropped_KeptThroughLockChanges();
+  Release_ModuleLeft_StillStreaming();
+  Release_ModuleLeft_FoundStreaming();
+  Release_Held_TableFull();
+  Release_ModuleIpSet_UnknownOther_LeftAlone();
+  Release_ModuleIpSet_ActivatedUnknownOther();
+  Release_PlaceholderStream();
+  Release_Dropped_ClearedByReset();
+  Release_Dropped_TableFull();
+  Release_HookBusy();
+  Release_SyncResults();
+  ReleaseDone_Texts();
+  Release_RestartsUnderWay_Untouched();
+  Release_HostOrder_WithTheQueue();
+  Release_ModuleIpWhosePostIsInFlight();
+  Release_StopStartRounds_OneReleaseQueued();
+  Release_KnownStreamingFirst();
+  Release_Took_ForgetsTheAskedRequest();
+  Release_Took_AfterACutRestart();
+  Release_Failed_KeepsTheAskedRequest();
+  Release_Took_WhileLockedAgain();
+  ActQueue_Release_PushTakePutGet();
+  ActQueue_Release_SurvivesNewSession();
+  ActQueue_Release_KeptInOrder_RingsWrapped();
+  ActQueue_Release_NotPending();
+  ActQueue_Release_BusyWhenFull();
+  ActQueue_Release_NeverStale_SessionWrapSkipsAny();
+  ActQueue_Release_SameIpQueuedOnce();
   T_DONE();
 }

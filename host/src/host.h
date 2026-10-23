@@ -133,6 +133,11 @@ typedef struct host {
 
 /* Set up from the settings at app->paths.settings. 0 ok, -1 fatal (err says why). */
 int  host_init(host_t *h, app_t *app, const host_options_t *opt);
+/* Right after the frame loop: stops the WiFi joystick receiver, so its module's release (R14) goes out at once,
+ * not after the web server has stopped (that may take seconds). host_close does it too when this wasn't called. */
+void host_stop_wifi(host_t *h);
+/* After the frame loop: releases the WiFi joystick's module (it may wait up to WIFI_RELEASE_WAIT_US for the
+ * module's answer, input_wifi.h) and frees everything. */
 void host_close(host_t *h);
 
 /* One frame at time now_us (plat_now_us clock, or virtual): read inputs, mix the sticks,

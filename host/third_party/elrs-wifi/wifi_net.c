@@ -278,8 +278,16 @@ void wifi_net_post(const wifi_actreq_t *rq, wifi_actres_t *rs, int timeout_ms, w
   memset(rs, 0, sizeof *rs);
   rs->ip = rq->ip;
   rs->session = rq->session;
-  rs->restart = rq->end_first;
   bool ab = false;
+  if (rq->release) {
+    /* R14: joystick_end alone; its answer is the result (end_status 0, end_err "") */
+    rs->release = true;
+    rs->status = post_one(rq->ip, rq->http_port, "action=joystick_end", timeout_ms, aborted, ud, rs->reason,
+                          sizeof rs->reason, rs->err, sizeof rs->err, &ab);
+    rs->ok = rs->status >= 200 && rs->status <= 299;
+    return;
+  }
+  rs->restart = rq->end_first;
   if (rq->end_first) {
     char unused[32];
     rs->end_status = post_one(rq->ip, rq->http_port, "action=joystick_end", timeout_ms, aborted, ud,

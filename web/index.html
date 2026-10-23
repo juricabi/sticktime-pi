@@ -117,6 +117,11 @@
             <dt>Packets</dt><dd data-f="wjRate">–</dd>
             <dt>Pauses</dt><dd data-f="wjGaps">–</dd>
           </dl>
+          <div class="btn-row" id="wjBtns" hidden>
+            <button class="btn sm" type="button" id="wjRelease" hidden><svg class="i"><use href="#i-radio"/></svg>Release module</button>
+            <button class="btn sm primary" type="button" id="wjConnect" hidden><svg class="i"><use href="#i-wifi"/></svg>Connect</button>
+          </div>
+          <p class="note" id="wjNote" hidden><span id="wjResult"></span> The Pi doesn't listen for the WiFi joystick until you press Connect or StickTime Pi starts again (a restart of the game, a StickTime Pi update, a reboot).</p>
           <ul class="src-list" id="srcList"></ul>
         </section>
         <section class="card" aria-labelledby="h-net">
@@ -198,7 +203,7 @@
         <form class="settings" data-form="video" data-keys="video,tv,aspect,av_mode,av_detail,av_flicker,drawing,hdmi_mode,margin,fonts,show_ip" novalidate></form>
         <ul class="explain">
           <li><span class="flag reboot">after reboot</span> AV ↔ HDMI and the TV standard: the Pi sets up its video output when it starts. Save, then Reboot now (about 30 s; it may restart once more by itself to switch the output).</li>
-          <li><span class="flag restart">restarts the game</span> Shape, composite lines, picture detail, flicker filter, HDMI mode, border and text size: the game restarts in a second or two.</li>
+          <li><span class="flag restart">restarts the game</span> Shape, composite lines, picture detail, flicker filter, HDMI mode, border and text size: the game restarts in a second or two. It listens for the WiFi joystick again, also after a Release: the module comes back with its next broadcast (within 5 s), or at once with a Module address set.</li>
           <li><span class="flag live">at once</span> The rest applies while you fly.</li>
         </ul>
         <p class="note">Wiring for AV: the 3.5 mm jack's sleeve (the last ring) is video, the ring before it ground. A TV's yellow input works too. If nothing shows after a change, plug in HDMI, or edit <code>sticktime.txt</code> on the SD card from a PC.</p>
@@ -398,7 +403,7 @@
             <button class="btn" type="button" id="rebootBtn"><svg class="i"><use href="#i-power"/></svg>Reboot</button>
             <button class="btn danger" type="button" id="shutdownBtn"><svg class="i"><use href="#i-power"/></svg>Shut down</button>
           </div>
-          <p class="note">Shut down before you unplug the Pi while it writes (an update, a song upload). Otherwise unplugging is safe.</p>
+          <p class="note">Shut down before you unplug the Pi while it writes (an update, a song upload). Otherwise unplugging is safe for the SD card, but it sends the WiFi module no stop: an ELRS module streams on, and the PC app can't find it until its WiFi is switched off and on. A shutdown here, or Status → Inputs → Release module, stops its stream.</p>
         </section>
       </div>
       <section class="card" aria-labelledby="h-sset2">

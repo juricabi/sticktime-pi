@@ -1273,40 +1273,68 @@ static void test_none_backend(void) {
   static uint16_t fb[320 * 240];
   const int64_t P = 16667;
 
-  /* a loop like main.c's: present, wait for the "vblank", sleep to the deadline */
-  int64_t t0 = plat_now_us(), first_vb = 0, prev_vb = 0;
+  /* a loop like main.c's: present, wait for the "vblank", sleep to the deadline. The test "renders" until 4 ms
+   * before each deadline, so a busy machine (other tests, a CI runner) can hold it off the CPU past the next
+   * refresh: its present then comes late (measured), and that frame is rightly shown a refresh later. Such a run
+   * is done again, up to 3 times; in the last one the late frames are excused, and the stats must count exactly
+   * the refreshes they lost. A frame presented in time must be shown at the next refresh, always */
+  const int N = 30, RUNS = 3;
   bool grid_ok = true, deadline_ok = true, pend_ok = true, step_ok = true;
-  const int N = 30;
-  for (int i = 0; i < N; i++) {
-    CHECK_INT(video_present(v, fb), 0);
-    if (!video_pending(v)) pend_ok = false;
-    int64_t vb = 0;
-    int r = video_wait(v, 100, &vb);
-    if (r != 0 || video_pending(v)) pend_ok = false;
-    if (!first_vb) first_vb = vb;
-    if ((vb - first_vb) % P) grid_ok = false;      /* every frame on the 60 Hz grid */
-    if (prev_vb && vb - prev_vb != P) step_ok = false;
-    prev_vb = vb;
-    int64_t now = plat_now_us(), dl = video_deadline_us(v, now);
-    if (dl <= now || dl > now + P || (dl - first_vb) % P) deadline_ok = false;
-    spin_until(dl - 4000);                          /* "render" until 4 ms before the deadline */
+  int64_t el = 0;
+  uint32_t flips = 0, missed = 0, lost = 0;
+  int late = 0;
+  video_stats_t st;
+  for (int run = 1; run <= RUNS; run++) {
+    video_get_stats(v, &st);
+    uint32_t flips0 = st.flips, missed0 = st.missed;
+    int64_t t0 = plat_now_us(), first_vb = 0, prev_vb = 0;
+    grid_ok = deadline_ok = pend_ok = step_ok = true;
+    late = 0;
+    lost = 0;
+    for (int i = 0; i < N; i++) {
+      if (video_present(v, fb) != 0) pend_ok = false;
+      bool pend = video_pending(v);
+      bool was_late = prev_vb && plat_now_us() >= prev_vb + P;   /* presented after the next refresh */
+      if (!pend && !was_late) pend_ok = false;
+      int64_t vb = 0;
+      int r = video_wait(v, 100, &vb);
+      if (r != 0 || video_pending(v)) pend_ok = false;
+      if (!first_vb) first_vb = vb;
+      if ((vb - first_vb) % P) grid_ok = false;    /* every frame on the 60 Hz grid */
+      if (prev_vb && vb - prev_vb != P) {
+        if (was_late) {
+          late++;
+          lost += (uint32_t)((vb - prev_vb) / P - 1);
+        } else {
+          step_ok = false;                          /* presented in time, shown late */
+        }
+      }
+      prev_vb = vb;
+      int64_t now = plat_now_us(), dl = video_deadline_us(v, now);
+      if (dl <= now || dl > now + P || (dl - first_vb) % P) deadline_ok = false;
+      spin_until(dl - 4000);                        /* "render" until 4 ms before the deadline */
+    }
+    el = plat_now_us() - t0;
+    video_get_stats(v, &st);
+    flips = st.flips - flips0;
+    missed = st.missed - missed0;
+    if (!late || !step_ok || run == RUNS) break;
+    fprintf(stderr, "none: run %d presented %d frame(s) late (a busy machine?): again\n", run, late);
   }
-  int64_t el = plat_now_us() - t0;
+  if (late) fprintf(stderr, "none: %d frame(s) presented late in each of %d runs: excused\n", late, RUNS);
   CHECK(pend_ok);
   CHECK(grid_ok);
   CHECK(deadline_ok);
-  CHECK(step_ok);                                   /* one frame per refresh: none missed */
-  if (!step_ok) fprintf(stderr, "none: frames were not one refresh apart\n");
+  CHECK(step_ok);                                   /* one frame per refresh: none presented in time missed */
+  if (!step_ok) fprintf(stderr, "none: frames presented in time were not one refresh apart\n");
   /* paced: N frames take N-1..N+ periods, not as fast as possible */
   t_count++;
   if (el < (N - 1) * P - 2000 || el > (N + 6) * P + 200000) {
     t_fail++;
     fprintf(stderr, "none: %d frames took %lld us (want about %lld)\n", N, (long long)el, (long long)(N * P));
   }
-  video_stats_t st;
-  video_get_stats(v, &st);
-  CHECK_INT(st.flips, N);
-  CHECK_INT(st.missed, 0);
+  CHECK_INT(flips, N);
+  CHECK_INT(missed, lost);                          /* the stats count the refreshes the late frames lost */
   CHECK_INT(st.period_us, P);
   CHECK(!st.down && st.reinits == 0);
 

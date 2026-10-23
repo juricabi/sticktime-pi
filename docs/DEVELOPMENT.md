@@ -69,7 +69,7 @@ python image/tests/test_update.py                  # the updater against a fake 
 python host/tests/check_settings_keys.py           # settings.py and settings_keys.h describe the same keys
 python host/tests/vtx_live_test.py                 # VTX control: the real program + the fake VTX (--pty on Linux: termios)
 python host/tests/wifi_live_test.py                # WiFi joystick: the receiver (test_wifi_live as a probe) + fake ELRS/Crossfire modules
-python host/tests/test_wifi_docs.py                # the WiFi joystick's numbers in the docs (restart tries, lock loss, 0.5 s pause) match the code
+python host/tests/test_wifi_docs.py                # the WiFi joystick's numbers in the docs (restart tries, lock loss, 0.5 s pause, the release: 1.5 s exit wait from the stop, 2 s per POST, 3 s windows, ends at the next start) match the code
 ```
 (add `.exe` to the binaries on Windows.) Scenarios are Lua scripts in `host/tests/scenarios/`; the
 scenario API is documented at the top of `host/src/scenario.c`, screenshots go to
@@ -79,9 +79,10 @@ one-wire echo and clone quirks) on TCP or a pty; the program takes it with `--vt
 start one themselves. `host/tests/fake_elrs.py` is a fake ELRS / Crossfire WiFi joystick module (beacons,
 `/udpcontrol` with `joystick_begin` and `joystick_end`, the stream; also a program for trying a real Pi
 without a radio); `wifi_live_test.py` runs it against the receiver, including a request change restarting an
-ELRS stream (`--probe` takes another build's `test_wifi_live`, e.g. a wrapper running the aarch64 one under
-qemu). `compare_emulator.py` writes `build/compare/<size>/*_side.png`: look at the
-pictures, not only the numbers (text antialiasing and single-pixel 3D edges differ a little).
+ELRS stream and the release: `joystick_end` on the exit, a stop, Release and Connect (`--probe` takes another
+build's `test_wifi_live`, e.g. a wrapper running the aarch64 one under qemu). `compare_emulator.py` writes
+`build/compare/<size>/*_side.png`: look at the pictures, not only the numbers (text antialiasing and
+single-pixel 3D edges differ a little).
 
 ### The program headless
 

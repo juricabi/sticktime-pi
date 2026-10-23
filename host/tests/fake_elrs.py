@@ -7,14 +7,17 @@ Standard library only (Python 3.11+). Follows ExpressLRS src/lib/WIFI/wifiJoysti
 devWIFI.cpp (WebUdpControl), and what the owner's Windows app (JoystickEngine.cs) saw from TBS
 Crossfire modules:
 
-  beacons  ELRS  b"ELRS" u8 version(1) u16le port(11000) u8 name_len name, every 5 s, and only
-                 while not streaming (wifiJoystick.cpp Loop returns early while active)
+  beacons  ELRS  b"ELRS" u8 version(1) u16le port(11000) u8 name_len name, only while not streaming
+                 (wifiJoystick.cpp Loop returns early while active), once more than 5 s passed since the
+                 last one: so at once when a stream that lasted longer ends
            XF    b"VELOCIDRONE" (+ optional bytes), every ~8 s, also while streaming
   HTTP     POST /udpcontrol, form body or query: action=joystick_begin&interval=<us>&channels=<n>
            ELRS: the stream goes to the client that posted, always (a later POST from anyone
                  steals an active stream); interval/channels only change while idle: interval 0
                  or < 1000 -> 10000, channels as uint8, 0 -> 8, > 16 -> 16. Reply 200 "ok".
-                 action=joystick_end stops (beacons resume); any other action gets no reply.
+                 action=joystick_end stops the stream (StopSending: active = false; the beacons resume,
+                 the first at once, see above) and gets 200 "ok" too, also while idle; any other action
+                 gets no reply.
                  GET /udpcontrol -> 404 (the route is POST only).
            XF:   assumed: 16 channels every 11 ms, ignores interval, channels and joystick_end.
   stream   u8 type(1) u8 count, count x u16le, to (client ip, stream_port), from (ip, any port)
@@ -26,7 +29,9 @@ IP. On loopback, broadcasts are unreliable (Windows): beacon_to is a unicast add
 As a library (host/tests/wifi_live_test.py):
     m = FakeModule(ip="127.0.0.2", http_port=27501, beacon_to=("127.0.0.1", 27500)).start()
     m.mode = "placeholder"; ...; m.stop()
-As a program, e.g. on a PC next to a real Pi (no radio needed):
+    m.actions() == ["joystick_begin", "joystick_end"]; m.npost("joystick_end") == 1; m.beacon_times
+As a program (it prints each request and the stream state it left), e.g. on a PC next to a real Pi
+(no radio needed):
     python fake_elrs.py --ip 0.0.0.0 --http-port 80 --kind elrs --sweep
 """
 import argparse
@@ -142,6 +147,7 @@ class FakeModule:
         self.sent_beacons = 0
         self.sent_garbage = 0
         self.beacons_while_active = 0
+        self.beacon_times = []                # time.monotonic() of each beacon sent
         self._stop = threading.Event()
         self._threads = []
         self._httpd = None
@@ -186,9 +192,17 @@ class FakeModule:
         with self.lock:
             return [p["t"] for p in self.posts if p["method"] == "POST" and (status is None or p["status"] == status)]
 
-    def npost(self):
+    def npost(self, action=None):
+        """POSTs received; with action, only POST /udpcontrol with that action (e.g. "joystick_end")."""
         with self.lock:
-            return sum(1 for p in self.posts if p["method"] == "POST")
+            return sum(1 for p in self.posts if p["method"] == "POST" and
+                       (action is None or (p["path"] == "/udpcontrol" and p["params"].get("action") == action)))
+
+    def actions(self, client=None):
+        """The action of each POST /udpcontrol, in order ("" when it had none); client: only from that IP."""
+        with self.lock:
+            return [p["params"].get("action", "") for p in self.posts if p["method"] == "POST" and
+                    p["path"] == "/udpcontrol" and (client is None or p["client"] == client)]
 
     def state(self):
         with self.lock:
@@ -229,8 +243,9 @@ class FakeModule:
                 pass
 
             def _record(self, method, path, body, params):
+                # active/remote_ip: the stream state the request left (None: it did not reach udpcontrol)
                 rec = dict(method=method, client=self.client_address[0], path=path, headers=dict(self.headers),
-                           body=body, params=params, t=time.monotonic(), status=None)
+                           body=body, params=params, t=time.monotonic(), status=None, active=None, remote_ip=None)
                 with mod.lock:
                     mod.posts.append(rec)
                 return rec
@@ -256,7 +271,10 @@ class FakeModule:
                     return
                 if fail or mod.http_status != 200:
                     return self._reply(rec, mod.http_fail_status if fail else mod.http_status, b"error")
-                if mod.udpcontrol(self.client_address[0], params):
+                answer = mod.udpcontrol(self.client_address[0], params)
+                with mod.lock:
+                    rec["active"], rec["remote_ip"] = mod.active, mod.remote_ip
+                if answer:
                     self._reply(rec, 200, b"ok")
                 else:
                     self.close_connection = True
@@ -278,22 +296,43 @@ class FakeModule:
         return Handler
 
     # ---------------------------------------------------------------- loops
+    def _send_beacon(self, pkt, active):
+        if not self.beacons_enabled or not self.beacon_to:
+            return
+        try:
+            self._udp.sendto(pkt, self.beacon_to)
+            self.sent_beacons += 1
+            self.beacon_times.append(time.monotonic())
+            if active:
+                self.beacons_while_active += 1
+        except OSError:
+            pass
+
     def _beacon_loop(self):
+        if self.kind == "elrs":
+            return self._elrs_beacon_loop()
         nxt = time.monotonic() + self.first_beacon
         while not self._stop.wait(max(0.0, nxt - time.monotonic())):
             nxt += self.beacon_interval
             with self.lock:
                 active = self.active
-            if (self.kind == "elrs" and active) or not self.beacons_enabled or not self.beacon_to:
-                continue
-            pkt = elrs_beacon(self.name) if self.kind == "elrs" else b"VELOCIDRONE" + self.beacon_suffix
-            try:
-                self._udp.sendto(pkt, self.beacon_to)
-                self.sent_beacons += 1
-                if active:
-                    self.beacons_while_active += 1
-            except OSError:
-                pass
+            self._send_beacon(b"VELOCIDRONE" + self.beacon_suffix, active)
+
+    def _elrs_beacon_loop(self):
+        # wifiJoystick.cpp Loop: nothing while streaming; idle, a beacon once more than the interval passed since
+        # the last one (the first one first_beacon after power on). So when a stream that lasted longer ends
+        # (joystick_end), the next beacon goes out at once.
+        due = time.monotonic() + self.first_beacon
+        while True:
+            now = time.monotonic()
+            with self.lock:
+                active = self.active
+            if not active and now >= due:
+                due = now + self.beacon_interval
+                self._send_beacon(elrs_beacon(self.name), False)
+            wait = 0.01 if active else min(0.01, max(0.0, due - time.monotonic()))
+            if self._stop.wait(wait):
+                return
 
     def _frame(self, n, count, rnd):
         if self.mode == "placeholder":
@@ -392,7 +431,10 @@ def main(argv=None):
                 new = m.posts[seen:]
                 seen = len(m.posts)
             for p in new:
-                print(f"{p['method']} {p['path']} from {p['client']}: {p['body']!r} -> {p['status']}", flush=True)
+                left = ""
+                if p["active"] is not None:
+                    left = f", streaming to {p['remote_ip']}" if p["active"] else ", idle (beacons)"
+                print(f"{p['method']} {p['path']} from {p['client']}: {p['body']!r} -> {p['status']}{left}", flush=True)
     except KeyboardInterrupt:
         pass
     m.stop()

@@ -12,7 +12,16 @@
  * source as live (INPUT_STALE_US, 0.5 s, like every source); after that, with no other live source, the
  * game gets centered sticks with the throttle low (mix_sticks) and pauses in flight. After 3 s without a
  * valid frame (the lock loss, WIFI_SOURCE_TIMEOUT_US), and on a stop, a close or a switch to another
- * module IP, the lock is released and wifi_poll empties the source (channels 0, not present). */
+ * module IP, the lock is released and wifi_poll empties the source (channels 0, not present).
+ *
+ * Release (R14 in wifi_proto.h): an ELRS module streams until it gets joystick_end and beacons only while
+ * idle, so one left streaming to the Pi can't be found by any other app. A stop (also a port change), the
+ * close (the program's exit) and wifi_release send it joystick_end alone (the core picks the modules: the
+ * locked one, ones that stream to us while we drop their frames, ones activated less than 3 s ago that have
+ * not locked; never one known as Crossfire). The worker sends them like the activations, each with 2 s to
+ * answer; the close waits for their answers at most WIFI_RELEASE_WAIT_US after the stop or wifi_release that
+ * sent them. Released, the receiver does not listen (the module's next beacon would get it a joystick_begin at
+ * once) until wifi_connect, or wifi_start: nothing is saved, so the program's next start listens again. */
 #ifndef INPUT_WIFI_H
 #define INPUT_WIFI_H
 
@@ -40,16 +49,28 @@ typedef struct wifi wifi_t;
 /* Allocates the receiver and starts its worker thread. Does not bind: call wifi_start.
  * cfg NULL = defaults. NULL only when out of memory. Every function accepts w == NULL. */
 wifi_t *wifi_open(app_t *app, const wifi_config_t *cfg);
-void    wifi_close(wifi_t *w);                             /* stop, end the worker, free */
+/* The program's exit: stop (with its release), then wait for the releases' answers (also those of an earlier stop
+ * or wifi_release) until WIFI_RELEASE_WAIT_US after the last stop that sent any (an earlier host_stop_wifi too, as
+ * the Linux app counts), end the worker (it aborts what is left), log the result of each release, free. Call it
+ * after the frame loop ended: it blocks for that wait. */
+void    wifi_close(wifi_t *w);
 /* Reset the session and bind (retried in wifi_poll: 5 tries 300 ms apart, then state Error and a
- * try every 5 s). No-op while running. */
+ * try every 5 s). No-op while running. Ends a release (wifi_release). */
 void    wifi_start(wifi_t *w, int64_t now_us);
-void    wifi_stop(wifi_t *w);                              /* close the socket, state Stopped; POST results of the
-                                                              old session are discarded (never waits) */
+/* Close the socket, release what streams to us (R14: queued, the answers come through wifi_poll), state
+ * Stopped; POST results of the old session are discarded. Never waits. */
+void    wifi_stop(wifi_t *w);
+/* StickTime Pi's Release (the web page): stop as above, so the module streams no more and broadcasts again
+ * for other apps, and stay stopped: state "released", settings changes are kept for wifi_connect. Never
+ * waits. No-op when released already. */
+void    wifi_release(wifi_t *w, int64_t now_us);
+/* Connect: undo wifi_release, listen again (wifi_start; the module IP gets its joystick_begin after the
+ * bind). Not released: only wifi_start (a no-op while running). */
+void    wifi_connect(wifi_t *w, int64_t now_us);
 /* Frame loop, once per frame (never blocks): bind retry, drain UDP (at most 256 datagrams), collect
  * POST results, tick, stats, update *src (the WiFi slot; may be NULL). */
 void    wifi_poll(wifi_t *w, int64_t now_us, insrc_t *src);
-/* Live, by the core's request rules (R1-R13 in wifi_proto.h): module_ip -> set target (invalid text, which
+/* Live, by the core's request rules (R1-R14 in wifi_proto.h): module_ip -> set target (invalid text, which
  * the settings refuse, 0.0.0.0 too: logged, discovery; the module locked now: the lock kept, nothing sent; another: unlocked, joystick_begin
  * at once, a restart pending or held for the module left dropped); port -> rebind (a new session);
  * http_port -> the next POST. interval and channels (the request) -> the next joystick_begin; the module
@@ -58,11 +79,14 @@ void    wifi_poll(wifi_t *w, int64_t now_us, insrc_t *src);
  * channels, no beacon from it yet) once the lock is WIFI_XF_BEACON_US old without a Crossfire beacon. Not
  * when it is Crossfire by its beacon (which ignores them) or the new module_ip names another module (its
  * joystick_begin carries them). A restart counts only when both POSTs got a 2xx; a failed one is sent again
- * (the core). */
+ * (the core). Released (wifi_release): all of it is kept and applies on wifi_connect (a port change too). */
 void    wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now_us);
-/* wifi_module ("ELRS 10.0.0.1" while streaming, else ""), wifi_state ("off", "listening",
+/* wifi_module ("ELRS 10.0.0.1" while streaming, else ""), wifi_state ("off", "released", "listening",
  * "activating 10.0.0.1", "connecting to 10.0.0.1", "no data from 10.0.0.1",
- * "no stick data from 10.0.0.1", "streaming", "UDP port 11000 in use"), wifi_rate_hz, wifi_dropped */
+ * "no stick data from 10.0.0.1", "streaming", "UDP port 11000 in use"), wifi_rate_hz, wifi_dropped,
+ * wifi_release (the last release of this run, by a stop or wifi_release: "" none, "sending" an answer
+ * awaited, "ok" every module it went to answered, "failed" one did not (or the queue was full), "none"
+ * nothing was sent: no module streamed to us, or only one known as Crossfire) */
 void    wifi_fill_status(const wifi_t *w, app_status_t *st);
 int64_t wifi_last_arrival_us(const wifi_t *w);             /* receive time of the newest applied frame (plat_now_us clock), 0 = none */
 
@@ -70,6 +94,7 @@ int64_t wifi_last_arrival_us(const wifi_t *w);             /* receive time of th
 typedef struct {
   bool running;                 /* started (listening, or trying to bind) */
   bool listening;               /* socket bound */
+  bool released;                /* wifi_release: not listening until wifi_connect / wifi_start */
   uint16_t port;
   wifi_state_t state;
   char detail[64];
@@ -85,6 +110,8 @@ typedef struct {
   uint32_t posts, posts_ok, posts_failed;   /* activations (a restart is one: joystick_end + joystick_begin, ok
                                                only when both got a 2xx) */
   int pending;                  /* activation requests queued or in flight */
+  int releasing;                /* releases (joystick_end alone, R14) queued, in flight or not yet collected */
+  uint32_t releases_ok, releases_failed;    /* their results */
   int interval_us, channels;    /* the request: what joystick_begin asks for */
   uint32_t restarts;            /* restarts sent (a request change, or a module streaming another channel count) */
   uint8_t nch;

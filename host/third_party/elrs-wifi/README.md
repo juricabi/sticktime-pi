@@ -6,7 +6,7 @@
 | | |
 |---|---|
 | Source | [github.com/juricabi/elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux), directory `core/` (and its `LICENSE`) |
-| Commit | `cbd03d46ea80daf3e14fc4239c7e749cd852664b` (also in `VENDOR`, with the SHA-256 of every file copied) |
+| Commit | `12165cee8b6654a029954463456ead751d5a9c90` (also in `VENDOR`, with the SHA-256 of every file copied) |
 | License | MIT, (c) juricabi: `LICENSE` |
 
 The same author's Linux WiFi joystick app is built on this core, and both follow the Windows app
@@ -15,8 +15,8 @@ The same author's Linux WiFi joystick app is built on this core, and both follow
 
 | File | What |
 |---|---|
-| `wifi_proto.c/.h` | the protocol engine: pure logic (beacons, activation, source lock, Crossfire placeholders, stats, the request with its restarts, the activation queue) |
-| `wifi_net.c/.h` | the activation POST (`joystick_end` + `joystick_begin`), blocking, for the worker thread; socket helpers |
+| `wifi_proto.c/.h` | the protocol engine: pure logic (beacons, activation, source lock, Crossfire placeholders, stats, the request with its restarts, the release of the module on stop and exit, the activation queue) |
+| `wifi_net.c/.h` | the activation POST (`joystick_end` + `joystick_begin`, or `joystick_end` alone for a release), blocking, for the worker thread; socket helpers |
 | `tests/` | its unit tests and their `t.h`; `host/build.sh native test` builds and runs `tests/test_*.c` with the host's |
 | `VENDOR` | written by the script: where the files came from and their SHA-256 (paths from the repo root) |
 
