@@ -32,11 +32,12 @@
  *     window); dropped when that module's ELRS beacon gets it a joystick_begin carrying the request, or
  *     when another module takes the lock.
  * R3  Not locked: the next joystick_begin carries the request. What each module was last asked is kept
- *     per module (asked, WIFI_TABLE); a module that locks with another asked request than the request is
- *     restarted under R2's kind rules. (Checked on every applied frame: a locked module whose asked request
- *     differs is restarted too, which only wifi_proto_store_request without a switch to another module
- *     leads to.) A restart that did not take - it failed (R6) and its module is no longer locked, or a
- *     reset cut it short (R9) - leaves that module's asked request unknown, so its next lock restarts it.
+ *     per module (asked, WIFI_TABLE), and forgotten when a release of it took (R14); a module that locks
+ *     with another asked request than the request is restarted under R2's kind rules. (Checked on every
+ *     applied frame: a locked module whose asked request differs is restarted too, which only
+ *     wifi_proto_store_request without a switch to another module leads to.) A restart that did not take -
+ *     it failed (R6) and its module is no longer locked, or a reset cut it short (R9) - leaves that module's
+ *     asked request unknown, so its next lock restarts it.
  * R4  Explicit restart (wifi_proto_restart): locked -> as R2 (Crossfire: logged, nothing sent). Not
  *     locked, the module IP set: known as ELRS -> restarted; unknown or Crossfire -> a plain joystick_begin
  *     past the throttle, never joystick_end. Neither -> logged, nothing sent.
@@ -55,7 +56,8 @@
  *     new module's joystick_begin carries the request, the module being left gets nothing.
  * R9  A stop/start or a port change (wifi_proto_reset) starts a new session: lock, throttles and restart
  *     state cleared; the kinds from beacons and the asked requests kept, except that a module whose restart
- *     had not taken (its result still awaited, or failed) gets an unknown asked request (R3).
+ *     had not taken (its result still awaited, or failed) gets an unknown asked request (R3), and a release
+ *     that took forgets its module's (R14).
  * R10 Tables are bounded (WIFI_TABLE); the locked module's kind is never evicted. Full, a table drops the
  *     entry written longest ago (by a sequence number, so datagrams of one drain with the same time cannot
  *     make it drop the newest), never the locked module's or the module IP's kind or asked request. With
@@ -67,6 +69,30 @@
  * R13 One plain activation POST per module per WIFI_THROTTLE_US; restarts bypass the throttle and restart it.
  *     (Plain: the automatic ones - beacons, the module IP's re-POST. The joystick_begin of R4 and R7 goes
  *     out at once too, and restarts the throttle.)
+ * R14 Release (wifi_proto_release): ELRS streams until it gets joystick_end, loses power or loses its WiFi,
+ *     and beacons only while idle, so a module left streaming to an app that stopped can't be found by any
+ *     other app. The hosts release on stop, exit and a port change (and StickTime Pi on its Release):
+ *     action=joystick_end alone goes to the locked module, then to every module that streams to us while we
+ *     drop its frames, then to every module activated less than WIFI_SOURCE_TIMEOUT_US ago that has not
+ *     locked since (it may be about to stream to us). The ones known to stream to us go first: the host's
+ *     worker sends them in turn, so a module that does not answer must not hold them up. "Streams to us
+ *     while we drop its frames": a frame of it came less than WIFI_SOURCE_TIMEOUT_US ago, and it is a 2nd
+ *     source, sends placeholder frames, or is not the module IP (e.g. the module left by a switch). With a
+ *     module IP set, other modules' beacons are not heard: one of unknown kind that we neither activated
+ *     nor had locked this session is left alone then, as it could be a Crossfire we can't tell. Except one
+ *     known as Crossfire by its beacon (it beacons while streaming, so other apps find it anyway, and what
+ *     joystick_end does to it is unknown): that one is logged, not sent. A module of unknown kind gets it
+ *     (an ELRS module streaming since before we started never beaconed to us). The releases outlive the
+ *     session that ends right after (wifi_actq_push_release); an exit waits for them at most
+ *     WIFI_RELEASE_WAIT_US. A release changes no lock, kind or throttle. One that took (a 2xx) forgets what
+ *     its module was last asked (R3): the module is idle then and streams what its next joystick_begin asks
+ *     for, so its next lock takes that, or the request then, and is not restarted for an old request (e.g.
+ *     stop, another rate, start, with the module IP set). One that missed its joystick_end leaves it as it
+ *     was: the module streams on, as before. A host that keeps running after a release stops listening until
+ *     asked to connect again, or the module's next beacon would get it a joystick_begin at once. A port
+ *     change is a stop and a start, with its release: the modules send to port 11000 only, so on another
+ *     port no frame of theirs comes, and a later stop could not release them. Not on a switch to another
+ *     module IP (R7: the module left gets nothing then; a stop releases it if it still streams to us).
  *
  * Times are microseconds on a monotonic clock, passed in. IPs are IPv4 in network byte order
  * (as in sin_addr.s_addr). The host (sticktime-pi's input_wifi.c, the Linux app's engine.c) owns the
@@ -91,7 +117,7 @@
 #ifndef WIFI_USER_AGENT
 #define WIFI_USER_AGENT          "elrs-wifi-joystick"
 #endif
-#define WIFI_TABLE               8          /* throttle / warned / no-stick-data / beacon / restarted tables */
+#define WIFI_TABLE               8          /* throttle / warned / no-stick-data / beacon / restarted / dropped tables */
 
 /* the request: supported values */
 #define WIFI_INTERVAL_MIN        1000       /* ELRS turns anything below 1000 us into 10000 */
@@ -103,6 +129,7 @@
                                                without one (two lost) means it is not Crossfire */
 #define WIFI_RESTART_TRIES       3          /* sends of a restart that fails (R6): again WIFI_THROTTLE_US
                                                after the last one while its module stays locked */
+#define WIFI_RELEASE_WAIT_US     1500000    /* an exit waits at most this long for its joystick_end POSTs (R14) */
 /* the rates a UI offers, as intervals in us: 1000, 500, 333, 250, 200, 150, 100 and 50 Hz */
 #define WIFI_INTERVAL_PRESETS    { 1000, 2000, 3000, 4000, 5000, 6667, 10000, 20000 }
 #define WIFI_N_INTERVAL_PRESETS  8
@@ -127,8 +154,13 @@ const char *wifi_describe_interval(int us, char *out, size_t cap);
 #define WIFI_ACT_BUSY    (-2)   /* not sent (already in flight, queue full, not listening): no throttle entry */
 
 /* One activation for the host to send: POST joystick_begin asking for interval_us and channels;
- * restart: POST action=joystick_end first (see "the request" above). */
-typedef struct { uint32_t ip; bool restart; int interval_us; int channels; } wifi_act_t;
+ * restart: POST action=joystick_end first (see "the request" above). release (R14): POST
+ * action=joystick_end alone (restart false, interval_us and channels 0); the host queues it with
+ * wifi_actq_push_release and reports its result with wifi_proto_release_done, never activation_done.
+ * The hook answers a release with wifi_actq_push_release's result alone (BUSY only when the queue is full,
+ * which is what the log says), before any check that it is listening: a release needs no socket, and may
+ * come after the host closed it. */
+typedef struct { uint32_t ip; bool restart; int interval_us; int channels; bool release; } wifi_act_t;
 
 typedef struct {
   void *ud;
@@ -140,8 +172,15 @@ typedef struct {
 } wifi_hooks_t;
 
 /* Table entries; seq: when written (a counter: a full table drops the smallest, R10) */
-typedef struct { uint32_t ip; int64_t t_us; int interval_us, channels; uint64_t seq; } wifi_ipt_t;   /* + the request it carried */
+/* The last activation sent to ip: when, the request it carried. unthrottled: its throttle does not apply (the
+ * module IP set, an explicit restart; the entry stays for R14). locked: a frame of ip was applied after it, noted
+ * when another module takes the lock (for the last locked module, bound_ip and bound_last_us tell; R14). */
+typedef struct {
+  uint32_t ip; int64_t t_us; int interval_us, channels; uint64_t seq; bool unthrottled, locked;
+} wifi_ipt_t;
 typedef struct { uint32_t ip; wifi_kind_t kind; char name[32]; uint64_t seq; } wifi_beacon_info_t;
+/* A module that streams to us while we drop its frames (R14): when its last frame came (applied or dropped) */
+typedef struct { uint32_t ip; int64_t t_us; uint64_t seq; } wifi_dropped_t;
 /* interval_us 0: not known (a restart of it did not take, R3); channels then says why: WIFI_ASKED_* */
 typedef struct { uint32_t ip; int interval_us, channels; uint64_t seq; } wifi_asked_t;
 #define WIFI_ASKED_CUT     0   /* a reset cut its restart short (its result was still awaited) */
@@ -156,6 +195,14 @@ typedef struct {
   uint32_t nostick_ip;                                 /* the last one (status text) */
   int64_t nostick_last_us;                             /* its last placeholder frame (the state goes back after 3 s) */
   wifi_ipt_t act[WIFI_TABLE];   int nact;              /* last activation per IP (and its request), LRU-evicted */
+  /* modules streaming to us whose frames we drop (a 2nd source, placeholder frames, with a module IP set another
+   * module that we activated or had locked this session, or whose kind a beacon told; the module left by a switch
+   * to another module IP from its last frame on), for R14: kept through lock changes, cleared by reset; full, the
+   * one heard longest ago goes */
+  wifi_dropped_t dropped[WIFI_TABLE]; int ndropped;
+  /* modules that took the lock this session, the one locked last at the end (R14: one left by a switch that
+   * streams on is released); cleared by reset; full, the one locked longest ago goes */
+  uint32_t held[WIFI_TABLE];    int nheld;
   uint64_t tab_seq;                                    /* the last table entry's seq (never reset) */
   bool first_act_set; int64_t first_act_us; uint32_t first_act_ip; bool hint_shown;
   /* kind/name per IP from beacons, kept by reset (a module keeps its kind while it keeps its IP); the
@@ -190,7 +237,8 @@ typedef struct {
   /* what each module was last asked for (R3; kept by reset: it streams on after a stop): the request of a
    * restart sent to it or of an activation after its ELRS beacon (it was not streaming then), else, from
    * its lock on, that of the last activation sent to it this session, or the request when it locked; not
-   * known (interval_us 0) after a restart of it that did not take */
+   * known (interval_us 0) after a restart of it that did not take; forgotten when a release of it took (R14:
+   * idle, it streams what its next joystick_begin asks for) */
   wifi_asked_t asked[WIFI_TABLE]; int nasked;
 } wifi_proto_t;
 
@@ -209,9 +257,10 @@ void wifi_proto_tick(wifi_proto_t *p, int64_t now_us);
 /* SetTarget. Trims spaces/tabs. NULL/blank -> discovery (target 0, nothing else). Invalid text ->
  * logged, target unchanged, -1. The module streaming to us now (locked, data within
  * WIFI_SOURCE_TIMEOUT_US) -> target = ip, logged, the lock and a held restart for it stay, nothing is
- * sent. Else: target = ip, its throttle entry removed, unlocked, logged, state Searching "connecting to
+ * sent. Else: target = ip, its throttle lifted, unlocked, logged, state Searching "connecting to
  * <ip>", and the activation POST goes out at once. A restart pending, held or to be sent again for another
- * module is dropped (R7). Returns 0. */
+ * module is dropped (R7). The module left gets nothing; for R14 it streams to us while we drop its frames,
+ * from its last frame on (a stop before its next frame releases it too). Returns 0. */
 int  wifi_proto_set_target(wifi_proto_t *p, const char *text, int64_t now_us);
 /* EnsureStreaming: activation POST to ip unless one went out less than WIFI_THROTTLE_US ago */
 void wifi_proto_ensure(wifi_proto_t *p, uint32_t ip, int64_t now_us);
@@ -259,6 +308,38 @@ bool wifi_proto_restart(wifi_proto_t *p, int64_t now_us);
  * this module's POST (the hook was BUSY) goes out now if it is due (see wifi_proto_restart). Call it with
  * the actq unlocked: it may call the activate hook. */
 void wifi_proto_activation_done(wifi_proto_t *p, uint32_t ip, bool ok, int64_t now_us);
+/* R14: release what streams to us when the host stops listening (stop, exit, a port change, StickTime Pi's
+ * Release), before or after it closes its socket (a release needs none). Calls the activate hook with release =
+ * true for the locked module; then for every module whose frames we drop and of which one came less than
+ * WIFI_SOURCE_TIMEOUT_US ago, the one heard longest ago first (the dropped table: a 2nd source, placeholder
+ * frames, with a module IP set another module that we activated or had locked this session, or whose kind a
+ * beacon told; the module left by a switch counts from its last frame, applied or not); then for every module
+ * activated less than WIFI_SOURCE_TIMEOUT_US ago that has not locked since, in the order they were activated (the
+ * act table; "locked since": a frame of it was applied after its activation, whether or not it still has the
+ * lock). The modules known to stream to us come first: the host's worker sends the releases in turn, so one to a
+ * module that may not be there must not hold them up. Each IP once, except one known as Crossfire by its beacon.
+ * Logs, per module:
+ *   "Releasing <ip>: joystick_end, so it stops streaming and broadcasts again"            (handed to the hook)
+ *   "Not releasing <ip>: Crossfire broadcasts while streaming, other apps find it as it is" (Crossfire)
+ *   "Releasing <ip> failed: the request queue is full - it may stream on until its WiFi or power is cycled"
+ *                                                                                           (hook BUSY)
+ * and nothing when there is no module. A hook that answers OK or FAILED at once (tests) gets its result
+ * reported as by wifi_proto_release_done (an OK one forgets what its module was asked). Else changes no lock,
+ * state, table or throttle: the host stops after it as before. The host order on stop: wifi_actq_new_session
+ * (it frees the queue), wifi_proto_release, then wifi_proto_reset; a port change does the same, then starts
+ * on the new port. Call it with the actq unlocked: it calls the activate hook (wifi_actq_new_session goes
+ * under the lock before it, on its own). Returns how many were handed to the hook and not refused (QUEUED,
+ * OK or FAILED). */
+int  wifi_proto_release(wifi_proto_t *p, int64_t now_us);
+/* The result of a release (a wifi_actq_get result with release set; never wifi_proto_activation_done).
+ * ok (a 2xx): "Released <ip>: it broadcasts again, any app can connect to it". Else "Releasing <ip>
+ * failed: <why> - it may stream on until its WiFi or power is cycled", why "HTTP <status>" when status > 0,
+ * else err, else "no answer". ok also forgets what ip was last asked (R3, R14): it is idle after its
+ * joystick_end, so its next lock takes the request of the last activation sent to it this session, or the
+ * request then, as for a module never asked. (The worker sends in order, so all that went to ip after the stop
+ * went after its joystick_end. Should ip be locked when the result comes, the lock stays without an asked
+ * request until its next lock.) Nothing else changes. */
+void wifi_proto_release_done(wifi_proto_t *p, uint32_t ip, bool ok, int status, const char *err);
 void wifi_proto_set_state(wifi_proto_t *p, wifi_state_t s, const char *detail);  /* lifecycle (input_wifi.c) */
 void wifi_proto_poll_stats(wifi_proto_t *p, int64_t now_us);   /* emits when now - last >= 1 s */
 void wifi_proto_emit_stats(wifi_proto_t *p, int64_t now_us);
@@ -291,15 +372,20 @@ long    wifi_http_content_length(const char *buf, size_t n);
  * The frame loop pushes requests and takes results; the worker takes requests and puts results.
  * A session counter (new on every start/stop) drops queued requests and results of an old session.
  * An IP stays "pending" from push until its result is taken, so it is never queued twice; a restart
- * pushed while a plain request for the IP still waits in the queue turns that one into the restart. */
+ * pushed while a plain request for the IP still waits in the queue turns that one into the restart.
+ * Releases (R14) have the session WIFI_ACTQ_ANY: they and their results outlive every new session. */
 #define WIFI_ACTQ 8
+#define WIFI_ACTQ_ANY 0xFFFFFFFFu   /* a release's session; wifi_actq_new_session never makes it the session */
 
-/* end_first: POST action=joystick_end before body (a restart) */
-typedef struct { uint32_t ip; uint16_t http_port; uint32_t session; bool end_first; char body[64]; } wifi_actreq_t;
-/* ok/status/reason/err: the joystick_begin; end_status/end_err: the joystick_end of a restart (0/"" otherwise) */
+/* end_first: POST action=joystick_end before body (a restart). release: POST action=joystick_end alone,
+ * body unused (R14). */
+typedef struct { uint32_t ip; uint16_t http_port; uint32_t session; bool end_first; bool release; char body[64]; } wifi_actreq_t;
+/* ok/status/reason/err: the joystick_begin, or for a release its joystick_end; end_status/end_err: the
+ * joystick_end of a restart (0/"" otherwise) */
 typedef struct {
   uint32_t ip; uint32_t session; bool ok; int status; char reason[32]; char err[64];
   bool restart; int end_status; char end_err[64];
+  bool release;
 } wifi_actres_t;
 
 typedef struct {
@@ -307,17 +393,36 @@ typedef struct {
   wifi_actres_t res[WIFI_ACTQ]; int rs_head, rs_n;
   uint32_t pending[WIFI_ACTQ]; int npending;     /* frame-loop side only */
   uint32_t session;
+  int nrelease;                                  /* releases pushed whose result is not taken yet */
 } wifi_actq_t;
 
 void wifi_actq_init(wifi_actq_t *q);
-void wifi_actq_new_session(wifi_actq_t *q);     /* drops queued requests, results and pending IPs */
+/* drops queued requests, results and pending IPs of the session; releases and their results stay */
+void wifi_actq_new_session(wifi_actq_t *q);
+/* R14: queue POST action=joystick_end alone to ip (session WIFI_ACTQ_ANY): kept by wifi_actq_new_session,
+ * never stale, not pending (it may queue behind a request to the same IP, which the worker sends first).
+ * Its result comes back through wifi_actq_get with release set. WIFI_ACT_QUEUED, or WIFI_ACT_BUSY when
+ * the request queue is full. When the last request queued for ip is a release not taken yet, that one
+ * is it: WIFI_ACT_QUEUED, nothing added, one result (stop/start rounds while the worker waits on a module
+ * that does not answer would fill the queue with them). */
+int  wifi_actq_push_release(wifi_actq_t *q, uint32_t ip, uint16_t http_port);
+/* releases queued, in flight or with a result not yet taken: an exit waits until 0, at most
+ * WIFI_RELEASE_WAIT_US (then the worker aborts what is left). It counts down only when wifi_actq_get takes
+ * a release's result, so a host whose frame loop has ended takes them itself: wifi_actq_get under the lock,
+ * wifi_proto_release_done with it released (after the stop only releases have results to come), and its
+ * worker wakes that waiter after each wifi_actq_put. */
+int  wifi_actq_releases(const wifi_actq_t *q);
 bool wifi_actq_is_pending(const wifi_actq_t *q, uint32_t ip);
 /* WIFI_ACT_QUEUED, or WIFI_ACT_BUSY when ip is pending already (unless an end_first push finds its
  * request still queued: that one becomes the restart, with this body), the queue is full or body is too long */
 int  wifi_actq_push(wifi_actq_t *q, uint32_t ip, uint16_t http_port, const char *body, bool end_first);
-bool wifi_actq_take(wifi_actq_t *q, wifi_actreq_t *out);          /* worker: next request */
-bool wifi_actq_stale(const wifi_actq_t *q, uint32_t session);     /* worker: abort a request of an old session */
-void wifi_actq_put(wifi_actq_t *q, const wifi_actres_t *r);       /* worker: old sessions are dropped */
-bool wifi_actq_get(wifi_actq_t *q, wifi_actres_t *out);           /* frame loop: next result, unpends its IP */
+bool wifi_actq_take(wifi_actq_t *q, wifi_actreq_t *out);          /* worker: next request (this session's or a release) */
+/* worker: abort a request of an old session (never a release: WIFI_ACTQ_ANY is never stale; the host's own
+ * abort callback cuts a release short only on exit, after WIFI_RELEASE_WAIT_US) */
+bool wifi_actq_stale(const wifi_actq_t *q, uint32_t session);
+void wifi_actq_put(wifi_actq_t *q, const wifi_actres_t *r);       /* worker: old sessions are dropped, releases kept */
+/* frame loop: next result (this session's or a release); unpends its IP, except a release's, which counts
+ * down wifi_actq_releases instead */
+bool wifi_actq_get(wifi_actq_t *q, wifi_actres_t *out);
 
 #endif

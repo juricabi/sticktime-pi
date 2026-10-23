@@ -284,6 +284,88 @@ static void Post_BadReplies(void) {
   }
 }
 
+/* R14: a release is "action=joystick_end" alone (end_first and the body are not used) */
+static void Post_Release_JoystickEndAlone(void) {
+  server_t sv;
+  const char *r[] = { OK200, OK200 };              /* a second POST would be answered: there must be none */
+  server_start(&sv, 2, r);
+  wifi_actreq_t rq = req(sv.port, true);
+  rq.release = true;
+  rq.session = WIFI_ACTQ_ANY;
+  wifi_actres_t rs;
+  memset(&rs, 0x5A, sizeof rs);                     /* filled completely */
+  wifi_net_post(&rq, &rs, 2000, NULL, NULL);      /* (a second POST would have been answered before it returns) */
+  server_stop(&sv);
+  CHECK_INT(sv.nconn, 1);
+  CHECK(strncmp(sv.got[0], "POST /udpcontrol HTTP/1.1\r\n", 27) == 0);
+  const char *b = strstr(sv.got[0], "\r\n\r\n");
+  CHECK(b != NULL);
+  if (b) CHECK_STR(b + 4, "action=joystick_end");
+  CHECK(strstr(sv.got[0], "\r\nContent-Length: 19\r\n") != NULL);
+  CHECK(strstr(sv.got[0], "\r\nUser-Agent: " WIFI_USER_AGENT "\r\n") != NULL);
+  CHECK(rs.release);
+  CHECK(!rs.restart);
+  CHECK(rs.ok);
+  CHECK_INT(rs.status, 200);
+  CHECK_STR(rs.reason, "OK");
+  CHECK_STR(rs.err, "");
+  CHECK_INT(rs.end_status, 0);
+  CHECK_STR(rs.end_err, "");
+  CHECK(rs.ip == LO());
+  CHECK(rs.session == WIFI_ACTQ_ANY);
+}
+
+static void Post_Release_Fails(void) {
+  /* an HTTP error: the joystick_end's status and reason */
+  server_t sv;
+  const char *r[] = { "HTTP/1.0 500 Internal Server Error\r\n\r\n" };
+  server_start(&sv, 1, r);
+  wifi_actreq_t rq = req(sv.port, false);
+  rq.release = true;
+  wifi_actres_t rs;
+  wifi_net_post(&rq, &rs, 2000, NULL, NULL);
+  server_stop(&sv);
+  CHECK_INT(sv.nconn, 1);
+  CHECK(rs.release && !rs.restart && !rs.ok);
+  CHECK_INT(rs.status, 500);
+  CHECK_STR(rs.reason, "Internal Server Error");
+  CHECK_STR(rs.err, "");
+  CHECK_INT(rs.end_status, 0);
+  CHECK_STR(rs.end_err, "");
+  /* nobody listening: err, not end_err */
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  bind(s, (struct sockaddr *)&a, sizeof a);
+  socklen_t al = sizeof a;
+  getsockname(s, (struct sockaddr *)&a, &al);
+  close(s);
+  rq = req(ntohs(a.sin_port), true);
+  rq.release = true;
+  wifi_net_post(&rq, &rs, 2000, NULL, NULL);
+  CHECK(rs.release && !rs.restart && !rs.ok);
+  CHECK_INT(rs.status, 0);
+  CHECK_STR(rs.err, "connection refused");
+  CHECK_INT(rs.end_status, 0);
+  CHECK_STR(rs.end_err, "");
+  /* aborted (an exit after WIFI_RELEASE_WAIT_US) */
+  const char *r2[] = { SILENT };
+  server_start(&sv, 1, r2);
+  rq = req(sv.port, false);
+  rq.release = true;
+  abort_at = wifi_net_now_us() + 150000;
+  abort_calls = 0;
+  wifi_net_post(&rq, &rs, 5000, abort_after, NULL);
+  server_stop(&sv);
+  CHECK(rs.release && !rs.ok);
+  CHECK_INT(rs.status, 0);
+  CHECK_STR(rs.err, "aborted");
+  CHECK_STR(rs.end_err, "");
+  CHECK(abort_calls >= 1);
+}
+
 static void Post_BodyTooLong(void) {
   wifi_actreq_t rq = req(80, false);
   memset(rq.body, 'a', sizeof rq.body - 1);
@@ -335,6 +417,8 @@ int main(void) {
   Post_Timeout();
   Post_Aborted();
   Post_BadReplies();
+  Post_Release_JoystickEndAlone();
+  Post_Release_Fails();
   Post_BodyTooLong();
   Helpers();
   T_DONE();

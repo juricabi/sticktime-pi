@@ -3,10 +3,13 @@
  *
  * No arguments: a self-contained loopback test (build.sh test runs it). Frames and beacons come from
  * a local UDP socket (so the "module" is 127.0.0.1), activation POSTs go to a tiny HTTP server
- * thread; it also covers bind retry, port in use, stop/start, stale POST results, live changes and
+ * thread; it also covers bind retry, port in use, stop/start, stale POST results, live changes,
  * the request rules (R1-R13 in wifi_proto.h: a new rate or channel count restarts a streaming ELRS module,
  * never Crossfire; a held restart, a failed one sent again, one that did not take restarted at the next
- * lock, the module IP of the locked module).
+ * lock, the module IP of the locked module) and the release (R14: joystick_end on a stop, a port change and
+ * the close, which waits for the answers at most WIFI_RELEASE_WAIT_US after the stop or Release that sent them;
+ * Release and Connect, the release's outcome in the status, the program's next start listening again, the module
+ * left by a switch, a release's 2 s time-out).
  *
  * With arguments: a probe for host/tests/wifi_live_test.py (and for trying a real module):
  *   test_wifi_live --port N --http-port N [--module-ip IP] [--interval-us N] [--channels N]
@@ -14,9 +17,10 @@
  *                  [--expect-streaming] [--expect-src IP] [--expect-nch N] [--min-frames N]
  *                  [--min-rate HZ] [--max-rate HZ]
  * It prints JSON lines on stdout ({"ev":"state"|"log"|"frame"|"stats"|"poll"|"exit", ...}) and exits
- * 0 as soon as the expectations are met, 1 when the duration ends first (0 without expectations).
+ * 0 as soon as the expectations are met, 1 when the duration ends first (0 without expectations). The
+ * close's log lines (its release) come before "exit", which is always the last line.
  * --stdin reads commands, one per line: target <ip>|target, interval <us>, channels <n>,
- * http-port <n>, port <n>, stop, start, quit. */
+ * http-port <n>, port <n>, stop, start, release, connect, quit. */
 #include "t.h"
 #include "input_wifi.h"
 
@@ -63,6 +67,11 @@ static const char *status_of(wifi_t *w) {
   static app_status_t st;
   wifi_fill_status(w, &st);
   return st.wifi_state;
+}
+static const char *release_of(wifi_t *w) {           /* the last release's outcome (app_status_t.wifi_release) */
+  static app_status_t st;
+  wifi_fill_status(w, &st);
+  return st.wifi_release;
 }
 #define POLL_UNTIL(w, s, ms, cond) do { int64_t e_ = plat_now_us() + (int64_t)(ms) * 1000; \
   while (!(cond) && plat_now_us() < e_) { poll1(w, s); plat_sleep_us(1000); } } while (0)
@@ -400,10 +409,20 @@ static void test_flow(void) {
   CHECK_INT(in.rx - rx0, 300);
   CHECK_INT(in.raw[0], 1299);
 
-  /* stop: Stopped, the port is free again; start twice is harmless */
+  /* stop: the module streaming to us is released (R14: joystick_end alone, its answer collected by the polls),
+   * Stopped, the port is free again; start twice is harmless */
   wifi_stop(w);
   CHECK_STR(status_of(w), "off");
-  CHECK_INT(count_in_log("Stopped. (The module keeps broadcasting until powered off.)"), 1);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end, so it stops streaming and broadcasts again"), 1);
+  CHECK_INT(count_in_log("Stopped.\n"), 1);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.1") > 0);
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again, any app can connect to it"), 1);
+  CHECK_INT(mh_requests(&mh), 4);
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.releases_ok, 1);
+  CHECK_INT(in.releasing, 0);
+  CHECK_INT(in.posts, 2);                          /* a release is no activation */
   poll1(w, &src);
   CHECK(!src.present);
   wifi_get_info(w, &in);
@@ -418,15 +437,19 @@ static void test_flow(void) {
   wifi_get_info(w, &in);
   CHECK(in.running && in.listening);
   CHECK_INT(count_in_log("Listening for joystick data on UDP 27461"), 2);
-  /* a module that kept streaming relocks at once after a restart, without a POST (8 channels never
-   * restarted it again in the first session; this one streams what is asked for) */
+  /* a module that streamed on (it missed its joystick_end) relocks at once after a restart, without a POST
+   * (8 channels never restarted it again in the first session; this one streams what is asked for) */
   send_same(U, 16, 16393);
   POLL_UNTIL(w, &src, 1000, src.present);
   CHECK(src.present);
   poll_ms(w, &src, 30);
-  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_INT(mh_requests(&mh), 4);
   CHECK_INT(count_in_log("restarting its stream"), 1);
+  /* the close (the program's exit) releases it and waits for the answer */
   wifi_close(w);
+  CHECK_INT(mh_requests(&mh), 5);
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_end");
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again"), 2);
   mh_stop(&mh);
 }
 
@@ -608,12 +631,20 @@ static void test_configure(void) {
   plat_sock b = plat_udp_bind(U, false, false);
   CHECK(b != PLAT_BADSOCK);
   plat_sock_close(b);
+  /* (R14: the port change released the module IP's module, activated less than 3 s ago and not locked
+   * since: the modules send to port 11000 only, a later stop could not release it) */
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end"), 1);
   udp_send(U2, ELRS_BEACON, sizeof ELRS_BEACON);
-  POLL_UNTIL(w, NULL, 3000, mh_requests(&mh) >= 3);
+  POLL_UNTIL(w, NULL, 3000, mh_requests(&mh) >= 4);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_end");
   mh_last(&mh, req, sizeof req);
   CHECK(strstr(req, "\r\n\r\naction=joystick_begin&interval=1000&channels=16") != NULL);
-  /* a target set while stopped waits for the bind */
+  /* a target set while stopped waits for the bind (the stop released the module the beacon just activated;
+   * stopped, the polls still collect the answer) */
   wifi_stop(w);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end"), 2);
+  POLL_UNTIL(w, NULL, 3000, count_in_log("Released 127.0.0.1") == 2);
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again"), 2);
   snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.1");
   wifi_configure(w, &c, now());
   wifi_get_info(w, &in);
@@ -818,7 +849,8 @@ static void StoppedState_IsReported_OnShutdown(void) {
   wifi_stop(w);
   CHECK_INT(state_of(w), WIFI_ST_STOPPED);
   CHECK_STR(status_of(w), "off");
-  CHECK_INT(count_in_log("Stopped. (The module keeps broadcasting until powered off.)"), 1);
+  CHECK_INT(count_in_log("Stopped.\n"), 1);
+  CHECK_INT(count_in_log("Releasing"), 0);         /* nothing streamed to us: nothing to release */
   wifi_close(w);
 }
 
@@ -1532,8 +1564,8 @@ static void test_request_with_target(void) {
 }
 
 /* R9 with R3 (the core): a stop cuts a restart short (its answer still awaited: dropped with the session).
- * The module may still stream its old request (an ELRS module streams on through our stop), so when it locks
- * again after the start it is restarted once more. */
+ * The module may still stream its old request (here it streams on before its release reached it: the release
+ * waits behind the module's slow answer), so when it locks again after the start it is restarted once more. */
 static void test_request_cut_by_stop(void) {
   const uint16_t U = P_BASE + 19, HP = P_BASE + 36;
   minihttp_t mh;
@@ -1570,13 +1602,15 @@ static void test_request_cut_by_stop(void) {
   CHECK(src.present);
   CHECK_INT(count_in_log("127.0.0.1 may still stream its old request (Stop cut its restart short) - restarting its "
                          "stream with 500 Hz, 16 channels"), 1);
-  POLL_UNTIL(w, &src, 4000, mh_requests(&mh) >= 4);
-  CHECK_STR(mh_body(&mh, 2), "action=joystick_end");
-  CHECK_STR(mh_body(&mh, 3), "action=joystick_begin&interval=2000&channels=16");
+  POLL_UNTIL(w, &src, 4000, mh_requests(&mh) >= 5);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_end");   /* the stop's release (R14) */
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");   /* the new restart */
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_begin&interval=2000&channels=16");
   POLL_UNTIL(w, &src, 3000, count_in_log("Stream end POST -> 127.0.0.1: 200") == 1);
   CHECK_INT(count_in_log("Stream end POST -> 127.0.0.1: 200"), 1);
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again"), 1);
   stream_seconds(w, &src, U, 16, 6);               /* it took: nothing more */
-  CHECK_INT(mh_requests(&mh), 4);
+  CHECK_INT(mh_requests(&mh), 5);
   CHECK_INT(count_in_log("may still stream its old request"), 1);
   wifi_info_t in;
   wifi_get_info(w, &in);
@@ -1641,6 +1675,514 @@ static void test_request_failed_then_quiet(void) {
   mh_stop(&mh);
 }
 
+/* ---------------------------------------------------------------- R14: the release
+ * An ELRS module streams until it gets joystick_end and beacons only while idle: one left streaming to the Pi
+ * can't be found by any other app. The close (the program's exit) and the web page's Release send it
+ * joystick_end alone; Connect, or the program's next start (nothing is saved), listens again.
+ * Ports 27420.. */
+#define P_REL 27420
+
+/* the module at 127.0.0.1 activated by its beacon and locked (16 channels) */
+static void lock_elrs(wifi_t *w, insrc_t *src, uint16_t U, minihttp_t *mh, int before) {
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, src, 3000, mh_requests(mh) > before);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, src, 2000, src->present);
+  CHECK(src->present);
+}
+
+/* the program's exit: the locked module gets joystick_end, and the close waits for its answer */
+static void test_release_on_close(void) {
+  const uint16_t U = P_REL, HP = P_REL + 10;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  lock_elrs(w, &src, U, &mh, 0);
+  CHECK_INT(mh_requests(&mh), 1);
+  int64_t t0 = plat_now_us();
+  wifi_close(w);
+  int64_t took = plat_now_us() - t0;
+  CHECK_INT(mh_requests(&mh), 2);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end, so it stops streaming and broadcasts again"), 1);
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again, any app can connect to it"), 1);
+  const char *l = app_logs(), *a = strstr(l, "Releasing 127.0.0.1"), *b = strstr(l, "Stopped."), *c = strstr(l, "Released 127.0.0.1");
+  CHECK(a && b && c && a < b && b < c);            /* handed over on the stop, answered before the close returns */
+  CHECK(took < WIFI_RELEASE_WAIT_US);
+  fprintf(stderr, "  close with a release: %lld ms\n", (long long)(took / 1000));
+  mh_stop(&mh);
+}
+
+/* A module that does not answer holds the exit at most WIFI_RELEASE_WAIT_US: then the worker aborts it, and a
+ * release still queued behind it is never sent. The locked module goes first, then one that streams to us as a
+ * 2nd source (R14's order); each one's result is logged. */
+static void test_release_on_close_no_answer(void) {
+  const uint16_t U = P_REL + 1, HP = P_REL + 11;
+  minihttp_t ma, mb;
+  mh_start_at(&ma, "127.0.0.2", HP, 200);
+  mh_start_at(&mb, "127.0.0.3", HP, 200);
+  plat_sock a = udp_from("127.0.0.2"), b = udp_from("127.0.0.3");
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_raw_from(a, U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.2: 200 OK") == 1);
+  int v[16];
+  for (int i = 0; i < 16; i++) v[i] = 16393;
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  send_from(b, U, 16, v);                          /* another module streams to us too: its frames are dropped */
+  POLL_UNTIL(w, &src, 2000, count_in_log("Ignoring 2nd source 127.0.0.3") == 1);
+  CHECK_INT(count_in_log("Ignoring 2nd source 127.0.0.3 (locked to 127.0.0.2)"), 1);
+  mh_set(&ma, 200, 5000);                          /* .2 answers no more within the exit's wait */
+  int64_t t0 = plat_now_us();
+  wifi_close(w);
+  int64_t took = plat_now_us() - t0;
+  CHECK(took >= WIFI_RELEASE_WAIT_US - 50000 && took < WIFI_RELEASE_WAIT_US + 700000);
+  fprintf(stderr, "  close with a release that gets no answer: %lld ms\n", (long long)(took / 1000));
+  const char *l = app_logs(), *ra = strstr(l, "Releasing 127.0.0.2: joystick_end"), *rb = strstr(l, "Releasing 127.0.0.3: joystick_end");
+  CHECK(ra && rb && ra < rb);
+  CHECK_INT(count_in_log("Releasing 127.0.0.2 failed: no answer in time - it may stream on until its WiFi or power is "
+                         "cycled"), 1);
+  CHECK_INT(count_in_log("aborted"), 0);
+  CHECK_INT(count_in_log("Releasing 127.0.0.3 failed: not sent, the wait ran out before its turn - it may stream on "
+                         "until its WiFi or power is cycled"), 1);
+  CHECK_INT(mh_requests(&ma), 2);
+  CHECK_STR(mh_body(&ma, 1), "action=joystick_end");
+  CHECK_INT(mh_requests(&mb), 0);
+  plat_sock_close(a);
+  plat_sock_close(b);
+  mh_stop(&ma);
+  mh_stop(&mb);
+}
+
+/* The web page's Release: the module is released and the receiver stops listening (the module's next beacon
+ * would get it a joystick_begin at once); settings saved meanwhile apply on Connect, which listens again. */
+static void test_release_and_connect(void) {
+  const uint16_t U = P_REL + 2, U2 = P_REL + 3, HP = P_REL + 12;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  poll_max_us = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  lock_elrs(w, &src, U, &mh, 0);
+  CHECK_STR(release_of(w), "");                    /* no release yet */
+  wifi_release(w, now());
+  CHECK_INT(count_in_log("Release: not listening until Connect (the web page) or StickTime Pi starts again, so "
+                         "other apps can find the module"), 1);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end, so it stops streaming and broadcasts again"), 1);
+  CHECK_STR(status_of(w), "released");
+  CHECK_STR(release_of(w), "sending");             /* until a poll collects its answer */
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK(in.released && !in.running && !in.listening && !in.bound);
+  CHECK_INT(in.state, WIFI_ST_STOPPED);
+  CHECK_STR(in.detail, "released");
+  CHECK_INT(in.posts, 1);                          /* the release is no activation */
+  poll1(w, &src);
+  CHECK(!src.present);                             /* the source is gone (the sticks center) */
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.1") > 0);   /* the polls collect its answer */
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again, any app can connect to it"), 1);
+  CHECK_STR(release_of(w), "ok");
+  CHECK_INT(mh_requests(&mh), 2);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.releases_ok, 1);
+  CHECK_INT(in.releases_failed, 0);
+  CHECK_INT(in.releasing, 0);
+  CHECK(poll_max_us < 200000);                     /* nothing waited on the frame loop */
+  app_status_t st;
+  memset(&st, 0, sizeof st);
+  wifi_fill_status(w, &st);
+  CHECK_STR(st.wifi_state, "released");
+  CHECK_STR(st.wifi_module, "");
+  /* not listening: the port is free, the module's beacons get it nothing */
+  plat_sock b = plat_udp_bind(U, false, false);
+  CHECK(b != PLAT_BADSOCK);
+  plat_sock_close(b);
+  udp_send(U, ELRS_BEACON, sizeof ELRS_BEACON);
+  vt += 6000000;
+  poll_ms(w, &src, 50);
+  CHECK_INT(mh_requests(&mh), 2);
+  /* a second Release does nothing */
+  wifi_release(w, now());
+  CHECK_INT(count_in_log("Release: not listening"), 1);
+  /* settings saved while released: kept, nothing sent; a port change does not listen either */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U2;
+  c.http_port = HP;
+  c.interval_us = 2000;
+  c.channels = 8;
+  wifi_configure(w, &c, now());
+  poll_ms(w, &src, 30);
+  wifi_get_info(w, &in);
+  CHECK(in.released && !in.running && !in.listening);
+  CHECK_INT(in.port, U2);
+  CHECK_INT(in.interval_us, 2000);
+  CHECK_INT(in.channels, 8);
+  CHECK_STR(status_of(w), "released");
+  CHECK_INT(mh_requests(&mh), 2);
+  /* Connect: listening again (on the new port), the next beacon gets the saved request */
+  wifi_connect(w, now());
+  CHECK_INT(count_in_log("Connect: listening again"), 1);
+  CHECK_INT(count_in_log("Listening for joystick data on UDP 27423"), 1);
+  CHECK_STR(status_of(w), "listening");
+  wifi_get_info(w, &in);
+  CHECK(!in.released && in.running && in.listening);
+  wifi_connect(w, now());                          /* listening already: nothing */
+  CHECK_INT(count_in_log("Connect: listening again"), 1);
+  udp_send(U2, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 3);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=8");
+  send_same(U2, 8, 16393);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  CHECK_STR(status_of(w), "streaming");
+  CHECK_STR(release_of(w), "ok");                  /* still the last release's */
+  /* a release that fails: logged with why, and the status says so */
+  mh_set(&mh, 503, 0);
+  wifi_release(w, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Releasing 127.0.0.1 failed") > 0);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1 failed: HTTP 503 - it may stream on until its WiFi or power is cycled"), 1);
+  CHECK_STR(release_of(w), "failed");
+  wifi_get_info(w, &in);
+  CHECK_INT(in.releases_ok, 1);
+  CHECK_INT(in.releases_failed, 1);
+  /* the program's next start (wifi_start) ends the release too */
+  wifi_start(w, now());
+  wifi_get_info(w, &in);
+  CHECK(!in.released && in.listening);
+  CHECK_STR(status_of(w), "listening");
+  wifi_release(w, now());                          /* nothing streams to us: nothing to send */
+  CHECK_STR(status_of(w), "released");
+  CHECK_STR(release_of(w), "none");
+  int64_t t0 = plat_now_us();
+  wifi_close(w);                                   /* released: nothing more to release or wait for */
+  CHECK(plat_now_us() - t0 < 500000);
+  CHECK_INT(mh_requests(&mh), 4);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1"), 3);   /* 2 handed over, 1 failed */
+  mh_stop(&mh);
+}
+
+/* R14 with R3 (the core): Release, a setting, Connect, with the module IP set. The release took, so the module is
+ * idle: the joystick_begin Connect sends it carries the new rate, and the module that locks is not restarted for
+ * the old one (known as ELRS: at once; of unknown kind: 20 s into the stream, a pause in flight). A release that
+ * failed leaves it streaming its old request: Connect's lock restarts it then, as before. */
+static void test_release_then_connect_new_request(void) {
+  const uint16_t U = P_REL + 9, HP = P_REL + 19;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.1");
+  wifi_t *w = open_with(U, HP, "127.0.0.1");
+  wifi_start(w, now());
+  lock_elrs(w, &src, U, &mh, 0);                   /* its beacon: known as ELRS */
+  CHECK_INT(mh_requests(&mh), 1);
+  CHECK_STR(mh_body(&mh, 0), "action=joystick_begin&interval=4000&channels=16");
+  wifi_release(w, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.1") > 0);
+  CHECK_STR(release_of(w), "ok");
+  c.interval_us = 2000;                            /* saved while released: kept for Connect */
+  wifi_configure(w, &c, now());
+  poll_ms(w, &src, 30);
+  CHECK_INT(mh_requests(&mh), 2);
+  wifi_connect(w, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 3);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=16");
+  send_same(U, 16, 16393);                         /* the idle module streams what it was asked */
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  stream_seconds(w, &src, U, 16, 6);
+  poll_ms(w, &src, 100);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_INT(count_in_log("from before the change"), 0);
+  CHECK_INT(count_in_log("Restarting the stream"), 0);
+  /* the release fails (HTTP 503): the module streams on at 500 Hz, so Connect's lock restarts it for 250 Hz */
+  mh_set(&mh, 503, 0);
+  wifi_release(w, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Releasing 127.0.0.1 failed") > 0);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1 failed: HTTP 503 - it may stream on until its WiFi or power is "
+                         "cycled"), 1);
+  mh_set(&mh, 200, 0);
+  c.interval_us = 4000;
+  wifi_configure(w, &c, now());
+  wifi_connect(w, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 5);
+  CHECK_STR(mh_body(&mh, 4), "action=joystick_begin&interval=4000&channels=16");
+  send_same(U, 16, 16393);                         /* it streams on: only moved to us */
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 7);
+  CHECK_INT(count_in_log("127.0.0.1 still streams 500 Hz, 16 channels from before the change - restarting its "
+                         "stream with 250 Hz, 16 channels"), 1);
+  CHECK_STR(mh_body(&mh, 5), "action=joystick_end");
+  CHECK_STR(mh_body(&mh, 6), "action=joystick_begin&interval=4000&channels=16");
+  wifi_close(w);
+  mh_stop(&mh);
+
+  /* unknown kind (its beacons never reach the Pi): no restart either, also once its 20 s are over */
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  memset(&src, 0, sizeof src);
+  c.interval_us = 4000;
+  w = open_with(U, HP, "127.0.0.1");
+  wifi_start(w, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  wifi_release(w, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.1") > 0);
+  c.interval_us = 2000;
+  wifi_configure(w, &c, now());
+  wifi_connect(w, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 3);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=2000&channels=16");
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  stream_seconds(w, &src, U, 16, 25);
+  poll_ms(w, &src, 100);
+  CHECK_INT(mh_requests(&mh), 3);
+  CHECK_INT(count_in_log("may be Crossfire"), 0);
+  CHECK_INT(count_in_log("Restarting the stream"), 0);
+  wifi_close(w);
+  mh_stop(&mh);
+}
+
+/* Crossfire (by its beacon) is never sent a joystick_end: it beacons while streaming, other apps find it as it
+ * is. Logged, nothing sent, on Release and on the close. */
+static void test_release_crossfire(void) {
+  const uint16_t U = P_REL + 4, HP = P_REL + 14;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  udp_send(U, "VELOCIDRONE", 11);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 1);
+  send_same(U, 16, 16393);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK_STR(src.name, "Crossfire 127.0.0.1");
+  wifi_release(w, now());
+  CHECK_INT(count_in_log("Not releasing 127.0.0.1: Crossfire broadcasts while streaming, other apps find it as it is"), 1);
+  CHECK_STR(status_of(w), "released");
+  CHECK_STR(release_of(w), "none");                /* nothing sent: it broadcasts anyway */
+  poll1(w, &src);
+  CHECK(!src.present);
+  wifi_connect(w, now());
+  send_same(U, 16, 16393);                         /* it streams on: locked again at once */
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  wifi_close(w);
+  CHECK_INT(count_in_log("Not releasing 127.0.0.1"), 2);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1"), 0);
+  CHECK_INT(mh_requests(&mh), 1);                  /* only the joystick_begin */
+  wifi_release(NULL, 0);
+  wifi_connect(NULL, 0);
+  mh_stop(&mh);
+}
+
+/* Nothing of a Release is saved: the program's next start (wifi_open, then wifi_start, as host_init) listens
+ * again. A module IP set gets its joystick_begin at once then, so a module released for another app is taken back
+ * (the docs say so); its exit releases it again (activated less than 3 s ago, not locked since). */
+static void test_release_next_start(void) {
+  const uint16_t U = P_REL + 5, HP = P_REL + 15;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  lock_elrs(w, &src, U, &mh, 0);
+  wifi_release(w, now());
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.1") > 0);
+  CHECK_STR(release_of(w), "ok");
+  wifi_close(w);                                   /* the exit, released: nothing more to send */
+  CHECK_INT(mh_requests(&mh), 2);
+  CHECK_STR(mh_body(&mh, 1), "action=joystick_end");
+  /* the next start, with a module IP set */
+  memset(&src, 0, sizeof src);
+  w = open_with(U, HP, "127.0.0.1");
+  wifi_start(w, now());
+  wifi_info_t in;
+  wifi_get_info(w, &in);
+  CHECK(!in.released && in.running && in.listening);
+  CHECK_STR(release_of(w), "");                    /* this run released nothing yet */
+  CHECK(strcmp(status_of(w), "released") != 0);
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mh) >= 3);
+  CHECK_STR(mh_body(&mh, 2), "action=joystick_begin&interval=4000&channels=16");
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.1: 200 OK") == 2);
+  wifi_close(w);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end"), 2);
+  CHECK_INT(mh_requests(&mh), 4);
+  CHECK_STR(mh_body(&mh, 3), "action=joystick_end");
+  CHECK_INT(count_in_log("Released 127.0.0.1: it broadcasts again"), 2);
+  mh_stop(&mh);
+}
+
+/* R7 with R14: the module left for another module IP gets nothing at the switch, but it streams on to the Pi (it
+ * does not know it was left), so a stop while its frames still come releases it: first (it is known to stream to
+ * us), then the new module IP (activated a moment ago, not locked since). */
+static void test_release_module_left_by_switch(void) {
+  const uint16_t U = P_REL + 6, HP = P_REL + 16;
+  minihttp_t ma, mb;
+  mh_start_at(&ma, "127.0.0.2", HP, 200);
+  mh_start_at(&mb, "127.0.0.3", HP, 200);
+  plat_sock a = udp_from("127.0.0.2");
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_raw_from(a, U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.2: 200 OK") == 1);
+  int v[16];
+  for (int i = 0; i < 16; i++) v[i] = 16393;
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.3");
+  wifi_configure(w, &c, now());
+  POLL_UNTIL(w, &src, 3000, mh_requests(&mb) >= 1);
+  CHECK_STR(mh_body(&mb, 0), "action=joystick_begin&interval=4000&channels=16");
+  CHECK_INT(count_in_log("Releasing"), 0);         /* nothing at the switch (R7) */
+  send_from(a, U, 16, v);                          /* the module left streams on: its frames are dropped */
+  poll_ms(w, &src, 30);
+  CHECK(!src.present);
+  CHECK_INT(mh_requests(&ma), 1);
+  wifi_stop(w);
+  const char *l = app_logs(), *ra = strstr(l, "Releasing 127.0.0.2: joystick_end"), *rb = strstr(l, "Releasing 127.0.0.3: joystick_end");
+  CHECK(ra && rb && ra < rb);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Released 127.0.0.") == 2);
+  CHECK_INT(count_in_log("Released 127.0.0.2: it broadcasts again, any app can connect to it"), 1);
+  CHECK_INT(count_in_log("Released 127.0.0.3: it broadcasts again, any app can connect to it"), 1);
+  CHECK_INT(mh_requests(&ma), 2);
+  CHECK_STR(mh_body(&ma, 1), "action=joystick_end");
+  CHECK_INT(mh_requests(&mb), 2);
+  CHECK_STR(mh_body(&mb, 1), "action=joystick_end");
+  CHECK_STR(release_of(w), "ok");
+  wifi_close(w);                                   /* stopped: nothing more */
+  CHECK_INT(mh_requests(&ma) + mh_requests(&mb), 4);
+  plat_sock_close(a);
+  mh_stop(&ma);
+  mh_stop(&mb);
+}
+
+/* A release whose module does not answer gets 2 s (input_wifi.c's RELEASE_POST_MS), not the 5 s of an activation:
+ * the worker sends one request at a time, so it holds what queues behind it, here Connect's joystick_begin to the
+ * module IP, at most that long (as in the Linux app). */
+static void test_release_post_timeout(void) {
+  const uint16_t U = P_REL + 7, HP = P_REL + 17;
+  minihttp_t ma, mb;
+  mh_start_at(&ma, "127.0.0.2", HP, 200);
+  mh_start_at(&mb, "127.0.0.3", HP, 200);
+  plat_sock a = udp_from("127.0.0.2");
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  send_raw_from(a, U, ELRS_BEACON, sizeof ELRS_BEACON);
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.2: 200 OK") == 1);
+  int v[16];
+  for (int i = 0; i < 16; i++) v[i] = 16393;
+  send_from(a, U, 16, v);
+  POLL_UNTIL(w, &src, 2000, src.present);
+  CHECK(src.present);
+  mh_set(&ma, 200, 4000);                          /* .2 answers no more within 2 s (it just lost power) */
+  int64_t t0 = plat_now_us();
+  wifi_release(w, now());
+  /* a module IP saved while released, then Connect: its joystick_begin goes out at once, behind the release */
+  wifi_config_t c;
+  wifi_config_default(&c);
+  c.port = U;
+  c.http_port = HP;
+  snprintf(c.module_ip, sizeof c.module_ip, "127.0.0.3");
+  wifi_configure(w, &c, now());
+  wifi_connect(w, now());
+  POLL_UNTIL(w, &src, 6000, mh_requests(&mb) >= 1);
+  int64_t took = plat_now_us() - t0;
+  CHECK_STR(mh_body(&mb, 0), "action=joystick_begin&interval=4000&channels=16");
+  CHECK(took >= 1900000 && took < 3000000);        /* 2 s, not 5 */
+  fprintf(stderr, "  a release without an answer held Connect's joystick_begin %lld ms\n", (long long)(took / 1000));
+  POLL_UNTIL(w, &src, 3000, count_in_log("Releasing 127.0.0.2 failed") > 0);
+  CHECK_INT(count_in_log("Releasing 127.0.0.2 failed: timed out after 2 s - it may stream on until its WiFi or power is "
+                         "cycled"), 1);
+  CHECK_STR(release_of(w), "failed");
+  CHECK_INT(mh_requests(&ma), 2);
+  CHECK_STR(mh_body(&ma, 1), "action=joystick_end");
+  POLL_UNTIL(w, &src, 3000, count_in_log("Activation POST -> 127.0.0.3: 200 OK") == 1);
+  wifi_close(w);                                   /* .3: activated less than 3 s ago, not locked since */
+  CHECK_INT(count_in_log("Released 127.0.0.3: it broadcasts again, any app can connect to it"), 1);
+  CHECK_INT(mh_requests(&mb), 2);
+  CHECK_STR(mh_body(&mb, 1), "action=joystick_end");
+  CHECK_INT(mh_requests(&ma), 2);
+  plat_sock_close(a);
+  mh_stop(&ma);
+  mh_stop(&mb);
+}
+
+/* The exit's wait counts from the stop that handed the releases over, here the web page's Release, as in the Linux
+ * app: an exit 1 s after a Release whose module does not answer waits about 0.5 s more, not 1.5 s; what is left
+ * then is cut short ("no answer in time"). */
+static void test_release_wait_counts_from_the_release(void) {
+  const uint16_t U = P_REL + 8, HP = P_REL + 18;
+  minihttp_t mh;
+  mh_start(&mh, HP, 200);
+  clear_log();
+  vt = 0;
+  insrc_t src;
+  memset(&src, 0, sizeof src);
+  wifi_t *w = open_with(U, HP, "");
+  wifi_start(w, now());
+  lock_elrs(w, &src, U, &mh, 0);
+  mh_set(&mh, 200, 4000);                          /* the release gets no answer within its 2 s */
+  int64_t t0 = plat_now_us();
+  wifi_release(w, now());
+  poll_ms(w, &src, 1000);
+  int64_t t1 = plat_now_us();
+  wifi_close(w);
+  int64_t t2 = plat_now_us(), from = t1 - t0 > WIFI_RELEASE_WAIT_US ? t1 - t0 : WIFI_RELEASE_WAIT_US;
+  CHECK(t2 - t0 >= WIFI_RELEASE_WAIT_US - 50000 && t2 - t0 < from + 700000);   /* 1.5 s after the Release */
+  CHECK(t2 - t1 < WIFI_RELEASE_WAIT_US - 300000);   /* not 1.5 s after the exit */
+  fprintf(stderr, "  exit 1 s after a Release that gets no answer: %lld ms\n", (long long)((t2 - t1) / 1000));
+  CHECK_INT(count_in_log("Releasing 127.0.0.1 failed: no answer in time - it may stream on until its WiFi or power is "
+                         "cycled"), 1);
+  CHECK_INT(count_in_log("Releasing 127.0.0.1: joystick_end"), 1);   /* released already: the exit sends nothing more */
+  CHECK_INT(mh_requests(&mh), 2);
+  mh_stop(&mh);
+}
+
 static int self_test(void) {
   plat_net_init();
   app_init(&app);
@@ -1677,6 +2219,15 @@ static int self_test(void) {
   test_request_with_target();
   test_request_cut_by_stop();
   test_request_failed_then_quiet();
+  test_release_on_close();
+  test_release_on_close_no_answer();
+  test_release_and_connect();
+  test_release_then_connect_new_request();
+  test_release_crossfire();
+  test_release_next_start();
+  test_release_module_left_by_switch();
+  test_release_post_timeout();
+  test_release_wait_counts_from_the_release();
   fprintf(stderr, "  self-test took %.1f s\n", (double)(plat_now_us() - t0) / 1e6);
   plat_sock_close(udp_tx);
   T_DONE();
@@ -1838,11 +2389,14 @@ static int probe(int argc, char **argv) {
       printf(",\"hz\":%.2f,\"jitter\":%.3f,\"frames\":%d,\"rx\":%u,\"beacons\":%u,\"malformed\":%u,"
              "\"dropped_filter\":%u,\"dropped_other\":%u,\"applied\":%u,\"posts\":%u,\"posts_ok\":%u,"
              "\"posts_failed\":%u,\"pending\":%d,\"live\":%s,\"present\":%s,\"listening\":%s,"
-             "\"interval_us\":%d,\"channels\":%d,\"restarts\":%u",
+             "\"interval_us\":%d,\"channels\":%d,\"restarts\":%u,\"released\":%s,\"releasing\":%d,"
+             "\"releases_ok\":%u,\"releases_failed\":%u",
              in.rate_hz, in.jitter_ms, in.frames_last_s, in.rx, in.beacons, in.malformed, in.dropped_filter,
              in.dropped_other, in.applied, in.posts, in.posts_ok, in.posts_failed, in.pending,
              live ? "true" : "false", src.present ? "true" : "false", in.listening ? "true" : "false",
-             in.interval_us, in.channels, in.restarts);
+             in.interval_us, in.channels, in.restarts, in.released ? "true" : "false", in.releasing,
+             in.releases_ok, in.releases_failed);
+      printf(",\"release\":"); jstr(st.wifi_release);
       ev_end();
       if (in.bound && in.frames_last_s > 0 && (min_rate < 0 || in.rate_hz >= min_rate) &&
           (max_rate < 0 || in.rate_hz <= max_rate))
@@ -1870,6 +2424,8 @@ static int probe(int argc, char **argv) {
       if (!strcmp(c, "quit")) { quit = true; reason = "quit"; code = 0; }
       else if (!strcmp(c, "stop")) wifi_stop(w);
       else if (!strcmp(c, "start")) wifi_start(w, plat_now_us());
+      else if (!strcmp(c, "release")) wifi_release(w, plat_now_us());
+      else if (!strcmp(c, "connect")) wifi_connect(w, plat_now_us());
       else {
         if (!strcmp(c, "target")) snprintf(cfg.module_ip, sizeof cfg.module_ip, "%s", arg ? arg : "");
         else if (!strcmp(c, "interval") && arg) cfg.interval_us = atoi(arg);
@@ -1892,10 +2448,13 @@ static int probe(int argc, char **argv) {
   printf(",\"n\":%lld,\"avg_us\":%.1f,\"max_us\":%lld,\"p99_us\":%lld", (long long)npoll,
          npoll ? (double)sum_us / (double)npoll : 0.0, (long long)max_us, (long long)p99);
   ev_end();
+  int64_t tc = plat_now_us();
+  wifi_close(w);                      /* the program's exit: its release, and the wait for the answers */
+  emit_logs();
   ev_begin("exit");
   printf(",\"code\":%d,\"reason\":", code); jstr(reason);
+  printf(",\"close_ms\":%lld", (long long)((plat_now_us() - tc) / 1000));
   ev_end();
-  wifi_close(w);
   /* not exit(): musl locks every FILE to flush it, and the stdin thread holds stdin's lock in fgets */
   fflush(stdout);
   fflush(stderr);

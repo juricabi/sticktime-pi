@@ -856,8 +856,8 @@
     frames: (s) => (isNum(s.frames) ? s.frames.toLocaleString() : '–'),
     missed: (s) => (isNum(s.missed) ? s.missed.toLocaleString() : '–'),
     luaKb: (s) => (isNum(g(s, 'game', 'lua_kb')) ? g(s, 'game', 'lua_kb') + ' KB' : '–'),
-    wjModule: (s) => g(s, 'wifi_joystick', 'module') || 'none found yet',
-    wjState: (s) => str(g(s, 'wifi_joystick', 'state')),
+    wjModule: (s) => g(s, 'wifi_joystick', 'module') || (g(s, 'wifi_joystick', 'state') === 'released' ? 'none (released)' : 'none found yet'),
+    wjState: (s) => (g(s, 'wifi_joystick', 'state') === 'released' ? 'released, not listening' : str(g(s, 'wifi_joystick', 'state'))),
     // pauses of 0.25 s or more in the stick data since the start (the log says when)
     wjGaps: (s) => (isNum(g(s, 'wifi_joystick', 'gaps')) ? (g(s, 'wifi_joystick', 'gaps') ? g(s, 'wifi_joystick', 'gaps') + ', longest ' + (g(s, 'wifi_joystick', 'gap_max_ms') / 1000).toFixed(2) + ' s' : 'none') : '–'),
     wjRate: (s) => (isNum(g(s, 'wifi_joystick', 'rate_hz')) ? Math.round(g(s, 'wifi_joystick', 'rate_hz')) + ' Hz' + (g(s, 'wifi_joystick', 'dropped') ? ', ' + g(s, 'wifi_joystick', 'dropped') + ' dropped' : '') : '–'),
@@ -881,6 +881,7 @@
   const fixedInput = () => { const v = S.values && typeof S.values.input === 'string' ? S.values.input : ''; return v && v !== 'auto' ? v : ''; };
   const ignoredSrc = (x) => !!fixedInput() && !!x && x.kind !== fixedInput();
   const btOff = () => !!S.values && S.values.bluetooth === 'off';
+  const wjReleased = (s) => g(s, 'wifi_joystick', 'state') === 'released';     // the WiFi joystick's Release
   function inputWarn(srcs) {
     const f = fixedInput();
     const live = (Array.isArray(srcs) ? srcs : []).filter((x) => x && typeof x === 'object' && x.live);
@@ -933,16 +934,18 @@
     $('#gameError').hidden = !err;
     if (err && $('#gameErrorText').textContent !== err) $('#gameErrorText').textContent = err;
     const list = $('#srcList'), srcs = g(s, 'input', 'sources') || [], act = g(s, 'input', 'active');
-    const sig = JSON.stringify([act, fixedInput(), srcs.map((x) => [x.kind, x.name, x.live, Math.round(x.rate_hz || 0)])]);
+    const sig = JSON.stringify([act, fixedInput(), wjReleased(s), srcs.map((x) => [x.kind, x.name, x.live, Math.round(x.rate_hz || 0)])]);
     if (list.dataset.sig !== sig) {
       list.dataset.sig = sig;
       list.replaceChildren(...srcs.map((x, i) => h('li', {}, h('span', { class: 'livedot' + (x.live ? ' on' : ''), title: x.live ? 'moving' : 'idle' }),
         h('span', { text: (x.name || KIND[x.kind] || x.kind) + (i === act ? ' (in use)' : ignoredSrc(x) ? ' (ignored)' : '') }),
         h('span', { class: 'pill', text: KIND[x.kind] || x.kind }), h('span', { class: 'note', text: isNum(x.rate_hz) && x.rate_hz > 0 ? Math.round(x.rate_hz) + ' Hz' : '' }))));
-      if (!srcs.length) list.append(h('li', { class: 'note', text: 'No stick source yet: plug in a radio, or start the ELRS module\'s WiFi joystick.' }));
+      if (!srcs.length) list.append(h('li', { class: 'note', text: wjReleased(s) ? 'No stick source: the WiFi joystick is released (Connect, above, listens again). Or plug in a radio.'
+        : 'No stick source yet: plug in a radio, or start the ELRS module\'s WiFi joystick.' }));
     }
     if (page === 'sticks') $('#liveSrc').textContent = SF.inputName(s);
     else inputWarn(srcs);                                    // (the Sticks page: from its own stream)
+    wjButtons(s);
   }
   let statusT = 0;
   async function statusLoop() {
@@ -976,6 +979,41 @@
     try { await api('POST', '/api/game/reload'); toast('The game is reloading.'); } catch (e) { fail(e); }
     busy(b, false);
   }));
+
+  // ---------------------------------------------------------------- the WiFi joystick's Release and Connect
+  // Release: the Pi asks the module to stop streaming to it (an ELRS module then broadcasts again, so the PC
+  // app finds it) and stops listening, until Connect or StickTime Pi's next start (nothing is saved).
+  // The note says what the module answered (wifi_joystick.release). Off (no receiver): neither button.
+  const WJ_RESULT = {
+    sending: 'Asking the module to stop streaming to the Pi…',
+    ok: 'The module stopped streaming to the Pi and broadcasts again: the PC app can connect to it.',
+    failed: 'The module didn\'t confirm the stop, so it may still stream to the Pi: switch its WiFi off and on (ExpressLRS Lua → WiFi Connectivity). System → Log says why.',
+    none: 'Nothing was sent: no module was streaming to the Pi, or it is a Crossfire module, which broadcasts while it streams, so the PC app finds it anyway.',
+  };
+  function wjButtons(s) {
+    const st = g(s, 'wifi_joystick', 'state'), released = st === 'released';
+    const on = typeof st === 'string' && st !== '' && st !== 'off' && !released;
+    for (const [id, show] of [['#wjBtns', on || released], ['#wjRelease', on], ['#wjConnect', released], ['#wjNote', released]]) {
+      const el = $(id);
+      if (el.hidden !== !show) el.hidden = !show;
+    }
+    const r = g(s, 'wifi_joystick', 'release'), t = released ? WJ_RESULT[r] || '' : '', res = $('#wjResult');
+    if (res.textContent !== t) res.textContent = t;
+    $('#wjNote').classList.toggle('bad', released && r === 'failed');
+  }
+  $('#wjRelease').addEventListener('click', async () => {
+    const b = $('#wjRelease');
+    if (!await ask('Release the module?', 'The Pi asks the WiFi module to stop streaming to it and stops listening, so the module broadcasts again and the PC app (or another device) can connect to it. The game gets no sticks from it meanwhile.\n\nConnect, here, listens again. So does the next start of StickTime Pi (a restart of the game, a StickTime Pi update, a reboot): with a Module address set, that takes the module back at once.', 'Release')) return;
+    busy(b, true);
+    try { await api('POST', '/api/wifi_joystick/release'); toast('Asked the module to stop streaming: Inputs shows its answer.'); setTimeout(statusLoop, 300); } catch (e) { fail(e); }
+    busy(b, false);
+  });
+  $('#wjConnect').addEventListener('click', async () => {
+    const b = $('#wjConnect');
+    busy(b, true);
+    try { await api('POST', '/api/wifi_joystick/connect'); toast('Listening for the WiFi joystick again.'); setTimeout(statusLoop, 300); } catch (e) { fail(e); }
+    busy(b, false);
+  });
 
   // ---------------------------------------------------------------- Sticks page
   const AX = [['ail', 'Roll', 'Aileron'], ['ele', 'Pitch', 'Elevator'], ['thr', 'Throttle', 'Throttle'], ['rud', 'Yaw', 'Rudder']];
@@ -1018,7 +1056,8 @@
     $('#gimL .gdot').style.transform = 'translate(' + pos(m[0][0]) * R + 'px,' + -pos(m[0][1]) * R + 'px)';
     $('#gimR .gdot').style.transform = 'translate(' + pos(m[1][0]) * R + 'px,' + -pos(m[1][1]) * R + 'px)';
     const srcs = Array.isArray(d.sources) ? d.sources : [];
-    const sig = JSON.stringify([btOff(), srcs.map((s) => [s.kind, s.name, s.nch])]);
+    const released = wjReleased(lastStatus);
+    const sig = JSON.stringify([btOff(), released, srcs.map((s) => [s.kind, s.name, s.nch])]);
     if (sig !== srcCards.sig) {
       srcCards.sig = sig;
       srcCards.cards = srcs.map((s) => {
@@ -1032,9 +1071,11 @@
         return { card, bars, dot, rate, active, ign };
       });
       $('#srcCards').replaceChildren(...srcCards.cards.map((c) => c.card));
-      if (!srcs.length) $('#srcCards').append(h('section', { class: 'card' }, h('p', { class: 'note', text: btOff()
-        ? 'No stick source yet. Plug in a radio by USB (as a joystick) or start the ELRS or Crossfire module\'s WiFi (Bluetooth is off).'
-        : 'No stick source yet. Plug in a radio by USB (as a joystick), start the ELRS or Crossfire module\'s WiFi, or pair a Bluetooth gamepad.' })));
+      if (!srcs.length) $('#srcCards').append(h('section', { class: 'card' }, h('p', { class: 'note', text: released
+        ? 'No stick source. The WiFi joystick is released: Status → Inputs → Connect listens again. Or plug in a radio by USB (as a joystick).'
+        : btOff()
+          ? 'No stick source yet. Plug in a radio by USB (as a joystick) or start the ELRS or Crossfire module\'s WiFi (Bluetooth is off).'
+          : 'No stick source yet. Plug in a radio by USB (as a joystick), start the ELRS or Crossfire module\'s WiFi, or pair a Bluetooth gamepad.' })));
     }
     srcs.forEach((s, i) => {
       const c = srcCards.cards[i];

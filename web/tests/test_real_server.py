@@ -470,6 +470,24 @@ class RealServerTest(unittest.TestCase):
         self.assertIn("sticktime-update check", self.calls())
         self.assertEqual(p.eval_on_selector_all("#updGame .notes > *", "els => els.map((e) => e.tagName)"), ["H3", "UL"])
 
+    def test_wifi_joystick_release(self):
+        """Release module and Connect through the real routes to the (fake) frame loop and back in the status"""
+        p = self.open("status")
+        p.wait_for_selector("#wjRelease", state="visible", timeout=8000)
+        n0 = len(self.events())
+        p.click("#wjRelease")
+        self.confirm()
+        p.wait_for_selector("#wjConnect", state="visible", timeout=8000)
+        self.assertTrue(p.is_hidden("#wjRelease"))
+        self.assertEqual(p.inner_text("[data-f=wjState]"), "released, not listening")
+        p.wait_for_selector("#wjResult:has-text('broadcasts again')", timeout=8000)    # release "ok"
+        self.assertIn("cmd 64", self.events()[n0:])                 # APP_CMD_WIFI_RELEASE
+        self.assertEqual([f.name for f in (self.base / "state").iterdir() if "releas" in f.name], [], "nothing is saved")
+        p.click("#wjConnect")
+        p.wait_for_selector("#wjRelease", state="visible", timeout=8000)
+        self.assertEqual(p.inner_text("[data-f=wjState]"), "streaming")
+        self.assertIn("cmd 128", self.events()[n0:])                # APP_CMD_WIFI_CONNECT
+
     # ---------------------------------------------------------------- the emulator page and pi-sd.js
     def test_editor_install_of_all_three_editions(self):
         # the editor's Install of the release the updater staged (editor/sdcard/), with sd_write = game:

@@ -13,8 +13,8 @@ delete, next); the keypad and the keyboard on the Game page, live view, the scri
 (busy first, names as text), join (validation, hidden, open, the Pi's own field errors, the
 connection afterwards), the module's WiFi; updates (check, notes, install, roll back, the app
 update reloading the page, errors); the System page (log, settings file view/edit/apply/download,
-restart, reboot, shut down); the offline banner; themes; the Tracks page; the Status page; labels for
-every control; garbage or failing API answers. Every mutating request carries X-StickTime: 1.
+restart, reboot, shut down); the offline banner; themes; the Tracks page; the Status page (with the WiFi
+joystick's Release and Connect); labels for every control; garbage or failing API answers. Every mutating request carries X-StickTime: 1.
 
     python web/tests/test_ui.py              (or: python -m pytest web/tests/test_ui.py)
     STP_BROWSER=firefox|webkit python web/tests/test_ui.py         (see browsers.py)
@@ -1029,6 +1029,10 @@ class UiTest(unittest.TestCase):
     def test_power(self):
         self.net_errors_ok = True
         p = self.open("system")
+        # pulling the plug sends the WiFi module no stop (R14): the note says what does
+        note = p.inner_text("section[aria-labelledby=h-power] .note")
+        self.assertIn("it sends the WiFi module no stop", note)
+        self.assertIn("A shutdown here, or Status → Inputs → Release module, stops its stream.", note)
         p.click("#restartBtn")
         self.confirm(False, "Restart the game?")
         self.assertEqual(self.posts("/api/restart"), [])
@@ -1336,6 +1340,106 @@ class UiTest(unittest.TestCase):
         self.until(lambda: self.posts("/api/game/reload"))
         self.pi.status = lambda: {**orig(), "system": {"cpu_temp": 50.0, "throttled": "0x50000"}}
         p.wait_for_selector("[data-f=throttled]:has-text('OK now (earlier: low voltage, throttled)')")
+
+    def test_wifi_release(self):
+        """Status → Inputs: Release module (asked first) lets go of the WiFi module for the PC app; Connect listens
+        again; with the receiver off, neither"""
+        p = self.open("status")
+        p.wait_for_function(LOADED["status"])
+        p.wait_for_selector("#wjRelease", state="visible")
+        self.assertTrue(p.is_hidden("#wjConnect") and p.is_hidden("#wjNote"))
+        p.click("#wjRelease")
+        self.assertIn("So does the next start of StickTime Pi (a restart of the game, a StickTime Pi update, a reboot): "
+                      "with a Module address set, that takes the module back at once.",
+                      p.wait_for_selector("#confirmDlg[open]").inner_text())
+        self.confirm(False, "Release the module?")
+        self.assertEqual(self.posts("/api/wifi_joystick/release"), [])
+        p.click("#wjRelease")
+        self.confirm(True, "the PC app (or another device) can connect to it")
+        self.until(lambda: self.posts("/api/wifi_joystick/release"))
+        self.toast("Asked the module to stop streaming: Inputs shows its answer.")
+        p.wait_for_selector("#wjConnect", state="visible", timeout=5000)
+        self.assertTrue(p.is_hidden("#wjRelease"))
+        self.assertTrue(p.is_visible("#wjNote"))
+        # the module's answer (wifi_joystick.release), and how long the release lasts
+        p.wait_for_selector("#wjResult:has-text('broadcasts again: the PC app can connect to it')", timeout=5000)
+        self.assertIn("until you press Connect or StickTime Pi starts again (a restart of the game, a StickTime Pi update, "
+                      "a reboot)", p.inner_text("#wjNote"))
+        self.assertFalse(p.eval_on_selector("#wjNote", "e => e.classList.contains('bad')"))
+        self.assertEqual(p.inner_text("[data-f=wjState]"), "released, not listening")
+        self.assertEqual(p.inner_text("[data-f=wjModule]"), "none (released)")
+        p.wait_for_function("document.querySelectorAll('#srcList li').length === 1")     # no WiFi source
+        self.shot("status-released-desktop")
+        # the other answers: not confirmed (a warning: switch the module's WiFi off and on), nothing sent (no module
+        # streamed, or only a Crossfire one), waiting, and no answer to show (the note alone)
+        for r, text in (("failed", "didn't confirm the stop, so it may still stream to the Pi: switch its WiFi off and on"),
+                        ("none", "Nothing was sent: no module was streaming to the Pi, or it is a Crossfire module, "
+                                 "which broadcasts while it streams"),
+                        ("sending", "Asking the module to stop streaming to the Pi")):
+            self.pi.wifi_release = r
+            p.wait_for_selector(f"#wjResult:has-text({json.dumps(text)})", timeout=5000)
+            self.assertEqual(p.eval_on_selector("#wjNote", "e => e.classList.contains('bad')"), r == "failed", r)
+        self.pi.wifi_release = ""
+        p.wait_for_function("document.querySelector('#wjResult').textContent === ''", timeout=5000)
+        self.assertIn("StickTime Pi starts again", p.inner_text("#wjNote"))
+        self.pi.wifi_release = "ok"
+        # released with no other source: the hints say so (here and on the Sticks page), not "start the module"
+        self.pi.usb_plugged = False
+        p.wait_for_selector("#srcList li.note:has-text('the WiFi joystick is released (Connect, above, listens again)')",
+                            timeout=5000)
+        self.tab("sticks")
+        p.wait_for_selector("#srcCards .note:has-text('The WiFi joystick is released: Status → Inputs → Connect listens again')",
+                            timeout=8000)
+        self.assertNotIn("start the ELRS or Crossfire module", p.inner_text("#srcCards"))
+        self.tab("status")
+        self.pi.usb_plugged = True
+        p.wait_for_function("document.querySelectorAll('#srcList li').length === 1 && !document.querySelector('#srcList li.note')",
+                            timeout=5000)
+        p.click("#wjConnect")
+        self.until(lambda: self.posts("/api/wifi_joystick/connect"))
+        self.toast("Listening for the WiFi joystick again.")
+        p.wait_for_selector("#wjRelease", state="visible", timeout=5000)
+        self.assertTrue(p.is_hidden("#wjConnect") and p.is_hidden("#wjNote"))
+        p.wait_for_selector("[data-f=wjState]:has-text('streaming')")
+        self.assertEqual([r["path"] for r in self.posts() if r["path"].startswith("/api/wifi_joystick/")],
+                         ["/api/wifi_joystick/release", "/api/wifi_joystick/connect"])
+        for r in self.posts():
+            self.assertEqual(r["body"], b"", r["path"])
+        # no receiver (state off): neither button
+        orig = self.pi.status
+        self.pi.status = lambda: {**orig(), "wifi_joystick": {"module": "", "state": "off", "rate_hz": 0.0, "dropped": 0,
+                                                             "gaps": 0, "gap_max_ms": 0}}
+        p.wait_for_selector("#wjRelease", state="hidden", timeout=5000)
+        self.assertTrue(p.is_hidden("#wjConnect") and p.is_hidden("#wjNote"))
+        self.assertTrue(p.is_hidden("#wjBtns"), "the empty button row takes no room")
+
+    def test_wifi_release_ends_with_restart(self):
+        """a Release is not saved: after a restart of the game the Pi listens again (Release module shows, not Connect)"""
+        self.net_errors_ok = True                                   # the game restarts: the Pi is away a moment
+        p = self.open("status")
+        p.wait_for_function(LOADED["status"])
+        p.click("#wjRelease")
+        self.confirm(True)
+        p.wait_for_selector("#wjConnect", state="visible", timeout=5000)
+        self.tab("system")
+        p.click("#restartBtn")
+        self.confirm(True, "Restart the game?")
+        p.wait_for_selector("#waitBox", state="visible")
+        p.wait_for_selector("#waitBox", state="hidden", timeout=20000)
+        self.tab("status")
+        p.wait_for_selector("#wjRelease", state="visible", timeout=8000)
+        self.assertTrue(p.is_hidden("#wjConnect") and p.is_hidden("#wjNote"))
+        p.wait_for_selector("[data-f=wjState]:has-text('streaming')", timeout=5000)
+        self.assertEqual(self.posts("/api/wifi_joystick/connect"), [])
+
+    def test_wifi_release_phone(self):
+        p = self.open("status", mobile=True, dark=True)
+        p.wait_for_function(LOADED["status"])
+        p.click("#wjRelease")
+        self.confirm(True)
+        p.wait_for_selector("#wjConnect", state="visible", timeout=5000)
+        self.no_sideways_scroll("status, released (phone)")
+        self.shot("status-released-mobile")
 
     def test_every_control_has_a_name(self):
         p = self.open("status")

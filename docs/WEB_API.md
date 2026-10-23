@@ -51,7 +51,7 @@ json, png, svg, ico, txt, woff2, wav, mp3, ogg.
  "input":{"active":0,"kind":"wifi","live":true,
           "sticks":{"ail":0,"ele":0,"thr":-1024,"rud":0,"pause":-1024},
           "sources":[{"kind":"wifi","name":"ELRS 10.0.0.1","live":true,"rate_hz":250.0,"nch":16}]},
- "wifi_joystick":{"module":"ELRS 10.0.0.1","state":"streaming","rate_hz":250.0,"dropped":0,"gaps":0,"gap_max_ms":0},
+ "wifi_joystick":{"module":"ELRS 10.0.0.1","state":"streaming","release":"","rate_hz":250.0,"dropped":0,"gaps":0,"gap_max_ms":0},
  "audio":{"device":"jack","ok":true,"music":"Song 3 (generated)"},
  "network":{"ip":"192.168.1.23","iface":"wlan0","ssid":"Home","mode":"client","hostname":"sticktime"},
  "system":{"cpu_temp":51.2,"throttled":"0x0"},
@@ -76,6 +76,15 @@ throttling flags in hex, as `vcgencmd get_throttled` prints them (bit 0 under-vo
 longer than that leaves it not live, so with no other live source the game pauses in flight; its lock is
 released after 3 s, which removes the source); `input.sticks` without a live source: ail, ele and rud 0, thr
 -1024 (the game's no-input state).
+
+`wifi_joystick.state`: `off` (no receiver), `released` (the WiFi joystick's Release, below: not listening),
+`listening`, `activating <ip>`, `connecting to <ip>`, `no data from <ip>`, `no stick data from <ip>`,
+`streaming`, or an error (`UDP port 11000 in use`). `module`: the locked module (`ELRS 10.0.0.1`,
+`Crossfire 10.0.0.1`, or `WiFi 10.0.0.1` while its kind is unknown), else `""`. `release`: the last release
+of this run (the Release below, or a stop): `""` none, `sending` (`joystick_end` sent, its answer awaited),
+`ok` (every module it went to answered: they broadcast again), `failed` (one didn't answer or said no: it may
+stream on until its WiFi or power is cycled; the log says why), `none` (nothing was sent: no module streamed
+to the Pi, or only one known as Crossfire).
 
 `GET /api/sticks` → `{"sources":[{"kind":"wifi","name":"...","live":true,"rate_hz":250,"nch":16,"ch":[16 ints]}],"active":0,"sticks":{...}}`
 (poll it about 20 times a second). `GET /api/sticks/stream` → `text/event-stream`, one `data: <same JSON>` event
@@ -168,7 +177,7 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
   module takes a new request only when its stream starts, so it reaches a streaming module only by a restart
   (`action=joystick_end`, then `joystick_begin`; the log says so). Crossfire ignores the request (16
   channels, about 90 Hz) and is never sent `joystick_end` once its beacon was seen. The rules (the shared
-  core's R1-R13, [RESEARCH.md §2](RESEARCH.md#2-expresslrs-wifi-joystick-and-tbs-crossfire-velocidrone-mobile-link)):
+  core's R1-R14, [RESEARCH.md §2](RESEARCH.md#2-expresslrs-wifi-joystick-and-tbs-crossfire-velocidrone-mobile-link)):
   - Saved while a module is locked: Crossfire by its beacon: logged once per session, nothing sent. Surely no
     Crossfire (its ELRS beacon was seen, or it sends other than 16 channels): restarted at once. Unknown with
     16 channels: held until the lock is 20 s old without a Crossfire beacon, then restarted (dropped on a
@@ -178,7 +187,9 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
     `wifi_module_ip` is set), a Crossfire module counts as ELRS after those 20 s and is restarted too.
   - Saved while none is locked: the next `joystick_begin` carries it. The Pi remembers what it last asked each
     module (8 at most, while the program runs); one that locks after it was last asked for another request is
-    restarted as above (Crossfire: only logged).
+    restarted as above (Crossfire: only logged). What it asked a module its Release released ("Released
+    <ip>") is forgotten: the module is idle, and the next `joystick_begin` gives it the request, with no
+    restart.
   - A restart counts only when both POSTs got a 2xx. A failed one is sent again every 5 s while that module
     stays locked and is not known as Crossfire, 3 sends per change at most, then the log says it gave up. A
     failed plain `joystick_begin` is never retried as a restart. A failed one whose module lost the lock
@@ -189,8 +200,9 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
     `connecting to <ip>`, `joystick_begin` at once; a restart pending or held for the module left is dropped.
     Saved together with a new request: the new module's `joystick_begin` carries it, the module left gets
     nothing.
-  - A module still streaming another request when it is locked to is restarted once (per module while the
-    program runs) when its channel count differs from `wifi_channels` and it is surely no Crossfire, or
+  - A module still streaming another request when it is locked to is restarted once per module and session (a
+    session lasts the run, or until a Release) when its channel count differs from `wifi_channels` and it is
+    surely no Crossfire, or
     when it sends 16 while fewer are asked and its 20 s passed without a Crossfire beacon; a different
     interval alone is kept (the frames don't carry it).
   - Plain activations: one POST per module per 5 s; restarts go out whatever that throttle and start it again.
@@ -199,6 +211,34 @@ the whole path over 1024 bytes. Components resolve case-insensitively (FAT). Sym
     in flight. Lock loss (3 s without data), the program's exit and a switch to another module IP release the
     lock and remove the source (its channels 0, no longer listed). Channels a frame doesn't carry read 0
     (center) in `/api/sticks`.
+  - Release of the module (R14): an ELRS module streams until it gets `joystick_end` and broadcasts only
+    while idle, so one left streaming to the Pi can't be found by another app (the PC app). The program's
+    exit (the service stopping: a shutdown, a reboot, a restart, an app update) and the Release below send
+    `action=joystick_end` alone to the module locked now, to modules that stream to the Pi while it drops
+    their frames (a second source, placeholder frames, one left for another module IP that streams on), and
+    to modules activated less than 3 s ago that have not locked since (they may be about to stream to the
+    Pi); never to a module known as Crossfire by its beacon (it broadcasts while streaming; the log says so).
+    With `wifi_module_ip` set, other modules' beacons don't reach the Pi, so one of unknown kind that the Pi
+    neither activated nor had locked is left alone (it could be a Crossfire). The exit waits for the answers
+    at most 1.5 s after the Release or stop that sent them (an exit 1 s after a Release: at most 0.5 s more).
+    A module gets 2 s to answer: the requests go out one at a time, so one that does not answer holds a
+    Connect's `joystick_begin` at most that long. The log has a line per module:
+    `Releasing <ip>: ...`, then `Released <ip>: it broadcasts again, any app can connect to it` or
+    `Releasing <ip> failed: <why> - it may stream on until its WiFi or power is cycled` (`timed out after 2 s`,
+    `no answer in time` when the exit's wait ran out, `not sent, the wait ran out before its turn` for one
+    queued behind it). Every start of the program listens (a Release is not saved): after a restart (Restart,
+    a setting that restarts the game, an app update) the module is found by its next beacon, within 5 s, or at
+    once with `wifi_module_ip` set.
+- `POST /api/wifi_joystick/release` (no body) → `{"ok":true}`: the frame loop releases the module (as on
+  exit) and stops listening, so the module's broadcasts don't get it back; `wifi_joystick.state` becomes
+  `released` (within a frame), the WiFi source goes away, `wifi_joystick.release` gives the module's answer.
+  Settings saved meanwhile are kept and apply on Connect. A Release while released does nothing. It lasts
+  until Connect or the program's next start (nothing is saved): with `wifi_module_ip` set, that start sends
+  the module its `joystick_begin` at once, so it takes the module back from another app.
+- `POST /api/wifi_joystick/connect` (no body) → `{"ok":true}`: listens again (`listening`, a module IP set
+  gets its `joystick_begin` at once, even while another app streams from it; else the module is found by its
+  broadcast, so not while another app, the PC app, still streams from it). Not released: nothing changes. Of
+  a Release and a Connect the frame loop has not taken yet, the last one wins.
 - `GET /api/status` → `wifi_joystick` (above): the locked module, the state and the measured rate.
 
 ## VTX control

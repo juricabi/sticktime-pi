@@ -402,6 +402,7 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
     wifi_config_t wc;
     read_wifi_config(h, &wc);
     h->wifi = wifi_open(app, &wc);
+    /* (the web page's Release ends here too: every start listens) */
     if (h->wifi) wifi_start(h->wifi, plat_now_us());
   }
   /* VTX control: its own thread reads the settings and the VTX table (off unless vtx is set) */
@@ -438,7 +439,14 @@ int host_init(host_t *h, app_t *app, const host_options_t *opt) {
   return 0;
 }
 
+void host_stop_wifi(host_t *h) {
+  if (h->wifi) wifi_stop(h->wifi);
+}
+
 void host_close(host_t *h) {
+  /* the WiFi module's release (R14) goes out now (main.c: already), while the rest closes; wifi_close waits
+   * for its answer */
+  host_stop_wifi(h);
   if (h->etx) { etx_flush_writes(h->etx); etx_free(h->etx); }
   if (h->audio) audio_close(h->audio);
   if (h->wifi) wifi_close(h->wifi);
@@ -544,6 +552,9 @@ void host_frame(host_t *h, int64_t now) {
   if (web_take_sd_dirty()) h->reload_at_us = now + RELOAD_DEBOUNCE_US;
   if (cmds & APP_CMD_MUSIC_NEXT && h->audio) audio_music_next(h->audio);
   if (cmds & APP_CMD_SONGS_CHANGED && h->audio) audio_songs_changed(h->audio);
+  /* the web page's Release and Connect (never both: the last one posted wins); neither waits */
+  if (cmds & APP_CMD_WIFI_RELEASE) wifi_release(h->wifi, now);
+  if (cmds & APP_CMD_WIFI_CONNECT) wifi_connect(h->wifi, now);
 
   if (!h->opt.no_inputs) poll_inputs(h, now);
   check_ip(h, now);

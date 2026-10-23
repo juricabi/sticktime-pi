@@ -23,7 +23,9 @@ typedef bool (*wifi_abort_fn)(void *ud);
  * failure there does not stop the joystick_begin, unless it was aborted). Each POST gets timeout_ms.
  * rs is filled completely: ip, session and restart from rq; ok = the begin got a 2xx; status = its HTTP
  * status (0 when there was none); reason = its reason phrase; err = why it failed (or ""). The body of
- * the answer ("ok") is not checked, like the reference. aborted may be NULL. */
+ * the answer ("ok") is not checked, like the reference. aborted may be NULL.
+ * With rq->release (R14), "action=joystick_end" alone is sent (rq->body unused): rs->release set, restart
+ * false, ok/status/reason/err are the joystick_end's, end_status 0 and end_err "". */
 void wifi_net_post(const wifi_actreq_t *rq, wifi_actres_t *rs, int timeout_ms, wifi_abort_fn aborted, void *ud);
 
 /* "192.168.1.20 (wlan0), 10.0.0.2 (eth0)": the IPv4 addresses of the interfaces that are up, without

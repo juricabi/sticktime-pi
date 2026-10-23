@@ -22,6 +22,12 @@ void app_post(app_t *a, uint32_t cmds) {
   plat_mutex_unlock(&a->mu);
 }
 
+void app_post_instead(app_t *a, uint32_t cmds, uint32_t instead_of) {
+  plat_mutex_lock(&a->mu);
+  a->cmds = (a->cmds & ~instead_of) | cmds;
+  plat_mutex_unlock(&a->mu);
+}
+
 void app_post_key(app_t *a, int evt) {
   plat_mutex_lock(&a->mu);
   if (a->nkeys < APP_KEYQ) a->keyq[a->nkeys++] = evt;

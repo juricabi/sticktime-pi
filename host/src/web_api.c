@@ -1,7 +1,7 @@
 /* The routes of docs/WEB_API.md: pages, status, settings, the game's SD card (/api/sd with the
  * sd_write policy), songs, the remote, WiFi, updates and the system. Everything runs on the
- * connection's worker thread; the frame loop only sees app_post()/app_post_key(), the status
- * snapshot, the screenshot handoff and web_take_sd_dirty(). Helpers (sticktime-wifi,
+ * connection's worker thread; the frame loop only sees app_post()/app_post_instead()/app_post_key(),
+ * the status snapshot, the screenshot handoff and web_take_sd_dirty(). Helpers (sticktime-wifi,
  * sticktime-update) run as processes from here, never from the frame loop. */
 #ifndef _WIN32
 #define _GNU_SOURCE
@@ -705,13 +705,15 @@ static void r_status(web_conn_t *c) {
   app_snapshot(A, st);
   /* the frame loop's strings may lack a NUL at the end: copy them bounded */
   char err[sizeof st->game_error + 1], gv[sizeof st->game_version + 1], vd[sizeof st->video_desc + 1];
-  char wm[sizeof st->wifi_module + 1], ws[sizeof st->wifi_state + 1], ad[sizeof st->audio_device + 1];
+  char wm[sizeof st->wifi_module + 1], ws[sizeof st->wifi_state + 1], wr[sizeof st->wifi_release + 1];
+  char ad[sizeof st->audio_device + 1];
   char np[sizeof st->now_playing + 1], sc[sizeof st->script + 1];
   copy_str(err, sizeof err, st->game_error, sizeof st->game_error);
   copy_str(gv, sizeof gv, st->game_version, sizeof st->game_version);
   copy_str(vd, sizeof vd, st->video_desc, sizeof st->video_desc);
   copy_str(wm, sizeof wm, st->wifi_module, sizeof st->wifi_module);
   copy_str(ws, sizeof ws, st->wifi_state, sizeof st->wifi_state);
+  copy_str(wr, sizeof wr, st->wifi_release, sizeof st->wifi_release);
   copy_str(ad, sizeof ad, st->audio_device, sizeof st->audio_device);
   copy_str(np, sizeof np, st->now_playing, sizeof st->now_playing);
   copy_str(sc, sizeof sc, st->script, sizeof st->script);
@@ -767,6 +769,8 @@ static void r_status(web_conn_t *c) {
   sb_json_str(&b, wm);
   sb_puts(&b, ",\"state\":");
   sb_json_str(&b, ws);
+  sb_puts(&b, ",\"release\":");
+  sb_json_str(&b, wr);
   sb_puts(&b, ",\"rate_hz\":");
   sb_json_num(&b, st->wifi_rate_hz, 1);
   sb_printf(&b, ",\"dropped\":%lu,\"gaps\":%lu,\"gap_max_ms\":%lu},\"audio\":{\"device\":", (unsigned long)st->wifi_dropped,
@@ -1784,6 +1788,19 @@ static void r_wifi(web_conn_t *c) {
   kvs_free(&kv);
 }
 
+/* the WiFi joystick's Release and Connect: commands for the frame loop (wifi_release / wifi_connect, which
+ * never wait: the joystick_end goes out on the receiver's worker thread); of the two, the last one asked wins.
+ * Nothing is saved: the program's next start listens again. */
+static void wifi_joystick_cmd(web_conn_t *c, bool release) {
+  if (release) app_post_instead(A, APP_CMD_WIFI_RELEASE, APP_CMD_WIFI_CONNECT);
+  else app_post_instead(A, APP_CMD_WIFI_CONNECT, APP_CMD_WIFI_RELEASE);
+  app_log(A, release ? "web: WiFi joystick release" : "web: WiFi joystick connect");
+  web_send_ok(c, 200);
+}
+
+static void r_wifi_joystick_release(web_conn_t *c) { wifi_joystick_cmd(c, true); }
+static void r_wifi_joystick_connect(web_conn_t *c) { wifi_joystick_cmd(c, false); }
+
 static void r_module_ap(web_conn_t *c) {
   char w[32];
   if (!body_word(c, w, sizeof w)) return;
@@ -1948,6 +1965,8 @@ static const route_t ROUTES[] = {
   { "/api/wifi/scan", M_GET | M_HEAD, r_wifi_scan },
   { "/api/wifi", M_POST, r_wifi },
   { "/api/wifi/module-ap", M_POST, r_module_ap },
+  { "/api/wifi_joystick/release", M_POST, r_wifi_joystick_release },
+  { "/api/wifi_joystick/connect", M_POST, r_wifi_joystick_connect },
   { "/api/update", M_GET | M_HEAD, r_update },
   { "/api/update/check", M_POST, r_update_check },
   { "/api/update/apply", M_POST, r_update_apply },

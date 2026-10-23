@@ -112,6 +112,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .skip { position: absolute; left: 8px; top: -60px; z-index: 50; background: var(--accent); color: var(--accent-fg); padding: 8px 12px; border-radius: 8px; font-weight: 650; }
 .skip:focus { top: 8px; }
 .note { color: var(--muted); font-size: 13.5px; }
+#wjNote.bad #wjResult { color: var(--bad); font-weight: 600; }   /* the module didn't confirm its release */
 .lead { color: var(--muted); margin: 4px 0 0; }
 
 /* ---------------------------------------------------------------- header and tabs */

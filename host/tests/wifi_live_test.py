@@ -482,27 +482,32 @@ def two_modules(c):
 
 @scenario
 def restart(c):
-    """the receiver restarts while the module streams: streaming again at once, without a POST"""
+    """the receiver restarts while the module streams: its exit released the module (joystick_end, R14), which
+    broadcasts again, so the new receiver gets it back by its beacon; a stop and start does the same"""
     p = c.probe(name="probe1")
     m = c.fake("127.0.0.2")
     check(p.wait_state("streaming", 4), f"not streaming ({p.last_state()})")
     p.close()
+    check(m.actions() == ["joystick_begin", "joystick_end"], f"POSTs {m.actions()}")
+    check(not m.state()["active"], f"the module streams on after the exit: {m.state()}")
     t = time.monotonic()
     p2 = c.probe(name="probe2")
-    s = p2.wait_state("streaming", 2)
+    s = p2.wait_state("streaming", 3)
     check(s, f"not streaming after the restart ({p2.last_state()})")
     dt = s["wall"] - t
-    check(dt < 1.0, f"took {dt:.2f} s")
-    check(m.npost() == 1, f"{m.npost()} POSTs")
-    # stop/start commands: the port is free while stopped
+    check(dt < 2.0, f"took {dt:.2f} s (the beacon comes every 1 s)")
+    check(m.actions() == ["joystick_begin", "joystick_end", "joystick_begin"], f"POSTs {m.actions()}")
+    # stop/start commands: the stop releases it too, the port is free while stopped
     k = p2.mark()
     p2.cmd("stop")
     check(p2.wait_state("off", 2, k), "no 'off'")
+    check(p2.wait_log("Released 127.0.0.2: it broadcasts again", 3, k), "no release on stop")
     s = c.udp("0.0.0.0", c.base)
     s.close()
     c.socks.remove(s)
     p2.cmd("start")
-    check(p2.wait_state("streaming", 2, k), "no streaming after start")
+    check(p2.wait_state("streaming", 3, k), "no streaming after start")
+    check(m.npost("joystick_end") == 2 and m.npost("joystick_begin") == 3, f"POSTs {m.actions()}")
     return f"streaming {dt * 1000:.0f} ms after the restart"
 
 
@@ -582,7 +587,8 @@ def probe_expectations(c):
     check(code == 0 and ex and ex[0]["reason"] == "expectations met", f"exit {code} {ex}")
     check(any(e["ev"] == "stats" and e["hz"] >= 200 for e in ev), "no rate in the output")
     check(any(e["ev"] == "poll" for e in ev), "no poll statistics")
-    # the module still streams to this host: a restarted probe locks at once, but to the wrong expectation
+    # the first probe released the module at its exit (R14): it beacons again, the second probe activates it and
+    # gets frames, but to the wrong expectation
     code2, ev2, dt2 = run("--expect-src", "127.0.0.9", "--duration-ms", "1500")
     ex2 = [e for e in ev2 if e["ev"] == "exit"]
     check(code2 == 1 and ex2 and "duration" in ex2[0]["reason"], f"exit {code2} {ex2}")
@@ -670,6 +676,161 @@ def leftover_request(c):
     check(st["restarts"] == 1 and m.npost() == 3, f"restarts {st['restarts']}, {m.npost()} POSTs")
     check(len(p.logs("restarting its stream")) == 1, "restarted more than once")
     return f"{st['hz']:.0f} Hz after the restart"
+
+
+@scenario
+def release_on_exit(c):
+    """the program's exit releases the module streaming to it (joystick_end alone, R14) and waits for the
+    answer: the module stops streaming and broadcasts again, so any app can find it"""
+    p = c.probe()
+    m = c.fake("127.0.0.2")
+    check(p.wait_state("streaming", 4, module="ELRS 127.0.0.2"), f"not streaming ({p.last_state()})")
+    b0 = len(m.beacon_times)
+    p.close()
+    ex = p.events("exit")
+    check(ex and ex[-1]["close_ms"] < 1000, f"exit {ex}")
+    check(p.logs("Releasing 127.0.0.2: joystick_end, so it stops streaming and broadcasts again"), "no release")
+    check(p.logs("Released 127.0.0.2: it broadcasts again, any app can connect to it"), "no answer logged")
+    check(m.actions() == ["joystick_begin", "joystick_end"], f"POSTs {m.actions()}")
+    posts = [x for x in m.posts if x["method"] == "POST"]
+    check(posts[1]["body"] == "action=joystick_end" and posts[1]["client"] == "127.0.0.1", f"release {posts[1]}")
+    check(not m.state()["active"], f"module state {m.state()}")
+    end = time.monotonic() + 3
+    while len(m.beacon_times) == b0 and time.monotonic() < end:
+        time.sleep(0.05)
+    check(len(m.beacon_times) > b0, "no beacon after the release")
+    return f"exit took {ex[-1]['close_ms']} ms"
+
+
+@scenario
+def release_on_exit_no_answer(c):
+    """a module that does not answer holds the exit at most 1.5 s (WIFI_RELEASE_WAIT_US): then the release is
+    cut short, and the log says the module may stream on"""
+    p = c.probe()
+    m = c.fake("127.0.0.2")
+    check(p.wait_state("streaming", 4), f"not streaming ({p.last_state()})")
+    m.http_delay = 10
+    t = time.monotonic()
+    p.close()
+    dt = time.monotonic() - t
+    ex = p.events("exit")
+    check(ex and 1400 <= ex[-1]["close_ms"] <= 2200, f"exit {ex}")
+    check(dt < 4, f"the probe took {dt:.2f} s to end")
+    check(p.logs("Releasing 127.0.0.2 failed: no answer in time - it may stream on until its WiFi or power is cycled"),
+          "no failure logged")
+    check(m.npost("joystick_end") == 1 and m.state()["active"], f"{m.actions()} {m.state()}")
+    return f"exit took {ex[-1]['close_ms']} ms"
+
+
+@scenario
+def release_and_connect(c):
+    """Release (the web page's): the module gets joystick_end and broadcasts, the receiver stops listening (its
+    beacons get no POST) and says "released"; another app can take the module; a setting saved meanwhile waits;
+    Connect listens again, and once the other app lets go, the module's beacon gets the saved request"""
+    p = c.probe()
+    m = c.fake("127.0.0.2", beacon_interval=0.5)
+    check(p.wait_state("streaming", 4, module="ELRS 127.0.0.2"), f"not streaming ({p.last_state()})")
+    k = p.mark()
+    p.cmd("release")
+    check(p.wait_state("released", 2, k), f"status {p.last_state()}")
+    check(p.wait_log("Release: not listening until Connect (the web page) or StickTime Pi starts again", 1, k), "no log")
+    check(p.wait_log("Released 127.0.0.2: it broadcasts again, any app can connect to it", 3, k), "no answer")
+    check(m.actions() == ["joystick_begin", "joystick_end"] and not m.state()["active"], f"{m.actions()} {m.state()}")
+    b0 = len(m.beacon_times)
+    time.sleep(1.3)
+    check(len(m.beacon_times) - b0 >= 2, "the released module should broadcast")
+    check(m.npost() == 2, f"{m.npost()} POSTs: released, the receiver must not take the module back")
+    st = p.wait_stats(lambda e: True, 2, p.mark())
+    check(st and st["released"] and not st["listening"] and not st["present"], f"probe {st}")
+    check(st["releases_ok"] == 1 and st["releasing"] == 0 and st["posts"] == 1 and st["release"] == "ok", f"probe {st}")
+    s = c.udp("0.0.0.0", c.base)                       # the port is free
+    s.close()
+    c.socks.remove(s)
+    # another app (another PC) takes the module
+    other = c.udp("127.0.0.1", 0)
+    m.stream_port_for["127.0.0.3"] = other.getsockname()[1]
+    status, _ = fake_elrs.post_udpcontrol("127.0.0.2", c.base + 1, dict(action="joystick_begin", interval=10000,
+                                                                        channels=8), source_ip="127.0.0.3")
+    check(status == 200 and m.state()["remote_ip"] == "127.0.0.3" and m.state()["active"], f"{m.state()}")
+    # a setting saved while released: kept for Connect
+    k = p.mark()
+    p.cmd("interval 2000")
+    time.sleep(0.3)
+    check(m.npost() == 3 and p.last_state() == "released", f"{m.actions()}, {p.last_state()}")
+    p.cmd("connect")
+    check(p.wait_log("Connect: listening again", 2, k), "no connect log")
+    check(p.wait_state("listening", 2, k), f"status {p.last_state()}")
+    time.sleep(1.0)                                    # it streams to the other app: no beacon, nothing to do
+    check(m.npost() == 3, f"POSTs {m.actions()}")
+    status, _ = fake_elrs.post_udpcontrol("127.0.0.2", c.base + 1, dict(action="joystick_end"), source_ip="127.0.0.3")
+    check(status == 200 and not m.state()["active"], f"{m.state()}")
+    check(p.wait_state("streaming", 3, k, module="ELRS 127.0.0.2"), f"not streaming after Connect ({p.last_state()})")
+    posts = [x for x in m.posts if x["method"] == "POST"]
+    check(posts[-1]["client"] == "127.0.0.1" and posts[-1]["body"] == "action=joystick_begin&interval=2000&channels=16",
+          f"the last POST {posts[-1]}")
+    check(m.state()["interval_us"] == 2000 and m.state()["channels"] == 16, f"module state {m.state()}")
+
+
+@scenario
+def release_crossfire(c):
+    """Crossfire (known by its beacon) is never sent joystick_end, on Release nor on the exit: it broadcasts while
+    streaming, other apps find it as it is (logged)"""
+    p = c.probe()
+    m = c.fake("127.0.0.2", kind="xf", beacon_interval=0.7)
+    check(p.wait_state("streaming", 4, module="Crossfire 127.0.0.2"), f"not streaming ({p.last_state()})")
+    k = p.mark()
+    p.cmd("release")
+    check(p.wait_log("Not releasing 127.0.0.2: Crossfire broadcasts while streaming, other apps find it as it is", 2, k),
+          "no log")
+    check(p.wait_state("released", 2, k), f"status {p.last_state()}")
+    st = p.wait_stats(lambda e: e["released"], 2, k)
+    check(st and st["release"] == "none" and st["releasing"] == 0, f"nothing sent, the status says so: {st}")
+    p.cmd("connect")
+    check(p.wait_state("streaming", 3, k), f"it streams on: locked again ({p.last_state()})")
+    p.close()
+    check(len(p.logs("Not releasing 127.0.0.2")) == 2, "the exit should log it too")
+    check(m.npost("joystick_end") == 0 and m.npost() == 1, f"POSTs {m.actions()}")
+
+
+@scenario
+def release_unknown_kind(c):
+    """a module of unknown kind (no beacon: broadcasts blocked, the module IP set) gets joystick_end on the exit,
+    and so does one activated less than 3 s ago that sent nothing yet"""
+    m = c.fake("127.0.0.2", beacons_enabled=False)
+    q = c.fake("127.0.0.3", http=2, beacons_enabled=False, mode="silent")
+    p = c.probe("--module-ip", "127.0.0.2")
+    check(p.wait_state("streaming", 3, module="WiFi 127.0.0.2"), f"not streaming ({p.last_state()})")
+    p.close()
+    check(m.actions() == ["joystick_begin", "joystick_end"], f"POSTs {m.actions()}")
+    check(p.logs("Released 127.0.0.2: it broadcasts again"), "no answer logged")
+    p2 = c.probe("--module-ip", "127.0.0.3", http=2, name="probe2")
+    check(p2.wait_log("Activation POST -> 127.0.0.3: 200 OK", 3), "no activation")
+    p2.close()
+    check(q.actions() == ["joystick_begin", "joystick_end"], f"POSTs {q.actions()}")
+
+
+@scenario
+def release_module_left_by_switch(c):
+    """a switch to another module IP sends the module left nothing (R7), but it streams on to the receiver (it does
+    not know it was left): a stop while its frames still come releases it too, after the new module (R14)"""
+    p = c.probe()
+    a = c.fake("127.0.0.2")
+    b = c.fake("127.0.0.3", beacons_enabled=False)
+    check(p.wait_state("streaming", 4, module="ELRS 127.0.0.2"), f"not streaming ({p.last_state()})")
+    k = p.mark()
+    p.cmd("target 127.0.0.3")
+    check(p.wait_state("streaming", 3, k, module="WiFi 127.0.0.3"), f"no switch ({p.last_state()})")
+    time.sleep(0.3)
+    check(a.actions() == ["joystick_begin"] and a.state()["active"], f"the module left: {a.actions()} {a.state()}")
+    check(not p.logs("Releasing", k), "a release at the switch")
+    k = p.mark()
+    p.cmd("stop")
+    check(p.wait_log("Released 127.0.0.2: it broadcasts again, any app can connect to it", 3, k), "the module left kept")
+    check(p.wait_log("Released 127.0.0.3: it broadcasts again, any app can connect to it", 3, k), "the module IP kept")
+    rel = [e["msg"] for e in p.logs("Releasing", k) if "joystick_end" in e["msg"]]
+    check(len(rel) == 2 and "127.0.0.3" in rel[0] and "127.0.0.2" in rel[1], f"order {rel}")
+    check(a.actions() == ["joystick_begin", "joystick_end"] and not a.state()["active"], f"{a.actions()} {a.state()}")
+    check(b.actions() == ["joystick_begin", "joystick_end"] and not b.state()["active"], f"{b.actions()} {b.state()}")
 
 
 # ---------------------------------------------------------------- runner

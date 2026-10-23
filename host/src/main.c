@@ -243,6 +243,7 @@ int main(int argc, char **argv) {
   /* the web page's Restart, or a setting that needs one (not a stop from systemd): start again at once */
   bool again = h.quit && !*sys_quit_flag() && !a.frames;
   app_log(&app, again ? "restarting" : "stopping");
+  host_stop_wifi(&h);      /* the WiFi module's release (R14) first: web_stop may wait up to 3 s for its clients */
   web_stop();
   sys_console_restore();   /* console first, then video (fbcon takes the display back while we are DRM master) */
   host_close(&h);

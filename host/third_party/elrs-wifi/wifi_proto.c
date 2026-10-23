@@ -1,10 +1,14 @@
 /* ELRS / Crossfire WiFi joystick protocol engine: see wifi_proto.h. MIT License, (c) juricabi.
  * Port of JoystickEngine.cs (ELRS-Crossfire-WiFi-Joystick-Windows, MIT, (c) juricabi): the same rules
- * (R1-R13) and log lines. What differs, because a C core has no threads or clock of its own: IPs are
+ * (R1-R14) and log lines. What differs, because a C core has no threads or clock of its own: IPs are
  * numbers (network byte order) and times are passed in; and the activate hook may answer WIFI_ACT_BUSY (a
  * POST to that module in flight, the queue full, not listening), so a restart can wait for the host
  * (restart_ip: it goes out when that module's POST is done, from activation_done or a tick), where
- * JoystickEngine.cs queues it behind the module's POST. */
+ * JoystickEngine.cs queues it behind the module's POST. A plain joystick_begin to a module whose POST is in
+ * flight is not sent (BUSY: tried again at the next chance), and the module's activation entry keeps the
+ * request of the one in flight, where JoystickEngine.cs queues it as well and records its request. So when the
+ * module IP is set again with another request while its first joystick_begin is in flight (R8), a module that
+ * locks streaming the first request is restarted here (R3) but not there. */
 #include "wifi_proto.h"
 
 #include <math.h>
@@ -101,12 +105,69 @@ static void act_record(wifi_proto_t *p, uint32_t ip, int64_t now) {
   p->act[i].interval_us = p->interval_us;      /* what send_act just asked for */
   p->act[i].channels = p->channels;
   p->act[i].seq = next_seq(p);
+  p->act[i].unthrottled = false;
+  p->act[i].locked = false;                    /* (R14) no frame of it since this one */
 }
 
-static void act_remove(wifi_proto_t *p, uint32_t ip) {
+/* The next activation POST to ip goes out at once (the module IP set, an explicit restart). The entry stays: a
+ * host busy with a POST to ip (in flight) sends nothing new, and R14 still has to know that one went out. */
+static void act_unthrottle(wifi_proto_t *p, uint32_t ip) {
   int i = act_find(p, ip);
-  if (i < 0) return;
-  p->act[i] = p->act[--p->nact];
+  if (i >= 0) p->act[i].unthrottled = true;
+}
+
+/* Another module takes the lock: the one that had it keeps, in its act entry, whether a frame of it was applied
+ * after its last activation (R14), which bound_ip and bound_last_us no longer tell. */
+static void act_note_locked(wifi_proto_t *p) {
+  int i = p->bound_ip ? act_find(p, p->bound_ip) : -1;
+  if (i >= 0 && p->bound_last_us >= p->act[i].t_us) p->act[i].locked = true;
+}
+
+/* src takes the lock: noted for this session (R14), the one locked last at the end. Full: the one locked longest
+ * ago goes. */
+static void held_note(wifi_proto_t *p, uint32_t ip) {
+  int i = ip_index(p->held, p->nheld, ip);
+  if (i < 0 && p->nheld == WIFI_TABLE) i = 0;
+  if (i >= 0) {
+    memmove(p->held + i, p->held + i + 1, sizeof p->held[0] * (size_t)(p->nheld - i - 1));
+    p->nheld--;
+  }
+  p->held[p->nheld++] = ip;
+}
+
+/* a was heard before b: by the time of its last frame, then by when it was written (one drain, one time) */
+static bool dropped_before(const wifi_dropped_t *a, const wifi_dropped_t *b) {
+  return a->t_us < b->t_us || (a->t_us == b->t_us && a->seq < b->seq);
+}
+
+/* ip streams to us and we drop its frames; its last frame came at t (R14). Never back in time. Full: the one heard
+ * longest ago goes. */
+static void dropped_put(wifi_proto_t *p, uint32_t ip, int64_t t) {
+  int i = 0;
+  while (i < p->ndropped && p->dropped[i].ip != ip) i++;
+  if (i == p->ndropped) {
+    if (p->ndropped < WIFI_TABLE) p->ndropped++;
+    else {
+      i = 0;
+      for (int k = 1; k < p->ndropped; k++) if (dropped_before(&p->dropped[k], &p->dropped[i])) i = k;
+    }
+  } else if (p->dropped[i].t_us > t) {
+    return;
+  }
+  p->dropped[i].ip = ip;
+  p->dropped[i].t_us = t;
+  p->dropped[i].seq = next_seq(p);
+}
+
+/* src streams to us and we drop its frame (a 2nd source, a placeholder frame, not the module IP): when, for R14.
+ * With a module IP set, other modules' beacons are not heard: one of unknown kind that we neither activated nor
+ * had locked this session is left out then, as it could be a Crossfire we can't tell. (One we had locked: while it
+ * had the lock, a stop would have sent it joystick_end anyway.) */
+static void dropped_note(wifi_proto_t *p, uint32_t src, int64_t now) {
+  if (p->target && src != p->target && act_find(p, src) < 0 && ip_index(p->held, p->nheld, src) < 0 &&
+      wifi_proto_kind(p, src) == WIFI_KIND_UNKNOWN)
+    return;
+  dropped_put(p, src, now);
 }
 
 static void note_beacon(wifi_proto_t *p, uint32_t ip, wifi_kind_t kind, const char *name) {
@@ -180,6 +241,14 @@ static void asked_unknown(wifi_proto_t *p, uint32_t ip, int why) {
   set_remove(p->restarted, &p->nrestarted, ip);
 }
 
+/* ip took a joystick_end alone (R14): it is idle, and streams what its next joystick_begin asks for. Nothing is
+ * known of it then: its next lock takes the request of the last activation sent to it this session, or the
+ * request then (as a module never asked), so it is not restarted for a request it no longer streams. */
+static void asked_forget(wifi_proto_t *p, uint32_t ip) {
+  int i = asked_find(p, ip);
+  if (i >= 0) p->asked[i] = p->asked[--p->nasked];
+}
+
 /* The lock goes (lock loss, a handover, another module IP, reset). A failed restart of that module, given
  * up or still to be sent again, can't be sent any more: it did not take (asked_unknown). */
 static void lock_release(wifi_proto_t *p) {
@@ -209,6 +278,8 @@ void wifi_proto_reset(wifi_proto_t *p) {
   p->nwarned = p->nnostick = 0;
   p->nostick_ip = 0;
   p->nact = 0;
+  p->ndropped = 0;
+  p->nheld = 0;
   p->first_act_set = false;
   p->first_act_us = 0;
   p->first_act_ip = 0;
@@ -244,14 +315,15 @@ static void mark_activated(wifi_proto_t *p, uint32_t ip, int64_t now) {
 }
 
 static int send_act(wifi_proto_t *p, uint32_t ip, bool restart) {
-  wifi_act_t a = { ip, restart, p->interval_us, p->channels };
+  wifi_act_t a = { .ip = ip, .restart = restart, .interval_us = p->interval_us, .channels = p->channels,
+                   .release = false };
   return p->h.activate ? p->h.activate(p->h.ud, &a) : WIFI_ACT_FAILED;
 }
 
 /* EnsureStreaming; true when an activation went out (not throttled, the host not busy) */
 static bool ensure(wifi_proto_t *p, uint32_t ip, int64_t now) {
   int i = act_find(p, ip);
-  if (i >= 0 && now - p->act[i].t_us < WIFI_THROTTLE_US) return false;
+  if (i >= 0 && !p->act[i].unthrottled && now - p->act[i].t_us < WIFI_THROTTLE_US) return false;
   int r = send_act(p, ip, false);
   if (r == WIFI_ACT_BUSY) return false;    /* nothing went out: try again on the next chance */
   act_record(p, ip, now);              /* failures are throttled too */
@@ -378,7 +450,7 @@ static bool restart_module(wifi_proto_t *p, uint32_t ip, int64_t now, const char
     else
       plog(p, "%s has sent no beacon yet (it may be Crossfire, which is never sent joystick_end): activating it with "
               "%s, %d channels", s, hz, p->channels);
-    act_remove(p, ip);
+    act_unthrottle(p, ip);
     ensure(p, ip, now);
     return true;
   }
@@ -453,6 +525,90 @@ void wifi_proto_activation_done(wifi_proto_t *p, uint32_t ip, bool ok, int64_t n
   if (ok) mark_activated(p, ip, now);
   /* a restart that waited for this POST of its module goes out now, not a tick later */
   if (ip && ip == p->restart_ip) restart_pending_send(p, now);
+}
+
+/* ---- R14: release ---- */
+/* One module: Crossfire (by its beacon) is logged only; anything else gets joystick_end alone through the hook.
+ * *n counts what the hook did not refuse. */
+static void release_one(wifi_proto_t *p, uint32_t ip, int *n) {
+  char s[16];
+  wifi_ip_str(ip, s);
+  if (wifi_proto_kind(p, ip) == WIFI_KIND_XF) {
+    plog(p, "Not releasing %s: Crossfire broadcasts while streaming, other apps find it as it is", s);
+    return;
+  }
+  plog(p, "Releasing %s: joystick_end, so it stops streaming and broadcasts again", s);
+  wifi_act_t a = { .ip = ip, .restart = false, .interval_us = 0, .channels = 0, .release = true };
+  int r = p->h.activate ? p->h.activate(p->h.ud, &a) : WIFI_ACT_FAILED;
+  if (r == WIFI_ACT_BUSY) {
+    plog(p, "Releasing %s failed: the request queue is full - it may stream on until its WiFi or power is cycled", s);
+    return;
+  }
+  (*n)++;
+  if (r == WIFI_ACT_OK || r == WIFI_ACT_FAILED) wifi_proto_release_done(p, ip, r == WIFI_ACT_OK, 0, NULL);
+}
+
+int wifi_proto_release(wifi_proto_t *p, int64_t now) {
+  uint32_t ips[1 + 2 * WIFI_TABLE];
+  int nips = 0;
+  /* The modules known to stream to us first: the host's worker sends the releases in turn (a POST may take
+   * WIFI_POST_TIMEOUT_MS) and an exit waits at most WIFI_RELEASE_WAIT_US, so a module that may not be there must
+   * not hold them up. The locked module, */
+  if (p->bound) ips[nips++] = p->bound_ip;
+  /* then each module that streams to us while we drop its frames (one came less than WIFI_SOURCE_TIMEOUT_US
+   * ago), the one heard longest ago first: a 2nd source, placeholder frames, the module left by a switch (from
+   * its last frame on, applied or not: set_target) */
+  const wifi_dropped_t *last = NULL;
+  for (;;) {
+    const wifi_dropped_t *k = NULL;
+    for (int i = 0; i < p->ndropped; i++) {
+      const wifi_dropped_t *d = &p->dropped[i];
+      if ((last && !dropped_before(last, d)) || now - d->t_us >= WIFI_SOURCE_TIMEOUT_US) continue;
+      if (!k || dropped_before(d, k)) k = d;
+    }
+    if (!k) break;
+    last = k;
+    if (ip_index(ips, nips, k->ip) < 0) ips[nips++] = k->ip;
+  }
+  /* then each module activated less than WIFI_SOURCE_TIMEOUT_US ago that has not locked since (it may be about
+   * to stream to us), in the order they were activated. "Locked since": a frame of it was applied after its
+   * activation. The last locked module tells by bound_ip and bound_last_us (lock_release keeps them), one that
+   * had the lock before it by its entry's locked (act_note_locked): within that time only a switch to another
+   * module IP takes a lock away, and the module left gets nothing by this rule (R7), also when the new one has
+   * locked since. (The rule above releases it while its last frame is that recent: the switch put it in the
+   * dropped table.) */
+  uint64_t after = 0;
+  for (;;) {
+    int k = -1;
+    for (int i = 0; i < p->nact; i++) {
+      const wifi_ipt_t *a = &p->act[i];
+      if (a->seq <= after || now - a->t_us >= WIFI_SOURCE_TIMEOUT_US) continue;
+      if (a->locked || (a->ip == p->bound_ip && p->bound_last_us >= a->t_us)) continue;
+      if (k < 0 || a->seq < p->act[k].seq) k = i;
+    }
+    if (k < 0) break;
+    after = p->act[k].seq;
+    if (ip_index(ips, nips, p->act[k].ip) < 0) ips[nips++] = p->act[k].ip;
+  }
+  int n = 0;
+  for (int i = 0; i < nips; i++) release_one(p, ips[i], &n);
+  return n;
+}
+
+void wifi_proto_release_done(wifi_proto_t *p, uint32_t ip, bool ok, int status, const char *err) {
+  char s[16];
+  wifi_ip_str(ip, s);
+  if (ok) {
+    /* idle now: what it was last asked no longer tells what it streams (R3). The worker sends in order, so all
+     * that went to it after the stop went after this joystick_end: its act entry tells what it streams now. */
+    asked_forget(p, ip);
+    plog(p, "Released %s: it broadcasts again, any app can connect to it", s);
+    return;
+  }
+  char why[80];
+  if (status > 0) snprintf(why, sizeof why, "HTTP %d", status);
+  else snprintf(why, sizeof why, "%s", err && err[0] ? err : "no answer");
+  plog(p, "Releasing %s failed: %s - it may stream on until its WiFi or power is cycled", s, why);
 }
 
 static const char NOSTICK_STATE[] = "module found, but it is sending no stick data";
@@ -589,7 +745,11 @@ void wifi_proto_packet(wifi_proto_t *p, const uint8_t *d, size_t n, uint32_t src
 
   int count = d[1];
   if (count < WIFI_MIN_CH || count > WIFI_MAX_CH || n < 2 + 2 * (size_t)count) { p->malformed++; return; }
-  if (p->target && src != p->target) { p->dropped_other++; return; }
+  if (p->target && src != p->target) {
+    dropped_note(p, src, now);         /* (e.g. the module left by a switch) */
+    p->dropped_other++;
+    return;
+  }
 
   uint16_t ch[WIFI_MAX_CH];
   int out_of_range = 0;
@@ -607,6 +767,7 @@ void wifi_proto_packet(wifi_proto_t *p, const uint8_t *d, size_t n, uint32_t src
   if (placeholder || out_of_range == count) {
     p->dropped_filter++;
     wifi_proto_tick(p, now);
+    if (!p->bound || p->bound_ip != src) dropped_note(p, src, now);   /* (the locked module is released anyway) */
     if (!p->bound) warn_no_stick(p, src, now);
     return;
   }
@@ -620,6 +781,7 @@ void wifi_proto_packet(wifi_proto_t *p, const uint8_t *d, size_t n, uint32_t src
         wifi_ip_str(p->bound_ip, b);
         plog(p, "Ignoring 2nd source %s (locked to %s)", a, b);
       }
+      dropped_note(p, src, now);
       p->dropped_other++;
       return;
     }
@@ -627,12 +789,14 @@ void wifi_proto_packet(wifi_proto_t *p, const uint8_t *d, size_t n, uint32_t src
   if (!p->bound) {
     char ip[16];
     wifi_ip_str(src, ip);
+    if (p->bound_ip != src) act_note_locked(p);
     p->bound = true;
     p->bound_ip = src;
     p->nwarned = p->nnostick = 0;
     p->first_act_set = false;
     p->hint_shown = false;
     p->bound_since_us = now;
+    held_note(p, src);
     /* a restart pending or held for another module is not wanted now; one for this module goes on */
     if (p->restart_wait && p->restart_wait_ip != src) p->restart_wait = false;
     if (p->restart_ip != src) restart_pending_drop(p);
@@ -717,14 +881,20 @@ int wifi_proto_set_target(wifi_proto_t *p, const char *text, int64_t now) {
   /* a restart pending or held for another module is not wanted any more (the module being left) */
   if (p->restart_ip != ip) restart_pending_drop(p);
   if (p->restart_wait && p->restart_wait_ip != ip) p->restart_wait = false;
-  act_remove(p, ip);          /* allow an immediate POST */
+  act_unthrottle(p, ip);      /* allow an immediate POST */
   if (p->bound && p->bound_ip == ip && now - p->bound_last_us <= WIFI_SOURCE_TIMEOUT_US) {
     /* the module streaming to us now: unlocking it would center the joystick for a frame (and drop a held
      * restart) for nothing, and a joystick_begin would not change its stream */
     plog(p, "Target module set to %s - streaming from it already", s);
     return 0;
   }
-  if (p->bound) lock_release(p);       /* let the new target take over */
+  if (p->bound) {                      /* let the new target take over */
+    /* The module left gets nothing now (R7) and streams on to us: its frames are dropped from here on, so for R14
+     * it is one that streams to us while we drop its frames, from its last frame on. A stop before its next
+     * frame comes, or after the new module IP locked, releases it too. */
+    if (p->bound_ip != ip) dropped_put(p, p->bound_ip, p->bound_last_us);
+    lock_release(p);
+  }
   plog(p, "Target module set to %s - connecting...", s);
   snprintf(detail, sizeof detail, "connecting to %s", s);
   wifi_proto_set_state(p, WIFI_ST_SEARCHING, detail);
@@ -920,17 +1090,32 @@ long wifi_http_content_length(const char *buf, size_t n) {
   return -1;
 }
 
-/* ---- activation queue ---- */
+/* ---- activation queue ----
+ * Releases (R14) are the requests and results of the session WIFI_ACTQ_ANY: never pending, never stale, kept by
+ * wifi_actq_new_session, counted by nrelease from push until their result is taken. */
+static bool is_release(uint32_t session) { return session == WIFI_ACTQ_ANY; }
+
 void wifi_actq_init(wifi_actq_t *q) {
   memset(q, 0, sizeof *q);
   q->session = 1;
 }
 
 void wifi_actq_new_session(wifi_actq_t *q) {
-  q->rq_head = q->rq_n = 0;
-  q->rs_head = q->rs_n = 0;
+  /* the releases stay, in their order (compacted behind the read position: nothing unread is overwritten) */
+  int k = 0;
+  for (int i = 0; i < q->rq_n; i++) {
+    const wifi_actreq_t *r = &q->req[(q->rq_head + i) % WIFI_ACTQ];
+    if (is_release(r->session)) q->req[(q->rq_head + k++) % WIFI_ACTQ] = *r;
+  }
+  q->rq_n = k;
+  k = 0;
+  for (int i = 0; i < q->rs_n; i++) {
+    const wifi_actres_t *r = &q->res[(q->rs_head + i) % WIFI_ACTQ];
+    if (is_release(r->session)) q->res[(q->rs_head + k++) % WIFI_ACTQ] = *r;
+  }
+  q->rs_n = k;
   q->npending = 0;
-  q->session++;
+  if (++q->session == WIFI_ACTQ_ANY) q->session++;   /* the wrap skips the releases' session */
 }
 
 bool wifi_actq_is_pending(const wifi_actq_t *q, uint32_t ip) {
@@ -947,7 +1132,7 @@ int wifi_actq_push(wifi_actq_t *q, uint32_t ip, uint16_t http_port, const char *
   if (strlen(body) >= sizeof q->req[0].body) return WIFI_ACT_BUSY;
   if (wifi_actq_is_pending(q, ip)) {
     if (!end_first) return WIFI_ACT_BUSY;
-    /* a restart supersedes a plain request that has not gone out yet */
+    /* a restart supersedes a plain request that has not gone out yet (a release queued for the IP stays one) */
     for (int i = 0; i < q->rq_n; i++) {
       wifi_actreq_t *r = &q->req[(q->rq_head + i) % WIFI_ACTQ];
       if (r->ip != ip || r->session != q->session) continue;
@@ -964,31 +1149,63 @@ int wifi_actq_push(wifi_actq_t *q, uint32_t ip, uint16_t http_port, const char *
   r->http_port = http_port;
   r->session = q->session;
   r->end_first = end_first;
+  r->release = false;
   strcpy(r->body, body);
   q->rq_n++;
   q->pending[q->npending++] = ip;
   return WIFI_ACT_QUEUED;
 }
 
+int wifi_actq_push_release(wifi_actq_t *q, uint32_t ip, uint16_t http_port) {
+  /* the last request queued for ip is a release not taken yet: it goes out after everything else to ip, so it
+   * is this one too */
+  for (int i = q->rq_n - 1; i >= 0; i--) {
+    wifi_actreq_t *r = &q->req[(q->rq_head + i) % WIFI_ACTQ];
+    if (r->ip != ip) continue;
+    if (!is_release(r->session)) break;
+    r->http_port = http_port;
+    return WIFI_ACT_QUEUED;
+  }
+  if (q->rq_n >= WIFI_ACTQ) return WIFI_ACT_BUSY;
+  wifi_actreq_t *r = &q->req[(q->rq_head + q->rq_n) % WIFI_ACTQ];
+  r->ip = ip;
+  r->http_port = http_port;
+  r->session = WIFI_ACTQ_ANY;
+  r->end_first = false;
+  r->release = true;
+  r->body[0] = 0;
+  q->rq_n++;
+  q->nrelease++;
+  return WIFI_ACT_QUEUED;
+}
+
+int wifi_actq_releases(const wifi_actq_t *q) { return q->nrelease; }
+
 bool wifi_actq_take(wifi_actq_t *q, wifi_actreq_t *out) {
   while (q->rq_n > 0) {
     wifi_actreq_t *r = &q->req[q->rq_head];
     q->rq_head = (q->rq_head + 1) % WIFI_ACTQ;
     q->rq_n--;
-    if (r->session != q->session) continue;
+    if (r->session != q->session && !is_release(r->session)) continue;
     *out = *r;
     return true;
   }
   return false;
 }
 
-bool wifi_actq_stale(const wifi_actq_t *q, uint32_t session) { return session != q->session; }
+bool wifi_actq_stale(const wifi_actq_t *q, uint32_t session) {
+  return session != q->session && !is_release(session);
+}
 
 void wifi_actq_put(wifi_actq_t *q, const wifi_actres_t *r) {
-  if (r->session != q->session) return;
+  if (r->session != q->session && !is_release(r->session)) return;
   if (q->rs_n >= WIFI_ACTQ) {
-    /* can't happen (results <= pending IPs <= WIFI_ACTQ); if it did, unpend so the IP is retried */
-    unpend(q, q->res[q->rs_head].ip);
+    /* can't happen while the frame loop takes the results (results <= pending IPs + releases, and it takes up
+     * to WIFI_ACTQ per poll); if it did, the oldest goes: its IP unpended so it is asked again, or a release
+     * no longer counted (its result is lost) */
+    const wifi_actres_t *o = &q->res[q->rs_head];
+    if (is_release(o->session)) { if (q->nrelease > 0) q->nrelease--; }
+    else unpend(q, o->ip);
     q->rs_head = (q->rs_head + 1) % WIFI_ACTQ;
     q->rs_n--;
   }
@@ -1001,8 +1218,13 @@ bool wifi_actq_get(wifi_actq_t *q, wifi_actres_t *out) {
     wifi_actres_t *r = &q->res[q->rs_head];
     q->rs_head = (q->rs_head + 1) % WIFI_ACTQ;
     q->rs_n--;
-    if (r->session != q->session) continue;
-    unpend(q, r->ip);
+    if (is_release(r->session)) {
+      if (q->nrelease > 0) q->nrelease--;
+    } else if (r->session != q->session) {
+      continue;
+    } else {
+      unpend(q, r->ip);
+    }
     *out = *r;
     return true;
   }

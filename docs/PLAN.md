@@ -42,7 +42,7 @@ One static C program, `sticktime-pi`. Modules:
 | `video_drm.c` | KMS: pick the connector (Composite / HDMI-A, **accept "unknown" status**), mode, two dumb buffers, page flip + event |
 | `video_png.c` | headless: write frames as PNG (tests, screenshots) |
 | `input_evdev.c` | joysticks, gamepads and keyboards from `/dev/input/event*` (hotplug via inotify) |
-| `input_wifi.c` | ELRS/Crossfire WiFi joystick: the UDP socket, the `/udpcontrol` POST thread and the glue around the protocol core shared with the owner's Linux app (`third_party/elrs-wifi`: a C port of `JoystickEngine.cs`: beacons, frames, placeholder filter, source lock, the request `wifi_interval_us` / `wifi_channels`, restarting a streaming module that is surely no Crossfire so a new request applies, by the request rules R1-R13 in RESEARCH.md §2) |
+| `input_wifi.c` | ELRS/Crossfire WiFi joystick: the UDP socket, the `/udpcontrol` POST thread and the glue around the protocol core shared with the owner's Linux app (`third_party/elrs-wifi`: a C port of `JoystickEngine.cs`: beacons, frames, placeholder filter, source lock, the request `wifi_interval_us` / `wifi_channels`, restarting a streaming module that is surely no Crossfire so a new request applies, releasing the module with `joystick_end` on a stop, the program's exit and the web page's Release so other apps can find it again, by the rules R1-R14 in RESEARCH.md §2) |
 | `nav.c` | the sticks drive the menus when not flying; a switch channel pauses |
 | `web.c` | small HTTP/1.1 server: static files + JSON API |
 | `settings.c` | read/write `sticktime.txt` |
@@ -193,7 +193,8 @@ keep_logs = off         # on: the journal on the SD card (Storage=persistent, 50
 
 ### 3.8 Web UI (`web/`, served by the host on port 80)
 
-Pages: **Status** (FPS, frame and latency numbers, input source and packet rate, IP, versions),
+Pages: **Status** (FPS, frame and latency numbers, input source and packet rate with Release / Connect for the
+WiFi module, IP, versions),
 **Video**, **WiFi** (scan, join, hotspot), **Sticks** (live bars for all channels, source, order,
 invert, calibration, pause switch, ELRS module IP and interval), **Tracks**, **Updates**, **System** (ssh, password, reboot).
 

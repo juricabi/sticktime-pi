@@ -10,7 +10,8 @@
  * listens on 127.0.0.1 (STP_WEB_BIND overrides) and runs until it is killed (or <state>/stop
  * appears). Without arguments it exits 0, so "build.sh test" can run it like the unit tests.
  * STP_VTX_PORT=tcp:127.0.0.1:PORT starts VTX control on that line (a fake VTX); without it /api/vtx
- * says "off". A number N (1-16) in <state>/stick_move makes the WiFi source's CHN sweep end to end. */
+ * says "off". A number N (1-16) in <state>/stick_move makes the WiFi source's CHN sweep end to end. The WiFi
+ * joystick's Release and Connect commands (APP_CMD_WIFI_*) make its status "released" (release "ok") and back. */
 #include "app.h"
 #include "etx.h"
 #include "vtx.h"
@@ -23,6 +24,7 @@
 
 static char events[600];
 static int move_ch;                     /* a channel of the WiFi source that sweeps (tests: <state>/stick_move) */
+static bool wifi_released;              /* the WiFi joystick's Release, until its Connect */
 
 static void read_move(const char *state) {
   char p[700];
@@ -94,9 +96,10 @@ static void fake_status(app_status_t *st, uint32_t frame, int64_t up_ms) {
   st->src[1].kind = INSRC_KEYBOARD;
   plat_strlcpy(st->src[1].name, "Keyboard", sizeof st->src[1].name);
   st->src[1].nch = 4;
-  plat_strlcpy(st->wifi_module, "ELRS 10.0.0.1", sizeof st->wifi_module);
-  plat_strlcpy(st->wifi_state, "streaming", sizeof st->wifi_state);
-  st->wifi_rate_hz = 250.0f;
+  plat_strlcpy(st->wifi_module, wifi_released ? "" : "ELRS 10.0.0.1", sizeof st->wifi_module);
+  plat_strlcpy(st->wifi_state, wifi_released ? "released" : "streaming", sizeof st->wifi_state);
+  plat_strlcpy(st->wifi_release, wifi_released ? "ok" : "", sizeof st->wifi_release);
+  st->wifi_rate_hz = wifi_released ? 0.0f : 250.0f;
   st->audio_ok = true;
   plat_strlcpy(st->audio_device, "jack", sizeof st->audio_device);
   plat_strlcpy(st->now_playing, "Song 3 (generated)", sizeof st->now_playing);
@@ -154,6 +157,8 @@ int main(int argc, char **argv) {
     uint32_t cmds = app_take(&app, keys, &nk);
     if (cmds) ev("cmd %u", (unsigned)cmds);
     if (cmds & APP_CMD_RELOAD_SETTINGS) vtx_reload(vtx);     /* like host_apply_settings */
+    if (cmds & APP_CMD_WIFI_RELEASE) wifi_released = true;     /* like host_frame: wifi_release / wifi_connect */
+    if (cmds & APP_CMD_WIFI_CONNECT) wifi_released = false;
     for (int i = 0; i < nk; i++) ev("key %d", keys[i]);
     if ((cmds & APP_CMD_SCREENSHOT) && !exists(app.paths.state, "no_shot")) {
       const int w = 64, h = 48;

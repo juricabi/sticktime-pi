@@ -67,12 +67,13 @@ protocol through the core it shares with the owner's Linux app
   channels at about 90 Hz). Whether it honours `joystick_end` is unknown, so a module known as Crossfire
   (its beacon was seen) is **never sent one**. Telling the two apart needs a beacon: Crossfire beacons
   about every 8 s also while streaming, ELRS never while streaming. So a locked 16-channel module with no
-  beacon yet (an ELRS module that kept streaming while the receiver restarted, or Crossfire) gets a
-  request restart only once the lock is 20 s old without a Crossfire beacon; after that it counts as ELRS.
+  beacon yet (an ELRS module that missed its release and kept streaming while the receiver restarted, or
+  Crossfire) gets a request restart only once the lock is 20 s old without a Crossfire beacon; after that it
+  counts as ELRS.
   Where Crossfire's beacons never reach the receiver (broadcasts blocked, the module set by IP), a
   Crossfire module does get `joystick_end` then.
 - **The request rules** (`wifi_interval_us` and `wifi_channels` are "the request", `wifi_module_ip` "the
-  module IP"; the same in the shared core, whose `core/wifi_proto.h` states them as R1-R13, in the owner's
+  module IP"; the same in the shared core, whose `core/wifi_proto.h` states them as R1-R14, in the owner's
   Windows and Linux apps and in every doc of the three):
   1. Defaults 250 Hz (4000 µs) and 16 channels. Supported: interval 1000..100000 µs (presets
      1000/2000/3000/4000/5000/6667/10000/20000 µs = 1000/500/333/250/200/150/100/50 Hz), channels 4..16.
@@ -84,9 +85,10 @@ protocol through the core it shares with the owner's Linux app
      (after its 20 s); it is dropped when that module's ELRS beacon gets it a `joystick_begin` carrying
      the request, or when another module takes the lock.
   3. Not locked: the next `joystick_begin` carries the request. What each module was last asked is
-     remembered per module (a table of 8); a module that locks with another remembered request is
-     restarted under rule 2's kind rules (Crossfire: only logged). So a change made while it was not locked
-     (during its activation, a WiFi dropout, a stop, before a switch to it) reaches a module that streams on.
+     remembered per module (a table of 8), and forgotten when a release of it took (rule 14); a module that
+     locks with another remembered request is restarted under rule 2's kind rules (Crossfire: only logged).
+     So a change made while it was not locked (during its activation, a WiFi dropout, a stop, before a switch
+     to it) reaches a module that streams on.
   4. Explicit restart (in the Linux app key `a`, its web page's Restart and the `restart` command;
      StickTime Pi has none, a saved change of the request is what restarts): locked: as rule 2. Not locked
      with a module IP set: a module known as ELRS is restarted; unknown or Crossfire gets a plain
@@ -108,9 +110,11 @@ protocol through the core it shares with the owner's Linux app
   8. The module IP and the request changed together (one save on the web page): the request is stored,
      the new module's `joystick_begin` carries it, the module being left gets nothing.
   9. Stop/start and a port change start a new session: lock, throttles and restart state are cleared; the
-     kinds learnt from beacons and the remembered requests are kept (an ELRS module streams on after a
-     stop, and it never beacons while it streams). StickTime Pi starts the receiver once per run of the
-     program, so a session lasts the run, and a new run starts with nothing known.
+     kinds learnt from beacons and the remembered requests are kept (an ELRS module that missed its release,
+     rule 14, streams on after a stop, and it never beacons while it streams; Crossfire streams on anyway),
+     except the remembered request of a module whose release took (rule 14).
+     StickTime Pi starts the receiver once per run of the program, so a session lasts the run (or until its
+     Release, rule 14), and a new run starts with nothing known.
   10. Tables are bounded (8 modules); the locked module's kind is never evicted. A full table drops the entry
       written longest ago, never the locked module's or the module IP's kind or remembered request.
   11. Lock loss (3 s without data), stop, exit and switching to another module IP center the sticks (the
@@ -125,6 +129,37 @@ protocol through the core it shares with the owner's Linux app
   12. The tick (lock release, retries, held restarts, the module IP's re-POST) runs at least every 100 ms
       whatever traffic arrives (StickTime Pi ticks on every frame's input poll).
   13. One POST per module per 5 s for plain activations (the throttle); restarts bypass it and restart it.
+  14. Release: an ELRS module streams until it gets `joystick_end`, loses power or loses its WiFi, and beacons
+      only while idle, so a module left streaming to an app that stopped can't be found by any other app. So
+      on a stop, the program's exit and a port change (StickTime Pi: also the web page's **Release module**),
+      `action=joystick_end` alone goes to the locked module, then to every module that streams to us while
+      we drop its frames (one came less than 3 s ago: a 2nd source, placeholder frames, the module left by a
+      switch, counted from its last frame), then to every module activated less than 3 s ago that has not
+      locked since (it may be about to stream to us). Never to one known as Crossfire by its beacon: it
+      beacons while streaming, so other apps find it anyway, and what `joystick_end` does to it is unknown
+      (logged instead). A module of unknown kind gets it (an ELRS module streaming since before we started
+      never beaconed to us); with a module IP set, one of unknown kind that we neither activated nor had
+      locked is left alone (other modules' beacons are not heard then, so it could be a Crossfire). The
+      releases outlive the session that ends right after; an exit waits for their answers at most 1.5 s
+      (`WIFI_RELEASE_WAIT_US`), then gives up on the rest (logged). The apps count the 1.5 s from the last stop
+      that handed releases over (StickTime Pi: from its Release, or the exit's own stop), so an exit 1 s after a
+      Release waits at most 0.5 s more. StickTime Pi and the Linux app send their requests one at a time, so
+      a module gets 2 s to answer its release (`timed out after 2 s`): one that does not answer holds a
+      Connect's `joystick_begin` at most that long.
+      A release changes no lock, kind or throttle. One that took forgets the module's remembered request: the
+      module is idle, and its next `joystick_begin` gives it the request, so Release, a changed rate or channel
+      count, then **Connect** does not restart it when it locks. One that missed its `joystick_end` streams on,
+      and keeps its remembered request, as before. Not on a switch to another module IP (rule 7: the module left
+      gets nothing then; a stop releases it while its last frame is less than 3 s old). StickTime Pi, released,
+      stops listening until **Connect** or the program's next start: the module's next beacon would otherwise get
+      it a `joystick_begin` at once. Nothing of the Release is saved, so every start listens (with a module IP
+      set, its `joystick_begin` goes out at once, and takes the module back from another app). Every exit
+      releases, so after a restart (Restart, a setting that restarts the game, an app update) the module is found
+      again by its next beacon (within 5 s; at once with a module IP). On a shutdown or reboot the app stops
+      before the network does (`sticktime.service` is ordered after `systemd-user-sessions.service`, which is
+      after `network.target`), so the release goes out.
+      The owner's Windows and Linux apps release the same modules in the same order, with the same log lines,
+      Crossfire rule and 1.5 s.
 - **Channel frame**: `uint8 type` (=1), `uint8 count` (4–16; Crossfire always sends 16), then
   `count × uint16 LE`. ELRS maps CRSF 1000–2000 µs (`CRSF_CHANNEL_VALUE_STD_MIN..MAX`) to **0–32767**
   (constrained, so full stick = endpoint).
@@ -136,8 +171,9 @@ protocol through the core it shares with the owner's Linux app
 - **Source lock**: bind to the first module that sends real channel data; ignore other sources until
   the bound one has been silent for 3 s. With an explicit module IP, accept only that IP.
 - Nothing stops the stream by itself: an ELRS module streams until `joystick_end`, a power-off or a WiFi
-  drop, and it sends no beacons meanwhile. StickTime Pi sends `joystick_end` only right before its own
-  `joystick_begin` (a restart), never when it stops listening.
+  drop, and it sends no beacons meanwhile; idle again, it beacons at once when its last beacon is more than
+  5 s old (`wifiJoystick.cpp` `Loop`). StickTime Pi sends `joystick_end` in a restart (right before its own
+  `joystick_begin`) and alone when it stops listening (rule 14), so other apps can find the module again.
 - Module WiFi is **2.4 GHz only**. Keep the Pi on 2.4 GHz too: 5 GHz WiFi channels sit next to the
   5.8 GHz video band.
 - In AP mode the ELRS TX module is at `10.0.0.1` (SSID `ExpressLRS TX`, password `expresslrs`), and a

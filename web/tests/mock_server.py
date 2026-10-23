@@ -313,6 +313,10 @@ class MockPi:
         self.vtx_held = False
         self.song_now = 0
         self.wifi_applied = None
+        self.wifi_released = False            # the WiFi joystick's Release, until Connect or the program's next start
+        self.wifi_release = ""                # the last release's outcome (wifi_joystick.release)
+        self.wifi_release_outcome = "ok"      # what a Release gets (tests set "failed", "none", "sending")
+        self.usb_plugged = True               # the USB joystick source (tests unplug it)
         self.log_lines = [f"[{i * 0.37:8.3f}] " + t for i, t in enumerate([
             "sticktime-pi 0.1.0 starting", "settings: /boot/firmware/sticktime.txt", "video: Composite-1 720x480i 59.94 Hz, NTSC 4:3",
             "lua: StickTime.lua loaded (812 KB)", "web: listening on :80", "wifi: ELRS 10.0.0.1 beacon", "wifi: streaming 250 Hz"])]
@@ -593,12 +597,14 @@ class MockPi:
             wifi[2], wifi[4] = -1000, -1024
             if self.stick_move:
                 wifi[self.stick_move - 1] = int(self.stick_amp * math.sin(t * 7))
-        sources.append({"kind": "wifi", "name": "ELRS 10.0.0.1", "live": True, "rate_hz": round(249 + math.sin(t) * 1.5, 1), "nch": 16, "ch": wifi})
+        if not self.wifi_released:                  # released: the Pi doesn't listen, no WiFi source
+            sources.append({"kind": "wifi", "name": "ELRS 10.0.0.1", "live": True, "rate_hz": round(249 + math.sin(t) * 1.5, 1), "nch": 16, "ch": wifi})
         usb = [int(600 * math.cos(t * 0.5 + i)) for i in range(8)] + [0] * 8
-        sources.append({"kind": "usb", "name": "EdgeTX RM TX16S Joystick", "live": False, "rate_hz": 0.0, "nch": 8, "ch": usb})
+        if self.usb_plugged:
+            sources.append({"kind": "usb", "name": "EdgeTX RM TX16S Joystick", "live": False, "rate_hz": 0.0, "nch": 8, "ch": usb})
         # as input.c: a fixed source kind ignores the others (the wanted one heard but silent: shown, not live)
         want = self.value("input").lower()
-        active = 0 if want in ("auto", "wifi", "") else next((i for i, s in enumerate(sources) if s["kind"] == want), -1)
+        active = (0 if sources else -1) if want in ("auto", "wifi", "") else next((i for i, s in enumerate(sources) if s["kind"] == want), -1)
         live = active >= 0 and sources[active]["live"]
         ch = sources[active]["ch"] if live else None
         chans = stick_channels(self.value("stick_channels")) or []
@@ -627,7 +633,8 @@ class MockPi:
             "video": {"desc": "Composite-1 720x480i 59.94 Hz, NTSC 4:3, render 640x480", "render_w": 640, "render_h": 480},
             "input": {"active": s["active"], "kind": s["kind"], "live": s["live"], "sticks": s["sticks"],
                       "sources": [{k: v for k, v in src.items() if k != "ch"} for src in s["sources"]]},
-            "wifi_joystick": {"module": "ELRS 10.0.0.1", "state": "streaming", "rate_hz": s["sources"][0]["rate_hz"], "dropped": 0, "gaps": 2, "gap_max_ms": 840},
+            "wifi_joystick": ({"module": "", "state": "released", "release": self.wifi_release, "rate_hz": 0.0, "dropped": 0, "gaps": 2, "gap_max_ms": 840} if self.wifi_released else
+                              {"module": "ELRS 10.0.0.1", "state": "streaming", "release": self.wifi_release, "rate_hz": s["sources"][0]["rate_hz"], "dropped": 0, "gaps": 2, "gap_max_ms": 840}),
             "audio": {"device": "jack", "ok": True, "music": self.songs_list()[self.song_now % max(1, len(self.songs_list()))]["name"] if self.songs_list() else "Song 3 (generated)"},
             "network": {"ip": "192.168.1.23", "iface": "wlan0", "ssid": self.value("wifi_ssid"), "mode": net_mode, "hostname": self.value("hostname")},
             "system": {"cpu_temp": round(51.2 + math.sin(t / 7) * 2, 1), "throttled": "0x0"},
@@ -1130,6 +1137,11 @@ class Handler(BaseHTTPRequestHandler):
                 pi.file_values["wifi_country"] = v["country"].upper()
             pi.wifi_applied = v["ssid"]
             return self.json(200, {"ok": True, "applied": True})
+        if post and path in ("wifi_joystick/release", "wifi_joystick/connect"):
+            if path.endswith("release") and not pi.wifi_released:
+                pi.wifi_release = pi.wifi_release_outcome
+            pi.wifi_released = path.endswith("release")
+            return self.json(200, {"ok": True})
         if post and path == "wifi/module-ap":
             m = text.strip()
             if m not in ("elrs", "tbs"):
@@ -1153,6 +1165,8 @@ class Handler(BaseHTTPRequestHandler):
             self.json(202, {"ok": True})
             pi.down_until = time.time() + (2.0 if path == "reboot" else 1.0 if path == "restart" else 3600)
             pi.boot = pi.down_until
+            pi.wifi_released = False                  # every start listens again: a Release is not saved
+            pi.wifi_release = ""                      # a new run: no release of its own yet
             return
         if path == "vtx":
             if get:

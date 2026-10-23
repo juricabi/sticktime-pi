@@ -1,7 +1,9 @@
 /* The web server's pure helpers: path cleaning, percent-decoding, JSON escaping and scanning,
- * Host / Origin checks, ETags, MIME types, device and temp names, the SD dirty flag. */
+ * Host / Origin checks, ETags, MIME types, device and temp names, the SD dirty flag; the commands the
+ * routes post to the frame loop (app.c). */
 #include "t.h"
 #include "../src/web_internal.h"
+#include "../src/app.h"
 
 #include <math.h>
 
@@ -386,6 +388,25 @@ static void test_names_flags(void) {
   CHECK(!web_take_sd_dirty());
 }
 
+/* the WiFi joystick's Release and Connect: of the two, the one posted last is what the frame loop takes */
+static void test_app_commands(void) {
+  static app_t a;
+  app_init(&a);
+  int keys[APP_KEYQ], nk = 0;
+  app_post(&a, APP_CMD_MUSIC_NEXT);
+  app_post_instead(&a, APP_CMD_WIFI_RELEASE, APP_CMD_WIFI_CONNECT);
+  CHECK_INT(app_take(&a, keys, &nk), APP_CMD_MUSIC_NEXT | APP_CMD_WIFI_RELEASE);
+  CHECK_INT(app_take(&a, keys, &nk), 0);
+  app_post_instead(&a, APP_CMD_WIFI_RELEASE, APP_CMD_WIFI_CONNECT);
+  app_post(&a, APP_CMD_RELOAD_GAME);
+  app_post_instead(&a, APP_CMD_WIFI_CONNECT, APP_CMD_WIFI_RELEASE);
+  CHECK_INT(app_take(&a, keys, &nk), APP_CMD_RELOAD_GAME | APP_CMD_WIFI_CONNECT);
+  app_post_instead(&a, APP_CMD_WIFI_CONNECT, APP_CMD_WIFI_RELEASE);
+  app_post_instead(&a, APP_CMD_WIFI_RELEASE, APP_CMD_WIFI_CONNECT);
+  CHECK_INT(app_take(&a, keys, &nk), APP_CMD_WIFI_RELEASE);
+  CHECK_INT(nk, 0);
+}
+
 int main(void) {
   test_url_decode();
   test_clean_path();
@@ -395,5 +416,6 @@ int main(void) {
   test_json_scan();
   test_sb();
   test_names_flags();
+  test_app_commands();
   T_DONE();
 }

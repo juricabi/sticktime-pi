@@ -62,6 +62,7 @@ typedef struct {
   /* wifi joystick */
   char wifi_module[64];                     /* "ELRS 10.0.0.1" or "" */
   char wifi_state[64];                      /* "listening", "activating 10.0.0.1", "streaming", ... */
+  char wifi_release[16];                    /* the last release this run: "", "sending", "ok", "failed", "none" */
   float wifi_rate_hz;
   uint32_t wifi_dropped;                    /* frames dropped by the Crossfire filter */
   uint32_t wifi_gaps;                       /* stick data gaps of WIFI_GAP_US or more (since the start) */
@@ -82,6 +83,8 @@ enum {
   APP_CMD_SCREENSHOT      = 1 << 3,   /* copy the next frame into app_t.shot */
   APP_CMD_MUSIC_NEXT      = 1 << 4,   /* skip to the next song */
   APP_CMD_SONGS_CHANGED   = 1 << 5,   /* the songs folder changed (upload / delete) */
+  APP_CMD_WIFI_RELEASE    = 1 << 6,   /* WiFi joystick: release the module and stop listening (wifi_release) */
+  APP_CMD_WIFI_CONNECT    = 1 << 7,   /* WiFi joystick: listen again (wifi_connect) */
 };
 /* special keys for app_post_key (web remote "up" / "down": editing-aware, see host.h HOST_KEY_*) */
 #define APP_KEY_UP   (-101)
@@ -114,6 +117,9 @@ typedef struct app {
 void app_init(app_t *a);
 /* thread-safe helpers */
 void app_post(app_t *a, uint32_t cmds);
+/* post cmds and drop instead_of when the frame loop has not taken it yet: of two opposite commands, the
+ * last one posted wins (WIFI_RELEASE / WIFI_CONNECT) */
+void app_post_instead(app_t *a, uint32_t cmds, uint32_t instead_of);
 void app_post_key(app_t *a, int evt);
 uint32_t app_take(app_t *a, int *keys, int *nkeys);     /* frame loop: take commands and keys */
 void app_publish(app_t *a, const app_status_t *st);     /* frame loop: replace the snapshot */

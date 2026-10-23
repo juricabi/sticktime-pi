@@ -23,6 +23,14 @@
 #define BIND_RETRY_US 300000
 #define BIND_ERROR_RETRY_US 5000000
 #define RECV_ERR_LOG_US 60000000
+/* A release's POST (R14), not WIFI_POST_TIMEOUT_MS: the worker is one thread, so a module that does not answer (one
+ * that just lost power, a mistyped module IP) holds what queues behind it, Connect's joystick_begin too, at most
+ * this long. A module answers joystick_end in milliseconds. The same as the Linux app: whole seconds, as the core's
+ * text says them ("timed out after 2 s"), and longer than the exit's wait plus the 100 ms an abort takes, so that
+ * wait (WIFI_RELEASE_WAIT_US after the stop that handed the releases over) always ends first and cuts short what is
+ * left itself. */
+#define RELEASE_POST_MS 2000
+_Static_assert(RELEASE_POST_MS >= WIFI_RELEASE_WAIT_US / 1000 + 300, "the exit's wait ends before a release's POST");
 
 struct wifi {
   app_t *app;
@@ -48,11 +56,23 @@ struct wifi {
   uint32_t gaps, gaps_unlogged;
   int64_t gap_max_us, gap_logged_at;
   uint32_t posts, posts_ok, posts_failed;
+  uint32_t releases_ok, releases_failed;   /* results of the releases (R14) */
+  /* the last release round (a stop or wifi_release) for the status: modules handed to the hook, and how many
+   * of them failed (refused by the hook, or their answer) */
+  bool rel_round;
+  int rel_asked, rel_failed;
+  int64_t rel_real_us;             /* plat_now_us() of the last stop that handed releases over: the exit's wait ends
+                                      WIFI_RELEASE_WAIT_US after it (0 = none yet) */
+  bool released;                   /* wifi_release: not listening until wifi_connect / wifi_start */
+  /* the caller's clock minus plat_now_us(), noted by every call that passes the time (tests run a virtual
+   * clock ahead of the real one): wifi_stop and wifi_close get no time, and release by the caller's clock */
+  int64_t clock_off;
   int last_err;
   int64_t last_err_us;
   /* the worker and its queue (mu guards q and quit) */
   plat_mutex mu;
   plat_cond cv;
+  plat_cond done_cv;               /* the worker signals each result: wifi_close waits on it for the releases */
   wifi_actq_t q;
   bool quit;
   bool worker_ok;
@@ -92,7 +112,9 @@ static void config_clean(wifi_config_t *out, const wifi_config_t *in) {
 }
 
 /* ================================================================ HTTP worker */
-/* wifi_net_post asks this about every 100 ms: a stop or close ends a hanging request quickly */
+/* wifi_net_post asks this about every 100 ms: a stop or close ends a hanging request quickly. A release (it has
+ * no session) ends only by the close, once the close's wait for it is over, or by its own time-out
+ * (RELEASE_POST_MS). */
 typedef struct { wifi_t *w; uint32_t session; } post_ctx_t;
 
 static bool post_aborted(void *ud) {
@@ -114,12 +136,14 @@ static void *worker(void *arg) {
       continue;
     }
     plat_mutex_unlock(&w->mu);
-    /* joystick_begin, after a joystick_end for a restart; a 2xx is success (the body is not checked) */
+    /* joystick_begin, after a joystick_end for a restart, or joystick_end alone for a release; a 2xx is success
+     * (the body is not checked) */
     wifi_actres_t rs;
     post_ctx_t ctx = { w, rq.session };
-    wifi_net_post(&rq, &rs, WIFI_POST_TIMEOUT_MS, post_aborted, &ctx);
+    wifi_net_post(&rq, &rs, rq.release ? RELEASE_POST_MS : WIFI_POST_TIMEOUT_MS, post_aborted, &ctx);
     plat_mutex_lock(&w->mu);
-    wifi_actq_put(&w->q, &rs);        /* dropped when the session changed meanwhile */
+    wifi_actq_put(&w->q, &rs);        /* dropped when the session changed meanwhile (a release's never is) */
+    plat_cond_broadcast(&w->done_cv);
   }
   plat_mutex_unlock(&w->mu);
   return NULL;
@@ -197,9 +221,33 @@ static void h_frame(void *ud, uint32_t src, const uint16_t *raw, int n) {
   s->nch = (uint8_t)n;
 }
 
+static void release_result(wifi_t *w, const wifi_actres_t *r);
+
 static int h_activate(void *ud, const wifi_act_t *a) {
   wifi_t *w = ud;
-  if (!w->worker_ok) return WIFI_ACT_FAILED;
+  if (a->release) {
+    /* R14: joystick_end alone. No socket needed (it comes while the receiver stops); BUSY only when the
+     * queue is full. Not an activation: posts counts none */
+    w->rel_asked++;
+    if (!w->worker_ok) {
+      /* nothing can send it (wifi_open logged why): its result at once, with that reason. QUEUED, as the queue
+       * would have answered: FAILED would make the core log it again, as "no answer" */
+      wifi_actres_t res;
+      memset(&res, 0, sizeof res);
+      res.ip = a->ip;
+      res.release = true;
+      snprintf(res.err, sizeof res.err, "no activation thread");
+      release_result(w, &res);
+      return WIFI_ACT_QUEUED;
+    }
+    plat_mutex_lock(&w->mu);
+    int r = wifi_actq_push_release(&w->q, a->ip, w->cfg.http_port);
+    if (r == WIFI_ACT_QUEUED) plat_cond_signal(&w->cv);
+    plat_mutex_unlock(&w->mu);
+    if (r != WIFI_ACT_QUEUED) w->rel_failed++;
+    return r;
+  }
+  if (!w->worker_ok) return WIFI_ACT_FAILED;                 /* nothing could send it */
   if (w->sock == PLAT_BADSOCK) return WIFI_ACT_BUSY;        /* not listening: POST after the bind */
   char body[64];
   if (wifi_build_body(body, sizeof body, "joystick_begin", a->interval_us, a->channels) < 0)
@@ -343,6 +391,13 @@ static void drain(wifi_t *w, int64_t now) {
   }
 }
 
+/* a release's answer (R14): the core logs it */
+static void release_result(wifi_t *w, const wifi_actres_t *r) {
+  if (r->ok) w->releases_ok++;
+  else { w->releases_failed++; w->rel_failed++; }
+  wifi_proto_release_done(&w->p, r->ip, r->ok, r->status, r->err);
+}
+
 static void collect_results(wifi_t *w, int64_t now) {
   wifi_actres_t res[WIFI_ACTQ];
   int n = 0;
@@ -351,6 +406,7 @@ static void collect_results(wifi_t *w, int64_t now) {
   plat_mutex_unlock(&w->mu);
   for (int i = 0; i < n; i++) {
     const wifi_actres_t *r = &res[i];
+    if (r->release) { release_result(w, r); continue; }
     char ip[16];
     wifi_ip_str(r->ip, ip);
     /* a restart: its joystick_end first (a failure there still lets the joystick_begin go out). It only
@@ -375,6 +431,9 @@ static void collect_results(wifi_t *w, int64_t now) {
 }
 
 /* ================================================================ API */
+static void note_clock(wifi_t *w, int64_t now) { w->clock_off = now - plat_now_us(); }
+static int64_t host_now(const wifi_t *w) { return plat_now_us() + w->clock_off; }
+
 static void apply_target(wifi_t *w, int64_t now) {
   if (w->running) {
     if (wifi_proto_set_target(&w->p, w->cfg.module_ip, now) < 0) wifi_proto_set_target(&w->p, NULL, now);
@@ -401,6 +460,7 @@ wifi_t *wifi_open(app_t *app, const wifi_config_t *cfg) {
   wifi_proto_set_request(&w->p, w->cfg.interval_us, w->cfg.channels, 0);   /* not locked: nothing sent */
   plat_mutex_init(&w->mu);
   plat_cond_init(&w->cv);
+  plat_cond_init(&w->done_cv);
   wifi_actq_init(&w->q);
   plat_net_init();
   /* once, here: a thread per request would fault its locked stack in on the frame loop (mlockall) */
@@ -410,21 +470,58 @@ wifi_t *wifi_open(app_t *app, const wifi_config_t *cfg) {
   return w;
 }
 
+/* The program's exit (R14): the releases still under way (the exit's stop's, or an earlier Release's) get until
+ * WIFI_RELEASE_WAIT_US after the last stop that handed releases over, as the Linux app counts: an exit 1 s after a
+ * Release waits at most 0.5 s more, and in all never longer than that. The frame loop has ended, so their results
+ * are taken here (after the stop only releases have results to come); the worker wakes this wait after each one. */
+static void wait_releases(wifi_t *w) {
+  if (!w->worker_ok) return;
+  int64_t end = w->rel_real_us + WIFI_RELEASE_WAIT_US;
+  plat_mutex_lock(&w->mu);
+  for (;;) {
+    wifi_actres_t r;
+    if (wifi_actq_get(&w->q, &r)) {
+      plat_mutex_unlock(&w->mu);
+      if (r.release) release_result(w, &r);
+      plat_mutex_lock(&w->mu);
+      continue;
+    }
+    int64_t left = end - plat_now_us();
+    if (!wifi_actq_releases(&w->q) || left <= 0) break;
+    plat_cond_wait(&w->done_cv, &w->mu, (int)((left + 999) / 1000));
+  }
+  plat_mutex_unlock(&w->mu);
+}
+
 void wifi_close(wifi_t *w) {
   if (!w) return;
   wifi_stop(w);
+  wait_releases(w);
   plat_mutex_lock(&w->mu);
   w->quit = true;
   wifi_actq_new_session(&w->q);
   plat_cond_broadcast(&w->cv);
   plat_mutex_unlock(&w->mu);
   if (w->worker_ok) plat_thread_join(w->th);     /* a request in flight notices within 100 ms */
+  /* what the wait left (the worker has ended): a release it cut short (wifi_net's "aborted": its module did not
+   * answer within the wait, said as the Linux app says it), and ones never sent */
+  wifi_actres_t r;
+  while (wifi_actq_get(&w->q, &r)) {
+    if (!r.release) continue;
+    if (!r.ok && !strcmp(r.err, "aborted")) snprintf(r.err, sizeof r.err, "no answer in time");
+    release_result(w, &r);
+  }
+  wifi_actreq_t rq;
+  while (wifi_actq_take(&w->q, &rq))
+    if (rq.release) wifi_proto_release_done(&w->p, rq.ip, false, 0, "not sent, the wait ran out before its turn");
   plat_mutex_destroy(&w->mu);
   free(w);
 }
 
 void wifi_start(wifi_t *w, int64_t now) {
   if (!w || w->running) return;
+  note_clock(w, now);
+  w->released = false;
   if (!w->cfg.port) {
     if (!w->bad_port) wlog(w, "Invalid port \"%u\" - using 1-65535.", w->cfg.port);
     w->bad_port = true;
@@ -443,21 +540,47 @@ void wifi_start(wifi_t *w, int64_t now) {
   try_bind(w, now);
 }
 
-void wifi_stop(wifi_t *w) {
-  if (!w || !w->running) return;
+/* Stop listening, in R14's order: this session's requests dropped (the worker aborts one in flight), what
+ * streams to us released (joystick_end alone, queued for the worker: it needs no socket), a new session. */
+static void stop_at(wifi_t *w, int64_t now) {
   w->running = false;
   plat_sock_close(w->sock);
   w->sock = PLAT_BADSOCK;
   plat_mutex_lock(&w->mu);
-  wifi_actq_new_session(&w->q);       /* the worker aborts a request in flight */
+  wifi_actq_new_session(&w->q);
   plat_mutex_unlock(&w->mu);
+  w->rel_round = true;                /* a new round for the status (h_activate and the results count it) */
+  w->rel_asked = w->rel_failed = 0;
+  if (wifi_proto_release(&w->p, now) > 0) w->rel_real_us = plat_now_us();   /* the exit's wait counts from here */
   wifi_proto_reset(&w->p);
   wifi_proto_set_state(&w->p, WIFI_ST_STOPPED, "");
-  wlog(w, "Stopped. (The module keeps broadcasting until powered off.)");
+}
+
+void wifi_stop(wifi_t *w) {
+  if (!w || !w->running) return;
+  stop_at(w, host_now(w));
+  wlog(w, "Stopped.");
+}
+
+void wifi_release(wifi_t *w, int64_t now) {
+  if (!w || w->released) return;
+  note_clock(w, now);
+  w->released = true;
+  wlog(w, "Release: not listening until Connect (the web page) or StickTime Pi starts again, so other apps can "
+          "find the module");
+  if (w->running) stop_at(w, now);
+  wifi_proto_set_state(&w->p, WIFI_ST_STOPPED, "released");
+}
+
+void wifi_connect(wifi_t *w, int64_t now) {
+  if (!w) return;
+  if (w->released) wlog(w, "Connect: listening again");
+  wifi_start(w, now);
 }
 
 void wifi_poll(wifi_t *w, int64_t now, insrc_t *src) {
   if (!w) return;
+  note_clock(w, now);
   w->cur = src;
   w->cur_now = now;
   if (w->running && w->sock == PLAT_BADSOCK && now >= w->bind_at) try_bind(w, now);
@@ -478,6 +601,7 @@ void wifi_poll(wifi_t *w, int64_t now, insrc_t *src) {
 
 void wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now) {
   if (!w) return;
+  note_clock(w, now);
   wifi_config_t c;
   config_clean(&c, cfg);
   uint32_t a = 0, b = 0;
@@ -494,17 +618,18 @@ void wifi_configure(wifi_t *w, const wifi_config_t *cfg, int64_t now) {
   }
   if (ip_changed) apply_target(w, now);
   if (port_changed && w->running) {
-    wifi_stop(w);
+    wifi_stop(w);                       /* with its release (R14): the modules send to port 11000 only */
     wifi_start(w, now);
-  } else if (port_changed && w->bad_port) {
+  } else if (port_changed && w->bad_port && !w->released) {
     wifi_start(w, now);
   }
 }
 
-static int npending(const wifi_t *w) {
+static int npending(const wifi_t *w, int *releasing) {
   plat_mutex *mu = (plat_mutex *)&w->mu;
   plat_mutex_lock(mu);
   int n = w->q.npending;
+  *releasing = wifi_actq_releases(&w->q);
   plat_mutex_unlock(mu);
   return n;
 }
@@ -533,18 +658,23 @@ void wifi_fill_status(const wifi_t *w, app_status_t *st) {
     st->wifi_dropped = 0;
     st->wifi_gaps = 0;
     st->wifi_gap_max_ms = 0;
+    st->wifi_release[0] = 0;
     return;
   }
   const wifi_proto_t *p = &w->p;
   char ip[16];
   uint32_t pend;
+  int releasing = 0;
+  if (w->rel_round) npending(w, &releasing);
+  snprintf(st->wifi_release, sizeof st->wifi_release, "%s", !w->rel_round ? "" : releasing ? "sending"
+           : !w->rel_asked ? "none" : w->rel_failed ? "failed" : "ok");
   snprintf(st->wifi_module, sizeof st->wifi_module, "%s", p->bound ? w->name : "");
   st->wifi_rate_hz = p->bound ? (float)p->last_hz : 0.0f;
   st->wifi_dropped = p->dropped_filter;
   st->wifi_gaps = w->gaps;
   st->wifi_gap_max_ms = (uint32_t)(w->gap_max_us / 1000);
   switch (p->state) {
-    case WIFI_ST_STOPPED: snprintf(st->wifi_state, sizeof st->wifi_state, "off"); break;
+    case WIFI_ST_STOPPED: snprintf(st->wifi_state, sizeof st->wifi_state, "%s", w->released ? "released" : "off"); break;
     case WIFI_ST_ERROR: snprintf(st->wifi_state, sizeof st->wifi_state, "%s", p->detail); break;
     case WIFI_ST_STREAMING: snprintf(st->wifi_state, sizeof st->wifi_state, "streaming"); break;
     case WIFI_ST_SEARCHING:
@@ -577,6 +707,7 @@ void wifi_get_info(const wifi_t *w, wifi_info_t *o) {
   const wifi_proto_t *p = &w->p;
   o->running = w->running;
   o->listening = w->sock != PLAT_BADSOCK;
+  o->released = w->released;
   o->port = w->cfg.port;
   o->state = p->state;
   snprintf(o->detail, sizeof o->detail, "%s", p->detail);
@@ -600,7 +731,9 @@ void wifi_get_info(const wifi_t *w, wifi_info_t *o) {
   o->posts = w->posts;
   o->posts_ok = w->posts_ok;
   o->posts_failed = w->posts_failed;
-  o->pending = npending(w);
+  o->pending = npending(w, &o->releasing);
+  o->releases_ok = w->releases_ok;
+  o->releases_failed = w->releases_failed;
   o->interval_us = p->interval_us;
   o->channels = p->channels;
   o->restarts = p->restarts;
