@@ -223,7 +223,11 @@ class EditorTest(unittest.TestCase):
         text = p.evaluate("sim.editor.file()")
         self.assertEqual((self.sd / SLOTS / "c1.txt").read_text(encoding="utf-8"), text, "c1.txt is the editor's file")
         self.assertIn(("PUT", "/api/sd/SCRIPTS/TOOLS/StickTimeTracks/c1.txt", 200), self.mutations())
-        self.assertEqual(p.inner_text("#edStatus"), "Sent to the Pi as track 9 (c1.txt). The game on the Pi has it in its track list once it is back in its menus.")
+        # (StickTime 1.10.0's built-in tracks have scenery: its copy is a format 3 track, which the
+        # card's older game doesn't list, and the editor says so)
+        sent = "Sent to the Pi as track 9 (c1.txt). "
+        self.assertIn(p.inner_text("#edStatus"), (sent + "The game on the Pi has it in its track list once it is back in its menus.",
+                      sent + "\"My Meadow\" is a track with scenery: StickTime 1.7.1 on the card doesn't list it, 1.10.0 and later do. Install updates it."))
         self.assertGreater(self.pi.reloads, reloads, "the game reloads after a slot changes")
         self.assertIn("c1:", p.inner_text("#edRadioLineText"))
         # the same track into c2 (Pi Slot Two there): asked first, in the Pi's words; No keeps it

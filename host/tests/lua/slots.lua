@@ -1,5 +1,5 @@
--- what the game sees of its track slots: the menu scan at load (as StickTime.lua does it),
--- and later opens (T.open) like buildTrack
+-- what the game sees of its track slots: the menu scan at load (as StickTime.lua 1.10.0 does it:
+-- formats 1-4), and later opens (T.open) like buildTrack (up to format 4's 10000 bytes)
 local T = STICKTIME_TEST
 local P = "/SCRIPTS/TOOLS/StickTimeTracks/c"
 local listed = {}
@@ -9,7 +9,7 @@ for i = 1, 8 do
     local s = io.read(f, 60)
     io.close(f)
     local name, ver = string.match(s or "", "^%s*([^\r\n]+)[\r\n]+%s*(%d+)%s+(%d+)")
-    if name and (ver == "1" or ver == "2") then listed[i] = string.sub(name, 1, 16) end
+    if name and (ver == "1" or ver == "2" or ver == "3" or ver == "4") then listed[i] = string.sub(name, 1, 16) end
   end
 end
 local last = ""
@@ -20,7 +20,7 @@ T.open = function(i, how)
   if how == 2 then p = "SCRIPTS\\TOOLS\\StickTimeTracks\\c" .. i .. ".txt" end
   local f = io.open(p, how == 3 and "r+" or "r")
   if not f then last = "" return 0 end
-  last = io.read(f, 6000)
+  last = io.read(f, 10000)
   io.close(f)
   return 1, #last
 end

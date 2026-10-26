@@ -934,7 +934,7 @@ static int slot_open(etx_t *e, int i, int how) {
 }
 
 static bool slot_last(etx_t *e, const char *want) {
-  char buf[8192];                                            /* a format 2 track: up to 6000 bytes */
+  char buf[16384];                                           /* a format 4 track: up to 10000 bytes */
   etx_test_call_str(e, "last", NULL, 0, 0, buf, sizeof buf);
   bool ok = !strcmp(buf, want);
   if (!ok) fprintf(stderr, "  slot content \"%s\", want \"%s\"\n", buf, want);
@@ -1038,6 +1038,52 @@ static void test_slots(void) {
   log_clear();
   CHECK_INT(slot_open(e, 1, 0), 1);
   CHECK(slot_last(e, big));
+  CHECK(log_has("keeping the version the game loaded"));
+  etx_free(e);
+
+  /* formats 3 and 4 (StickTime 1.10.0): scenery after the structures (props / rails / decals: the
+   * game checks those itself), structure kinds 1-9; the structures end at the next '/' */
+  slots_reset();
+  slot(1, "Scenery\n3 42 3 9  0 0 1 0 0  0 40 1 0 0 / 20 30 3 3 0 4 5 / 10 20 4 0 / -20 0 -20 60 1 2 / 0 30 4 0.1 0 4\n");
+  slot(2, "NoSeed\n3 5 / / / /\n");                              /* no seed: crashes buildTrack */
+  slot(3, "Inf3\n3 8 3 9  0 0 1 0 0  0 40 1 0 0 / 1e400 30 3 3 0 4 7 / / /\n");   /* a new kind of structure */
+  slot(4, "Kind10\n4 8 3 9  0 0 1 0 0  0 40 1 0 0 / 1e400 30 3 3 0 4 10\n");      /* no such kind: dropped */
+  slot(5, "Frac3\n3 5 3 9  0 0 1 0 0  0 40 1 0 0 / 0 20 3 3 0 4 6.005\n");
+  slot(6, "Odd Props\n3 5 3 9  0 0 1 0 0  0 40 1 0 0 / / 1e400 x 4 0 / /\n");    /* the game's own checks */
+  slot(7, "Five\n5 5 3 9\n");                                    /* no such format: not listed */
+  e = load_test("slots.lua", false);
+  static const int want4[9] = { 0, 1, 0, 0, 1, 0, 1, 1, 0 };
+  for (int i = 1; i <= 8; i++) CHECK_INT(slot_open(e, i, 0), want4[i]);
+  CHECK(listed(e, 1, "Scenery"));
+  CHECK(listed(e, 4, "Kind10"));
+  CHECK(listed(e, 6, "Odd Props"));
+  CHECK(listed(e, 7, NULL));
+  etx_free(e);
+
+  /* format 4: read from 10000 bytes, and a listed one keeps all of its last good content (past the
+   * 6000 bytes a snapshot held for format 2) */
+  static char big4[10000];
+  bn = snprintf(big4, sizeof big4, "Big Four\n4 973733 7 9");
+  for (int g = 0; g < 48; g++)
+    bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, "  %d.1250 -%d.8750 %d 90.5000 2.2500", g * 10, g * 3, g % 8 + 1);
+  bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, " /");
+  for (int s = 0; s < 64; s++)
+    bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, " %d.1250 -%d.8750 1.1250 2.8750 0.5000 3.6250 %d", s * 7, s * 2, s % 9 + 1);
+  bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, " /");
+  for (int p = 0; p < 120; p++)
+    bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, " %d.5 -%d.5 %d 0", p * 4, p * 3, p % 9 + 1);
+  bn += snprintf(big4 + bn, sizeof big4 - (size_t)bn, " / -20 0 -20 60 1 2 / 0 30 4 0.1 0 4\n");
+  CHECK(bn > 6000 && bn < 10000);
+  slots_reset();
+  slot(1, big4);
+  e = load_test("slots.lua", false);
+  CHECK(listed(e, 1, "Big Four"));
+  CHECK_INT(slot_open(e, 1, 0), 1);
+  CHECK(slot_last(e, big4));
+  slot(1, "garbage");
+  log_clear();
+  CHECK_INT(slot_open(e, 1, 0), 1);
+  CHECK(slot_last(e, big4));
   CHECK(log_has("keeping the version the game loaded"));
   etx_free(e);
 
