@@ -241,9 +241,10 @@ def gallery_ok(data):
         text = e.get("text")
         if text is not None and not isinstance(text, str):
             return "a track's text"
-        # StickTime 1.8.0's bigger tracks: up to 6000 (the editor's MAX_BYTES + 1; 1000 before 1.8.0)
-        if isinstance(text, str) and len(text) > 6000:
-            return "a track over 6000 characters"
+        # StickTime 1.10.0's format 4 (bigger tracks with scenery): up to 10000 (the editor's
+        # MAX_BYTES4 + 1; 6000 from 1.8.0's bigger tracks, 1000 before)
+        if isinstance(text, str) and len(text) > 10000:
+            return "a track over 10000 characters"
         for k, cap in (("by", 60), ("about", 300), ("source", 300), ("name", 200), ("file", 200)):
             if k in e and e[k] is not None and not isinstance(e[k], str):
                 return "a track's %s" % k

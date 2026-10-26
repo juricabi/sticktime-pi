@@ -842,8 +842,9 @@ class TestGameZip(unittest.TestCase):
         self.assertEqual(g(b'{"tracks":[]}'), "0 tracks")
         self.assertEqual(g(json.dumps({"tracks": [{"text": "x"}] * 501}).encode()), "501 tracks")
         self.assertEqual(g(b'{"tracks":["x"]}'), "a track that isn't an object")
-        self.assertEqual(g(json.dumps({"tracks": [{"text": "x" * 6000}]}).encode()), "")    # 1.8.0's bigger tracks
-        self.assertEqual(g(json.dumps({"tracks": [{"text": "x" * 6001}]}).encode()), "a track over 6000 characters")
+        self.assertEqual(g(json.dumps({"tracks": [{"text": "x" * 6001}]}).encode()), "")    # 1.10.0's format 4
+        self.assertEqual(g(json.dumps({"tracks": [{"text": "x" * 10000}]}).encode()), "")
+        self.assertEqual(g(json.dumps({"tracks": [{"text": "x" * 10001}]}).encode()), "a track over 10000 characters")
         self.assertEqual(g(b'{"tracks":[{"text":5}]}'), "a track's text")
         self.assertEqual(g(b'{"tracks":[{"text":"a","by":5}]}'), "a track's by")
         self.assertEqual(g(b'{"tracks":[{"text":"a","was":[0]}]}'), "a track's earlier ids")
@@ -1936,7 +1937,7 @@ class TestGameFailures(FakeServerCase):
         d = self.dev
         factory = d.get("editor/tracks/index.json")
         for n, (g, ctype) in enumerate([(b"<html>", "text/html"), (None, None), (b'{"tracks":[]}', None),
-                                        (json.dumps({"tracks": [{"text": "x" * 6001}]}).encode(), None),
+                                        (json.dumps({"tracks": [{"text": "x" * 10001}]}).encode(), None),
                                         (gallery(3), "text/html; charset=utf-8")]):
             with self.subTest(n):
                 self.gh.gallery = g

@@ -23,7 +23,7 @@
 #define ETX_MEM_LIMIT ((size_t)256 << 20)   /* Lua heap while script code runs */
 #define HOOK_COUNT 1000             /* instructions between watchdog checks */
 #define NSLOTS 8                    /* StickTimeTracks/c1..c8.txt */
-#define SLOT_SNAP_MAX 6000          /* the game reads 60 and 6000 bytes of a slot (format 2's most) */
+#define SLOT_SNAP_MAX 10000         /* the game reads 60 and up to 10000 bytes of a slot (format 4's most) */
 #define FILE_MT "FILE*"
 
 /* ================================================================ writer thread
@@ -644,7 +644,10 @@ static int io_fail(lua_State *L, const char *path, const char *why) {
 /* Track slots: io.open of StickTimeTracks/cN.txt returns nil when the game would crash on the
  * file (game-api.md §10 A-C), checked by this function with the game's own patterns:
  * listed: the game's menu scan takes it (header in the first 60 bytes, format 1 or 2: StickTime
- * 1.8.0's bigger tracks, up to 48 gates and 64 structures, which it reads from 6000 bytes);
+ * 1.8.0's bigger tracks, up to 48 gates and 64 structures, which it reads from 6000 bytes; format
+ * 3 or 4, StickTime 1.10.0's: the same with scenery after the structures and structure kinds 1-9,
+ * read from 1600 and 10000 bytes - the game checks the scenery itself, the structures end at the
+ * next '/');
  * buildable: buildTrack works on it (a seed token, no NaN/inf, no fractional types that pass
  * its type checks) and so does the ghost save (an int32 id, coordinates |v| < 1e8). Verified
  * against the real game with the filter off; a few files it hides do not crash (an inf seed or
@@ -659,10 +662,13 @@ static const char SLOT_CHECK[] =
   "local function sane(v) return v == v and v > -1e8 and v < 1e8 end\n"
   "return function(s)\n"
   "  local name, ver, id = match(sub(s, 1, 60), '^%s*([^\\r\\n]+)[\\r\\n]+%s*(%d+)%s+(%d+)')\n"
-  "  local listed = name ~= nil and (ver == '1' or ver == '2')\n"
+  "  local sc = ver == '3' or ver == '4'\n"
+  "  local listed = name ~= nil and (ver == '1' or ver == '2' or sc)\n"
   /* an id beyond int32 is a float under LUA_32BITS: the ghost file's %d raises on it */
   "  if listed and mtype(tonumber(id)) ~= 'integer' then return listed, false end\n"
-  "  local g, b = match(match(sub(s, 1, 6000),'^%s*[^\\r\\n]*[\\r\\n]+(.*)') or '', '([^/]*)/?(.*)')\n"
+  "  local g, b = match(match(sub(s, 1, ver == '4' and 10000 or ver == '3' and 1600 or 6000),'^%s*[^\\r\\n]*[\\r\\n]+(.*)') or '',\n"
+  "    '([^/]*)/?(.*)')\n"
+  "  if sc then b = match(b, '[^/]*') end\n"
   "  local n, d, seed = 0, {}, nil\n"
   "  for v in gmatch(g or '', '%S+') do\n"
   "    n = n + 1\n"
@@ -679,7 +685,7 @@ static const char SLOT_CHECK[] =
   "  local bd = {}\n"
   "  for v in gmatch(b or '', '%S+') do if #bd < 448 then bd[#bd + 1] = tonumber(v) or 0 end end\n"
   "  ok = #bd % 7 == 0\n"
-  "  for i = 7, #bd, 7 do if bd[i] < 1 or bd[i] > 3 or bd[i] - floor(bd[i]) > 0.01 then ok = false end end\n"
+  "  for i = 7, #bd, 7 do if bd[i] < 1 or bd[i] > (sc and 9 or 3) or bd[i] - floor(bd[i]) > 0.01 then ok = false end end\n"
   "  if ok then\n"
   "    for i = 1, #bd do if not sane(bd[i]) then return listed, false end end\n"
   "    for i = 7, #bd, 7 do if bd[i] - floor(bd[i]) > 0 then return listed, false end end\n"
