@@ -1489,10 +1489,13 @@
     try { ents = (await api('GET', '/api/sd/' + TRACKS + '?list')).entries || []; } catch (e) {
       if (e.status !== 404) { ol.replaceChildren(h('li', { class: 'note', text: 'Couldn\'t read the Pi\'s tracks: ' + e.message })); return; }
     }
-    // formats 3 and 4 (scenery) are StickTime 1.10.0's: an older game can't read them
+    // the formats the running game lists: the color edition 1 and 2 (StickTime 1.8.0's bigger tracks),
+    // StickTime BW 1, and from 1.10.0 on with scenery 3 and 4 (BW: 3); the Lite has no custom tracks
     let st = lastStatus;
-    if (!st) try { st = await api('GET', '/api/status', undefined, { timeout: 5000 }); } catch (e) { /* unknown: 1 and 2 */ }
-    const scenery = cmpVer(st && st.game_version, '1.10') >= 0;
+    if (!st) try { st = await api('GET', '/api/status', undefined, { timeout: 5000 }); } catch (e) { /* unknown: color */ }
+    const scenery = cmpVer(st && st.game_version, '1.10') >= 0, ed = String(g(st, 'game', 'script') || '').toLowerCase();
+    const lists = ed.endsWith('sticktimelite.lua') ? [] : ed.endsWith('sticktimebw.lua') ? (scenery ? ['1', '3'] : ['1'])
+      : (scenery ? ['1', '2', '3', '4'] : ['1', '2']);
     const rows = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map(async (n) => {
       const e = ents.find((x) => x.kind === 'file' && String(x.name).toLowerCase() === 'c' + n + '.txt');
       let name = null, bad = '';
@@ -1501,10 +1504,8 @@
         else {
           try {
             const t = await api('GET', '/api/sd/' + TRACKS + '/' + encodeURIComponent(e.name));
-            // formats 1 and 2 (StickTime 1.8.0's bigger tracks), and 3 and 4 when the game is that new,
-            // as the color game lists them
             const m = /^\s*([^\r\n]+)[\r\n]+\s*(\d+)\s+\d+/.exec(String(t));
-            if (m && (m[2] === '1' || m[2] === '2' || (scenery && (m[2] === '3' || m[2] === '4')))) name = m[1].trim().slice(0, 16);
+            if (m && lists.includes(m[2])) name = m[1].trim().slice(0, 16);
             else bad = 'the game can\'t read it';
           } catch (err) { bad = err.message; }
         }

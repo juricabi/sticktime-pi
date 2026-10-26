@@ -1326,6 +1326,21 @@ class UiTest(unittest.TestCase):
         self.assertEqual(rows[2], "c3 Container Yard track 11 Download")
         self.assertEqual(rows[3], "c4 the game can't read it track 12 Download")
 
+    def test_tracks_page_bw(self):
+        # StickTime BW lists formats 1 and, from 1.10.0 on, 3: not the color edition's bigger 2 and 4
+        self.pi.game_version = "1.10.0"
+        self.pi.file_values["script"] = "/SCRIPTS/TOOLS/StickTimeBW.lua"
+        d = self.pi.sd / "SCRIPTS" / "TOOLS" / "StickTimeTracks"
+        (d / "c2.txt").write_text("Farm Field\n3 572715 11 9  0 0 1 0 0 / / 20 20 4 0 / / 32 28 7 5 0 6\n")
+        (d / "c3.txt").write_text("Container Yard\n4 913 0 0  0 0 1 0 0\n")
+        (d / "c4.txt").write_text("Big One\n2 973733 7 3\n")
+        p = self.open("tracks")
+        p.wait_for_function(LOADED["tracks"])
+        rows = p.eval_on_selector_all("#slotList li", "els => els.map((e) => e.innerText.replace(/\\s+/g, ' ').trim())")
+        self.assertEqual(rows[1], "c2 Farm Field track 10 Download")
+        self.assertEqual(rows[2], "c3 the game can't read it track 11 Download")
+        self.assertEqual(rows[3], "c4 the game can't read it track 12 Download")
+
     def test_status_page(self):
         p = self.open("status")
         p.wait_for_function(LOADED["status"])
